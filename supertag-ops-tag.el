@@ -15,10 +15,13 @@
 (require 'supertag-core-schema)
 (require 'supertag-core-tag-path)
 (require 'supertag-core-transform)
+(require 'supertag-ops-link-definition)
 (require 'supertag-ops-relation)
 (require 'supertag-ops-node)
 (require 'supertag-ops-schema)
 (require 'supertag-ops-global-field)
+(require 'supertag-schema-authority)
+
 
 (declare-function supertag-tag-path-rename-plan
                   "supertag-ops-tag-merge" (old-root new-root))
@@ -418,7 +421,9 @@ modifies Tag entities."
 ID is the unique identifier of the tag.
 UPDATER is a function that receives the current tag data and returns the updated data.
 Returns the updated tag data."
-  (let ((previous (supertag-tag-get id)))
+  
+  (supertag-schema-authority-assert :type id :update)
+(let ((previous (supertag-tag-get id)))
     (when previous
       ;; Convert hash table to plist if necessary
       (let* ((original-plist (supertag--ensure-plist previous))
@@ -461,8 +466,11 @@ ID is the unique identifier of the tag.
 When BEFORE-DELETE is non-nil, call it with ID after operation hooks and
 immediately before the Store mutation.
 Returns the deleted tag data."
-  (let ((previous (supertag-tag-get id)))
+  
+  (supertag-schema-authority-assert :type id :delete)
+(let ((previous (supertag-tag-get id)))
     (when previous
+      (supertag-link-definition-assert-tag-deletable id)
       (supertag-ops-commit
        :operation :delete
        :collection :tags
@@ -696,7 +704,9 @@ Ensures :options fields carry a proper :options list; signals when missing."
 TAG-ID is the unique identifier of the tag.
 FIELD-DEF is a plist of the field definition.
 Returns the updated tag data."
-  (setq field-def (supertag-tag--normalize-field-def field-def))
+  
+  (supertag-schema-authority-assert :type tag-id :associate-field)
+(setq field-def (supertag-tag--normalize-field-def field-def))
   (let ((fid (or (plist-get field-def :id)
                  (supertag-sanitize-field-id (plist-get field-def :name)))))
     (unless fid
@@ -724,7 +734,9 @@ Example: (supertag-tag-define-field \"task\" \"Priority\" :options '(:options (\
 TAG-ID is the unique identifier of the tag.
 FIELD-NAME is the name of the field to remove.
 Returns the updated tag data."
-  (when-let* ((fid (or (plist-get (supertag-tag-get-field tag-id field-name) :id)
+  
+  (supertag-schema-authority-assert :type tag-id :disassociate-field)
+(when-let* ((fid (or (plist-get (supertag-tag-get-field tag-id field-name) :id)
                         (supertag-sanitize-field-id field-name))))
     (supertag-tag-disassociate-field tag-id fid))
   (supertag-tag-get tag-id))

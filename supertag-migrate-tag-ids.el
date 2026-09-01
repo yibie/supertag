@@ -10,17 +10,22 @@
 
 ;;; Code:
 
+(require 'cl-lib)
 (require 'supertag-core-store)
-(require 'supertag-core-persistence) ; For transaction support
+(require 'supertag-core-transform) ; For `supertag-with-transaction'
+(require 'supertag-core-persistence) ; Validation and dirty-state helpers
 (require 'supertag-ops-tag)
 (require 'supertag-ops-node)
 (require 'supertag-ops-relation)
+(require 'supertag-ontology-adapter)
 
 (defun supertag-migrate--is-uuid-tag-id-p (id)
   "Check if ID is a UUID-based tag ID.
 Returns t if ID matches the UUID format used by old tag creation."
   (and (stringp id)
-       (string-match-p "^id-[0-9]{8}-[0-9]{6}-[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$" id)))
+       (string-match-p
+        "\\`id-[0-9]\\{8\\}-[0-9]\\{6\\}-[0-9a-f]\\{8\\}-[0-9a-f]\\{4\\}-[0-9a-f]\\{4\\}-[0-9a-f]\\{4\\}-[0-9a-f]\\{12\\}\\'"
+        id)))
 
 (defun supertag-migrate--get-tag-name-from-uuid-id (uuid-id)
   "Extract tag name from UUID-based tag ID.
@@ -80,6 +85,115 @@ Returns alist of (old-uuid-id . tag-data) pairs."
                :to new-tag-id
                :created-at (plist-get relation :created-at)))))))
 
+(defun supertag-migrate--update-link-definition-endpoints
+    (old-tag-id new-tag-id)
+  "Rewrite Link Definition endpoints from OLD-TAG-ID to NEW-TAG-ID."
+  (let (updates)
+    (maphash
+     (lambda (definition-id raw-definition)
+       (let ((definition (copy-tree raw-definition))
+             changed)
+         (when (equal old-tag-id (plist-get definition :from-tag-id))
+           (setq definition
+                 (plist-put definition :from-tag-id new-tag-id)
+                 changed t))
+         (when (equal old-tag-id (plist-get definition :to-tag-id))
+           (setq definition
+                 (plist-put definition :to-tag-id new-tag-id)
+                 changed t))
+         (when changed
+           (push (cons definition-id definition) updates))))
+     (supertag-store-get-collection :link-definitions))
+    (dolist (entry updates)
+      (supertag-store-put-entity
+       :link-definitions (car entry) (cdr entry) t))))
+
+(defun supertag-migrate--rewrite-contract-type (type old-tag-id new-tag-id)
+  "Rewrite OLD-TAG-ID to NEW-TAG-ID inside contract TYPE."
+  (pcase type
+    (`(:type ,runtime-id)
+     (list :type (if (equal runtime-id old-tag-id)
+                     new-tag-id runtime-id)))
+    (`(:maybe ,inner)
+     (list :maybe
+           (supertag-migrate--rewrite-contract-type
+            inner old-tag-id new-tag-id)))
+    (`(:list ,inner)
+     (list :list
+           (supertag-migrate--rewrite-contract-type
+            inner old-tag-id new-tag-id)))
+    (_ type)))
+
+(defun supertag-migrate--contract-has-uuid-tag-p (type)
+  "Return non-nil when contract TYPE contains a legacy UUID Tag ID."
+  (pcase type
+    (`(:type ,runtime-id)
+     (supertag-migrate--is-uuid-tag-id-p runtime-id))
+    (`(:maybe ,inner)
+     (supertag-migrate--contract-has-uuid-tag-p inner))
+    (`(:list ,inner)
+     (supertag-migrate--contract-has-uuid-tag-p inner))
+    (_ nil)))
+
+(defun supertag-migrate--update-ontology-behavior-types
+    (old-tag-id new-tag-id)
+  "Rewrite Function and Action Type references during Tag ID migration."
+  (dolist (collection '(:ontology-functions :ontology-actions))
+    (let (updates)
+      (maphash
+       (lambda (runtime-id raw)
+         (let ((record (copy-tree raw)) changed)
+           (when (equal old-tag-id (plist-get record :subject-type-id))
+             (setq record (plist-put record :subject-type-id new-tag-id)
+                   changed t))
+           (when (plist-member record :parameters)
+             (let ((rewritten
+                    (mapcar
+                     (lambda (parameter)
+                       (let ((copy (copy-tree parameter)))
+                         (plist-put
+                          copy :type
+                          (supertag-migrate--rewrite-contract-type
+                           (plist-get parameter :type)
+                           old-tag-id new-tag-id))))
+                     (plist-get record :parameters))))
+               (unless (equal rewritten (plist-get record :parameters))
+                 (setq record (plist-put record :parameters rewritten)
+                       changed t))))
+           (when (plist-member record :returns)
+             (let ((rewritten
+                    (supertag-migrate--rewrite-contract-type
+                     (plist-get record :returns) old-tag-id new-tag-id)))
+               (unless (equal rewritten (plist-get record :returns))
+                 (setq record (plist-put record :returns rewritten)
+                       changed t))))
+           (when changed
+             (setq record
+                   (plist-put
+                    record :contract-hash
+                    (supertag-ontology-adapter-behavior-contract-hash
+                     record)))
+             (push (cons runtime-id record) updates))))
+       (supertag-store-get-collection collection))
+      (dolist (entry updates)
+        (supertag-store-put-entity collection (car entry) (cdr entry) t)))))
+
+(defun supertag-migrate--update-ontology-type-bindings
+    (old-tag-id new-tag-id)
+  "Rewrite managed Ontology Type bindings after a Tag ID migration."
+  (let (updates)
+    (maphash
+     (lambda (binding-id record)
+       (when (and (eq (plist-get record :kind) :type)
+                  (equal old-tag-id (plist-get record :runtime-id)))
+         (push (cons binding-id
+                     (plist-put (copy-tree record) :runtime-id new-tag-id))
+               updates)))
+     (supertag-store-get-collection :ontology-bindings))
+    (dolist (entry updates)
+      (supertag-store-put-entity
+       :ontology-bindings (car entry) (cdr entry) t))))
+
 (defun supertag-migrate--migrate-single-tag (old-tag-id tag-data)
   "Migrate a single UUID-based tag to name-based ID.
 Returns new tag ID if successful, nil otherwise."
@@ -93,6 +207,12 @@ Returns new tag ID if successful, nil otherwise."
     ;; Update tag entity ID
     (let ((updated-tag-data (plist-put (copy-sequence tag-data) :id new-tag-id)))
       (supertag-store-put-entity :tags new-tag-id updated-tag-data t)
+      (supertag-migrate--update-link-definition-endpoints
+       old-tag-id new-tag-id)
+      (supertag-migrate--update-ontology-behavior-types
+       old-tag-id new-tag-id)
+      (supertag-migrate--update-ontology-type-bindings
+       old-tag-id new-tag-id)
       (supertag-store-remove-entity :tags old-tag-id))
 
     ;; Update all node tag lists
@@ -110,7 +230,7 @@ automatically rolling back if migration fails."
   (interactive)
   (message "Starting safe tag ID migration...")
 
-  (supertag--with-transaction
+  (supertag-with-transaction
     (let ((uuid-tags (supertag-migrate--find-all-uuid-tags))
           (migrated-count 0)
           (migration-errors '()))
@@ -175,6 +295,50 @@ Checks that no UUID-based tags remain and all references are updated."
                                (plist-get relation-data :from) (plist-get relation-data :to))
                        validation-errors)))
              (supertag-store-get-collection :relations))
+
+    ;; Check for orphaned Link Definition endpoint types.
+    (maphash
+     (lambda (definition-id definition)
+       (dolist (slot '(:from-tag-id :to-tag-id))
+         (let ((tag-id (plist-get definition slot)))
+           (when (supertag-migrate--is-uuid-tag-id-p tag-id)
+             (push (format "Link Definition %s has orphaned UUID endpoint %s: %s"
+                           definition-id slot tag-id)
+                   validation-errors)))))
+     (supertag-store-get-collection :link-definitions))
+
+    ;; Check deployed Function and Action subject/parameter/return Type refs.
+    (dolist (collection '(:ontology-functions :ontology-actions))
+      (maphash
+       (lambda (runtime-id record)
+         (when (supertag-migrate--is-uuid-tag-id-p
+                (plist-get record :subject-type-id))
+           (push (format "%s %s has orphaned subject Type %s"
+                         collection runtime-id
+                         (plist-get record :subject-type-id))
+                 validation-errors))
+         (when (or
+                (cl-some
+                 (lambda (parameter)
+                   (supertag-migrate--contract-has-uuid-tag-p
+                    (plist-get parameter :type)))
+                 (plist-get record :parameters))
+                (supertag-migrate--contract-has-uuid-tag-p
+                 (plist-get record :returns)))
+           (push (format "%s %s has an orphaned contract Type"
+                         collection runtime-id)
+                 validation-errors)))
+       (supertag-store-get-collection collection)))
+
+    (maphash
+     (lambda (binding-id record)
+       (when (and (eq (plist-get record :kind) :type)
+                  (supertag-migrate--is-uuid-tag-id-p
+                   (plist-get record :runtime-id)))
+         (push (format "Ontology binding %s has orphaned Type runtime %s"
+                       binding-id (plist-get record :runtime-id))
+               validation-errors)))
+     (supertag-store-get-collection :ontology-bindings))
 
     (if validation-errors
         (progn

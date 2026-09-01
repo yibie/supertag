@@ -62,51 +62,240 @@ Prefer TAG-ID's resolved schema, then the global definition registry."
 
 ;; 4.1 Field Value Operations
 
-(defun supertag-field-set (node-id tag-id field-name value)
+(defconst supertag-field-provenance-origins '(:agent :human)
+  "Valid `:origin' values of a field-value provenance record.")
+
+(defconst supertag-field-provenance-keys
+  '(:origin :at :model :source-hash :note :previous)
+  "Keys a field-value provenance record may carry.")
+
+(defun supertag-field-provenance-timestamp (&optional time)
+  "Return TIME (default: now) as an ISO 8601 UTC string."
+  (format-time-string "%Y-%m-%dT%H:%M:%SZ" time t))
+
+(defun supertag-field-normalize-provenance (provenance)
+  "Validate PROVENANCE and return a fresh normalized record.
+
+PROVENANCE is a plist with a required `:origin' (`:agent' or `:human')
+and optional string-valued `:at' (ISO 8601 UTC), `:model', `:source-hash'
+(the subject node's `:hash' the value was derived from) and `:note'.
+`:previous', when present, carries the field value that an agent
+overwrote; unlike the descriptive fields it may have any field-value
+shape, including nil.  A missing `:at' becomes the current time.
+Unknown keys signal."
+  (unless (and (consp provenance) (keywordp (car provenance)))
+    (error "Provenance must be a plist with an :origin, got %S" provenance))
+  (let ((origin (plist-get provenance :origin))
+        (rest provenance)
+        record)
+    (unless (memq origin supertag-field-provenance-origins)
+      (error "Provenance :origin must be one of %S, got %S"
+             supertag-field-provenance-origins origin))
+    (while rest
+      (let ((key (pop rest))
+            (value (pop rest)))
+        (unless (memq key supertag-field-provenance-keys)
+          (error "Unknown provenance key %S" key))
+        (unless (or (memq key '(:origin :previous))
+                    (null value)
+                    (stringp value))
+          (error "Provenance %s must be a string, got %S" key value))))
+    (setq record (list :origin origin
+                       :at (or (plist-get provenance :at)
+                               (supertag-field-provenance-timestamp))))
+    (dolist (key '(:model :source-hash :note))
+      (when-let* ((value (plist-get provenance key)))
+        (setq record (append record (list key value)))))
+    (when (plist-member provenance :previous)
+      (setq record
+            (append record
+                    (list :previous
+                          (copy-tree (plist-get provenance :previous))))))
+    record))
+
+(defun supertag-field--definition (tag-id field-name)
+  "Return FIELD-NAME's schema definition in TAG-ID's context."
+  (or (supertag-tag-get-field tag-id field-name)
+      (when-let* ((field-id (supertag-field-resolve-id tag-id field-name)))
+        (supertag-global-field-get field-id))))
+
+(defun supertag-field--normalize-date-value (value)
+  "Return VALUE as a canonical YYYY-MM-DD date string.
+
+String values use `org-read-date', so the same inputs accepted by the
+interactive field editor (for example, \"today\" and \"+3d\") are valid.
+Numeric day counts and the decoded-time lists produced by older writers
+remain readable during normalization."
+  (require 'org)
+  (let ((time
+         (cond
+          ((stringp value)
+           (let* ((text (string-trim value))
+                  (lower (downcase text))
+                  (org-input
+                   (cond
+                    ((string= lower "today") "+0d")
+                    ((string= lower "tomorrow") "+1d")
+                    ((string= lower "yesterday") "-1d")
+                    ((string-match
+                      "\\`\\([+-][0-9]+\\)\\s-*\\(day\\|week\\|month\\|year\\)s?\\'"
+                      lower)
+                     (format "%s%s"
+                             (match-string 1 lower)
+                             (pcase (match-string 2 lower)
+                               ("day" "d")
+                               ("week" "w")
+                               ("month" "m")
+                               ("year" "y"))))
+                    (t text))))
+             (org-read-date nil t org-input)))
+          ((numberp value) (seconds-to-time (* value 24 3600)))
+          ((and (listp value) (>= (length value) 6))
+           (apply #'encode-time value))
+          ;; Emacs time values are commonly two- or four-element lists.
+          ((consp value) value)
+          (t (error "Cannot convert to date: %S" value)))))
+    (format-time-string "%Y-%m-%d" time)))
+
+(defun supertag-field--convert-schema-value (value type)
+  "Convert VALUE according to field TYPE, including Supertag-only types."
+  (pcase type
+    (:date (supertag-field--normalize-date-value value))
+    (:node-reference (supertag-field-pack-node-reference-value value))
+    (_ (supertag--convert-type value type))))
+
+(defun supertag-field--expected-value-description (field-def)
+  "Return a user-facing description of values accepted by FIELD-DEF."
+  (let ((type (or (plist-get field-def :type) :string)))
+    (pcase type
+      (:options
+       (format "options from %S" (plist-get field-def :options)))
+      (:node-reference "a node ID or a list of node IDs")
+      (_ (substring (symbol-name type) 1)))))
+
+(defun supertag-field--normalize-for-write
+    (tag-id field-name value field-def)
+  "Normalize and validate VALUE for FIELD-NAME, or signal a clear user error."
+  (condition-case cause
+      (let ((normalized (supertag-field-normalize tag-id field-name value)))
+        (unless (supertag-field-validate tag-id field-name normalized)
+          (error "the schema rejected this value"))
+        normalized)
+    (error
+     (user-error "Field '%s' expects %s; you supplied %S (%s)"
+                 (or (plist-get field-def :name) field-name)
+                 (supertag-field--expected-value-description field-def)
+                 value
+                 (error-message-string cause)))))
+
+(defun supertag-field-set (node-id tag-id field-name value &optional provenance)
   "Set a global field value for NODE-ID.
 NODE-ID is the unique identifier of the node.
 TAG-ID supplies schema context and remains in the public signature.
-FIELD-NAME is resolved to the canonical global field id."
+FIELD-NAME is resolved to the canonical global field id.
+
+PROVENANCE, when non-nil, records who asserted VALUE (see
+`supertag-field-normalize-provenance'); it is stored beside the value in
+the `:field-provenance' sidecar and never changes the value itself.  A
+writer that passes no PROVENANCE makes no claim: when it changes the value
+any earlier provenance record is dropped, when the value is unchanged the
+record is kept.  A literal nil VALUE means remove the stored value and its
+provenance; schema defaults remain a read-time fallback supplied by
+`supertag-field-get-with-default'."
   (let* ((fid (supertag-field-resolve-id tag-id field-name))
          (field-def (and fid (supertag-global-field-get fid))))
     (unless fid
       (error "Field name is required"))
     (unless field-def
       (error "Global field '%s' not defined" fid))
-    (let* ((old-raw (supertag-node-get-global-field
-                     node-id fid supertag-field--missing))
-           (old (unless (eq old-raw supertag-field--missing) old-raw)))
-      (if (and (not (eq old-raw supertag-field--missing))
-               (equal old value))
-          old
-        (supertag-with-transaction
-          ;; The field value is authoritative; its relation is only a
-          ;; rebuildable query projection.
-          (supertag-node-set-global-field node-id fid value)
-          (when (eq (plist-get field-def :type) :node-reference)
-            (supertag-relation-reconcile-field-reference node-id fid))
-          (when (and (boundp 'supertag-automation-sync--enabled)
-                     supertag-automation-sync--enabled)
-            (require 'supertag-automation-sync)
-            (when (fboundp
-                   'supertag-automation-sync--process-global-field-change)
-              (supertag-automation-sync--process-global-field-change
-               node-id fid old value)))
-          (when supertag-debug-log-field-events
-            (message "supertag-field-set node=%s tag=%s field=%s old=%S new=%S"
-                     node-id tag-id fid old value))
-          value)))))
+    (if (null value)
+        (progn
+          (supertag-field-remove node-id tag-id field-name)
+          nil)
+      (let* ((normalized (supertag-field--normalize-for-write
+                          tag-id field-name value field-def))
+             (record (and provenance
+                          (supertag-field-normalize-provenance provenance)))
+             (old-raw (supertag-node-get-global-field
+                       node-id fid supertag-field--missing))
+             (exists (not (eq old-raw supertag-field--missing)))
+             (old (and exists old-raw))
+             (same (and exists (equal old normalized)))
+             (old-record (supertag-store-get-field-provenance node-id fid)))
+        (if (and same (or (null record) (equal record old-record)))
+            old
+          (supertag-with-transaction
+            (unless same
+              ;; The field value is authoritative; its relation is only a
+              ;; rebuildable query projection.
+              (supertag-node-set-global-field node-id fid normalized)
+              (when (eq (plist-get field-def :type) :node-reference)
+                (supertag-relation-reconcile-field-reference node-id fid))
+              (when (and (boundp 'supertag-automation-sync--enabled)
+                         supertag-automation-sync--enabled)
+                (require 'supertag-automation-sync)
+                (when (fboundp
+                       'supertag-automation-sync--process-global-field-change)
+                  (supertag-automation-sync--process-global-field-change
+                   node-id fid old normalized))))
+            (cond
+             (record (supertag-store-put-field-provenance node-id fid record))
+             (old-record (supertag-store-remove-field-provenance node-id fid)))
+            (when supertag-debug-log-field-events
+              (message "supertag-field-set node=%s tag=%s field=%s old=%S new=%S provenance=%S"
+                       node-id tag-id fid old normalized record))
+            normalized))))))
 
 (defun supertag-field-set-many (node-id specs)
   "Set global field SPECS for NODE-ID.
-Each spec contains :tag, :field, and :value."
+Each spec contains :tag, :field, :value and an optional :provenance."
   (supertag-with-transaction
     (dolist (spec specs)
       (supertag-field-set node-id
                           (plist-get spec :tag)
                           (plist-get spec :field)
-                          (plist-get spec :value))))
+                          (plist-get spec :value)
+                          (plist-get spec :provenance))))
   specs)
+
+(defun supertag-field-provenance (node-id tag-id field-name)
+  "Return the provenance record of NODE-ID's FIELD-NAME value, or nil.
+TAG-ID supplies schema context.  A value written without provenance has
+no record and is treated as a plain fact.  The record is a fresh copy."
+  (when-let* ((fid (supertag-field-resolve-id tag-id field-name))
+              (record (supertag-store-get-field-provenance node-id fid)))
+    (copy-sequence record)))
+
+(defun supertag-field-confirm (node-id tag-id field-name)
+  "Record that a person confirmed NODE-ID's current FIELD-NAME value.
+The value is untouched; its provenance becomes `:human', so an agent
+projection turns into a fact.  Signal when the field has no stored value.
+Return the new provenance record."
+  (let* ((fid (supertag-field-resolve-id tag-id field-name))
+         (current (and fid (supertag-node-get-global-field
+                            node-id fid supertag-field--missing))))
+    (when (or (null fid) (eq current supertag-field--missing))
+      (error "Field '%s' has no value on node %s to confirm"
+             field-name node-id))
+    (supertag-with-transaction
+      (supertag-store-put-field-provenance
+       node-id fid (supertag-field-normalize-provenance '(:origin :human))))))
+
+(defun supertag-field-stale-p (node-id tag-id field-name)
+  "Return non-nil when NODE-ID's FIELD-NAME value is an outdated agent projection.
+A value is stale when its provenance is `:agent' with a `:source-hash'
+that no longer matches the node's current `:hash' (maintained by sync).
+Human-confirmed values, values without provenance, and values whose
+hashes are unknown are never stale."
+  (let* ((record (supertag-field-provenance node-id tag-id field-name))
+         (source-hash (plist-get record :source-hash))
+         (node-hash (and source-hash
+                         (plist-get (supertag-store-get-entity :nodes node-id)
+                                    :hash))))
+    (and (eq (plist-get record :origin) :agent)
+         (stringp source-hash)
+         (stringp node-hash)
+         (not (string= source-hash node-hash)))))
 
 (defun supertag-field-get (node-id tag-id field-name &optional default)
   "Return NODE-ID's global FIELD-NAME value, or DEFAULT.
@@ -223,6 +412,7 @@ TAG-ID supplies schema context.  Return the removed value, or nil."
     (unless (or (not fid) (eq old supertag-field--missing))
       (supertag-with-transaction
         (supertag-store-remove-field-value node-id fid)
+        (supertag-store-remove-field-provenance node-id fid)
         (when (eq (plist-get field-def :type) :node-reference)
           (supertag-relation-reconcile-field-reference node-id fid))
         (when supertag-debug-log-field-events
@@ -237,7 +427,7 @@ TAG-ID is the unique identifier of the tag.
 FIELD-NAME is the name of the field.
 VALUE is the value to validate.
 Returns t if validation passes, otherwise nil."
-  (let ((field-def (supertag-tag-get-field tag-id field-name)))
+  (let ((field-def (supertag-field--definition tag-id field-name)))
     (unless field-def
       (error "Field '%s' not defined for tag '%s'." field-name tag-id))
 
@@ -245,10 +435,18 @@ Returns t if validation passes, otherwise nil."
           (options (plist-get field-def :options))
           (validator (plist-get field-def :validator)))
       (and
-       ;; Type check
-       (supertag--convert-type value type) ; Will signal error if type conversion fails
-       ;; Options check
-       (or (null options) (member value options))
+       ;; Type check.  `supertag--convert-type' signals when VALUE cannot
+       ;; be coerced to TYPE; a successful conversion may legitimately
+       ;; yield nil (a :boolean false, an empty :tag list), so test for the
+       ;; signal, not for the truthiness of the converted value.
+       (progn (supertag-field--convert-schema-value value type) t)
+       ;; Options check.  VALUE is either a single option (scalar string)
+       ;; or a list of options (multi select); every selection must be
+       ;; one of the declared :options.
+       (or (null options)
+           (if (and (consp value) (proper-list-p value))
+               (cl-every (lambda (item) (member item options)) value)
+             (member value options)))
        ;; Custom validator
        (or (null validator) (funcall validator value))))))
 
@@ -256,20 +454,19 @@ Returns t if validation passes, otherwise nil."
   "Normalize a field value according to the tag's field definition.
 TAG-ID is the unique identifier of the tag.
 FIELD-NAME is the name of the field.
-VALUE is the value to normalize.
+VALUE is the value to normalize.  Literal nil remains nil: schema defaults
+are applied only when a missing value is read, never during an explicit write.
 Returns the normalized value."
-  (let ((field-def (supertag-tag-get-field tag-id field-name)))
+  (let ((field-def (supertag-field--definition tag-id field-name)))
     (unless field-def
       (error "Field '%s' not defined for tag '%s'." field-name tag-id))
 
-    (let ((type (plist-get field-def :type))
-          (default-value (plist-get field-def :default)))
+    (let ((type (plist-get field-def :type)))
       (cond
-       ;; Apply default value if value is nil and default is specified
-       ((and (null value) default-value)
-        (if (functionp default-value) (funcall default-value) default-value))
+       ;; Preserve explicit nil so write paths can interpret it as removal.
+       ((null value) nil)
        ;; Convert type
-       (type (supertag--convert-type value type))
+       (type (supertag-field--convert-schema-value value type))
        ;; Otherwise, return as is
        (t value)))))
 

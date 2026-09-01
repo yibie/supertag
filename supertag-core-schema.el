@@ -118,6 +118,7 @@ Lowercase, trim whitespace, convert internal whitespace to underscores."
     :tag-field     ; Tag-field relationship
     :parent-child  ; Parent-child relationship
     :reference     ; Reference relationship
+    :ontology-link ; Typed semantic edge governed by a Link Definition
     :custom        ; Custom relationship
     ;; Notion-style relations
     :one-to-one    ; One-to-one relationship
@@ -379,8 +380,16 @@ Keys are keyword symbols, values are plists with:
                     (t (error "Cannot convert to boolean: %s" value))))
     (:date (supertag--convert-to-date value))
     (:timestamp (supertag--convert-to-timestamp value))
+    ;; Options values are stored as a scalar string (single select) or a
+    ;; list of strings (multi select).  A plain string stays scalar so that
+    ;; normalize -> validate -> store keeps the shape the rest of the
+    ;; system (query, views, kanban, Org export) expects; only a
+    ;; comma-separated string denotes multiple selections.
     (:options (cond ((listp value) value)
-                    ((stringp value) (split-string value "," t))
+                    ((stringp value)
+                     (if (string-match-p "," value)
+                         (split-string value "," t)
+                       value))
                     (t (list value))))
     (:url (if (stringp value) value (format "%s" value)))
     (:email (if (stringp value) value (format "%s" value)))
@@ -613,6 +622,8 @@ If TYPE is not already in `supertag-relation-types', it is appended.
 Metadata is stored in `supertag--registered-relation-types'."
   (unless (keywordp type)
     (error "Relation type must be a keyword, got: %S" type))
+  (when (eq type :ontology-link)
+    (error ":ontology-link is reserved; define a Link Definition instead"))
   (unless (plist-get props :name)
     (error "Relation type must have a :name, got: %S" props))
   (unless (memq type supertag-relation-types)

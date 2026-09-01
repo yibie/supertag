@@ -13,11 +13,32 @@
 (require 'supertag-ops-node)
 (require 'supertag-ops-tag)
 (require 'supertag-ops-field)
+(require 'supertag-ops-relation)
 (require 'supertag-services-ui)
 (require 'supertag-services-query)
 (require 'supertag-services-sync)
 (require 'supertag-service-org)
 (require 'supertag-service-node-identity)
+
+(defgroup supertag-capture nil
+  "Capture-related configuration and integration for Supertag."
+  :group 'supertag)
+
+(defcustom supertag-capture-persist-last-target nil
+  "When non-nil, remember the last successful capture target across sessions.
+The last target is always remembered for the current Emacs session."
+  :type 'boolean
+  :group 'supertag-capture)
+
+(defcustom supertag-capture-persisted-target-file nil
+  "Last successful capture target saved for use across Emacs sessions.
+This value is used and updated only when
+`supertag-capture-persist-last-target' is non-nil."
+  :type '(choice (const :tag "None" nil) file)
+  :group 'supertag-capture)
+
+(defvar supertag-capture--session-target-file nil
+  "Last successful capture target in the current Emacs session.")
 
 ;;; --- Sync Helper Function ---
 
@@ -32,43 +53,195 @@ This is a simple wrapper around the core sync functionality."
 
 (defun supertag-capture-interactive-headline ()
   "Interactively build a headline with inline tags and return details.
-Prompts user for title and allows multi-select of tags.
+Prompts for a title; the Tag round can be skipped and completed later.
 Returns a plist with :headline string and :tags list."
   (let* ((title (read-string "Node title: "))
-         (all-tags (supertag-view-api-list-tag-ids))
          (selected-tags
-          (supertag-ui-read-tags "Select tags (empty finishes): "
-                                 all-tags t)))
+          (when (y-or-n-p
+                 "Add tags now? (No: use M-x supertag-add-tag later) ")
+            (supertag-ui-read-tags "Select tags (empty finishes): "
+                                   (supertag-view-api-list-tag-ids) t))))
     (list :headline title
           :tags selected-tags)))
 
+(defun supertag-capture-default-target-file ()
+  "Return the best existing default file for an interactive capture."
+  (cl-find-if
+   (lambda (file) (and (stringp file) (file-exists-p file)))
+   (list supertag-capture--session-target-file
+         (and supertag-capture-persist-last-target
+              supertag-capture-persisted-target-file)
+         (buffer-file-name))))
+
+(defun supertag-capture-read-target-file ()
+  "Read a capture target, defaulting to the last successful target."
+  (let* ((default (supertag-capture-default-target-file))
+         (directory (or (and default (file-name-directory default))
+                        default-directory)))
+    (expand-file-name
+     (read-file-name "Capture to file: " directory default t))))
+
+(defun supertag-capture-remember-target-file (file)
+  "Remember successful capture target FILE according to user preferences."
+  (let ((expanded (expand-file-name file)))
+    (setq supertag-capture--session-target-file expanded)
+    (when supertag-capture-persist-last-target
+      (setq supertag-capture-persisted-target-file expanded)
+      (condition-case cause
+          (customize-save-variable
+           'supertag-capture-persisted-target-file expanded)
+        (error
+         (display-warning
+          'supertag
+          (format "Could not persist capture target: %s"
+                  (error-message-string cause))
+          :warning))))
+    expanded))
+
+(defun supertag-capture--tag-membership-present-p (node-id tag-id)
+  "Return non-nil when TAG-ID is fully projected as NODE-ID membership."
+  (and (member tag-id (plist-get (supertag-node-get node-id) :tags))
+       (supertag-relation-find-between node-id tag-id :node-tag)))
+
+(defun supertag-capture--reproject-existing-tag-occurrence (node-id)
+  "Reproject NODE-ID when its Org tag text already existed before registration."
+  (let ((marker (supertag-node-location-find node-id)))
+    (unless marker
+      (user-error "Node '%s' has no readable Org location" node-id))
+    (org-with-point-at marker
+      (supertag-service-org-save-and-project-current-node node-id))))
+
+(defun supertag-capture-add-tags-to-nodes (node-ids tags &optional position)
+  "Create TAGS when needed and add them to every NODE-ID in NODE-IDS.
+
+All Tag occurrences for one node are saved and projected together.  Each node
+is handled in one Store transaction, and a late failure restores any Org edit
+before returning an error.  POSITION has the meaning accepted by
+`supertag-service-org-add-tag'.  Return the stable Semantic Tag IDs in order."
+  (unless node-ids
+    (user-error "No nodes were supplied for capture Tags"))
+  (unless (and (listp tags)
+               tags
+               (cl-every (lambda (tag)
+                           (and (stringp tag) (not (string-empty-p tag))))
+                         tags))
+    (user-error "Capture Tags must be a non-empty list of names"))
+  (let* ((tag-inputs
+          (cl-delete-duplicates
+           (mapcar (lambda (tag)
+                     (cons tag (supertag-sanitize-tag-name tag)))
+                   tags)
+           :test (lambda (left right)
+                   (string= (cdr left) (cdr right)))))
+         (tokens (mapcar #'cdr tag-inputs))
+         (tag-ids
+          (mapcar
+           (lambda (input)
+             (let ((tag (car input))
+                   (token (cdr input)))
+               (or (and (supertag-tag-get tag) tag)
+                   (supertag-tag-resolve-occurrence tag)
+                   (supertag-tag-resolve-occurrence token))))
+           tag-inputs))
+         (tag-label (string-join tokens ", ")))
+    (dolist (node-id node-ids)
+      (unless (supertag-node-get node-id)
+        (user-error "Node '%s' does not exist; Tags '%s' were not added"
+                    node-id tag-label))
+      (let* ((marker (supertag-node-location-find node-id))
+             (buffer (and marker (marker-buffer marker)))
+             (before-tick
+              (and buffer
+                   (with-current-buffer buffer
+                     (buffer-chars-modified-tick)))))
+        (unless (buffer-live-p buffer)
+          (user-error "Node '%s' has no readable Org location" node-id))
+        (condition-case cause
+            (with-current-buffer buffer
+              ;; Store rollback cannot undo a saved Org edit.  Keep the buffer
+              ;; edit recoverable until the membership assertion has passed.
+              (atomic-change-group
+                (setq tag-ids
+                      (supertag-with-transaction
+                        (let* ((resolved-ids
+                                (cl-mapcar
+                                 (lambda (token existing-id)
+                                   (or existing-id
+                                       (plist-get
+                                        (supertag-tag-create
+                                         `(:name ,token))
+                                        :id)))
+                                 tokens tag-ids))
+                               (save-and-project
+                                (symbol-function
+                                 'supertag-service-org-save-and-project-current-node))
+                               projection-needed)
+                          ;; Reuse the Org service's mutation logic for every
+                          ;; occurrence, but defer its commit seam until all
+                          ;; edits for this node have been composed.
+                          (cl-letf
+                              (((symbol-function
+                                 'supertag-service-org-save-and-project-current-node)
+                                (lambda (_node-id)
+                                  (setq projection-needed t))))
+                            (dolist (resolved-id resolved-ids)
+                              (supertag-service-org-add-tag
+                               node-id resolved-id position)))
+                          ;; Existing physical occurrences may require repair
+                          ;; even when none of the buffer edits changed text.
+                          (when
+                              (or projection-needed
+                                  (cl-some
+                                   (lambda (resolved-id)
+                                     (not
+                                      (supertag-capture--tag-membership-present-p
+                                       node-id resolved-id)))
+                                   resolved-ids))
+                            (funcall save-and-project node-id))
+                          (dolist (resolved-id resolved-ids)
+                            (unless
+                                (and
+                                 (supertag-tag-get resolved-id)
+                                 (supertag-capture--tag-membership-present-p
+                                  node-id resolved-id))
+                              (error
+                               "membership projection did not contain every Tag")))
+                          resolved-ids)))))
+          (error
+           ;; `atomic-change-group' has restored the pre-call buffer here.  If
+           ;; the service changed it before failing, make that restoration
+           ;; durable and reconcile the original Projection once more.
+           (let ((compensation-error
+                  (when
+                      (with-current-buffer buffer
+                        (/= before-tick (buffer-chars-modified-tick)))
+                    (condition-case compensation-cause
+                        (progn
+                          (org-with-point-at
+                              (or (supertag-node-location-find node-id)
+                                  marker)
+                            (supertag-service-org-save-and-project-current-node
+                             node-id))
+                          nil)
+                      (error compensation-cause)))))
+             (if compensation-error
+                 (user-error
+                  (concat "Could not register Tags '%s' on node '%s': %s; "
+                          "restoring the Org file also failed: %s")
+                  tag-label node-id (error-message-string cause)
+                  (error-message-string compensation-error))
+               (user-error
+                "Could not register Tags '%s' on node '%s': %s"
+                tag-label node-id (error-message-string cause))))))))
+    tag-ids))
+
+(defun supertag-capture-add-tag-to-nodes (node-ids tag &optional position)
+  "Create TAG when needed and add it to every NODE-ID in NODE-IDS.
+POSITION has the meaning accepted by `supertag-service-org-add-tag'.  Return
+the stable Semantic Tag ID."
+  (car (supertag-capture-add-tags-to-nodes node-ids (list tag) position)))
+
 ;;; --- Node Enrichment Functions ---
-
-(defun supertag-capture--get-fields-for-tags (selected-tags)
-  "Get all unique fields for selected tags, including inherited fields.
-Returns list of field plists."
-  (let ((seen (make-hash-table :test 'equal))
-        (result '()))
-    (dolist (tag-id selected-tags)
-      (let ((fields (supertag-tag-get-all-fields tag-id)))
-        (dolist (field fields)
-          (let* ((fid (or (plist-get field :id)
-                          (plist-get field :name)))
-                 (slug (and fid (supertag-sanitize-field-id fid)))
-                 (dedupe-key slug))
-            (when (and dedupe-key (not (gethash dedupe-key seen)))
-              (puthash dedupe-key t seen)
-              (push field result))))))
-    (nreverse result)))
-
-(defun supertag-capture--prompt-for-field-values (fields)
-  "Prompt user for values for the given fields.
-Returns alist of (field-name . value)."
-  (cl-loop for field in fields
-           for field-name = (plist-get field :name)
-           for value = (read-string (format "Value for %s: " field-name))
-           unless (string-empty-p value)
-           collect (cons field-name value)))
 
 (defun supertag-capture-enrich-node (node-id)
   "Interactively enrich a node with field values based on its tags.
@@ -553,10 +726,6 @@ TAG-POSITION determines where tags are placed in the headline."
 
 ;;; --- Core Finalization API ---
 
-(defgroup supertag-capture nil
-  "Capture-related configuration and integration for Supertag."
-  :group 'supertag)
-
 (defun supertag-capture-finalize-node-at-point (&optional field-specs explicit-node-id)
   "Finalize current Org headline as a Supertag node.
 
@@ -633,41 +802,9 @@ capture DSL."
                            (list "Supertag tags (comma separated): ")))
                          (unique-tags
                           (cl-delete-duplicates chosen :test #'string=)))
-                    (when unique-tags
-                      ;; Create Semantic Tags first; Org still owns membership.
-                      (setq unique-tags
-                            (mapcar
-                             (lambda (tag)
-                               (let ((tag-id
-                                      (or (and (supertag-tag-get tag) tag)
-                                          (supertag-tag-resolve-occurrence tag))))
-                                 (or tag-id
-                                     (plist-get
-                                      (supertag-tag-create `(:name ,tag)) :id))))
-                             unique-tags))
-                      ;; Update inline #tag on the Org headline
-                      (org-back-to-heading t)
-                      (let* ((title (org-get-heading t t t t))
-                             (bare-title
-                              (string-trim
-                               (replace-regexp-in-string
-                                "\\(?:^\\|\\s-\\)#[^[:space:]#]+" "" title)))
-                             (tag-string
-                              (mapconcat
-                               (lambda (tag-id)
-                                 (concat
-                                  "#"
-                                  (supertag-sanitize-tag-name
-                                   (plist-get (supertag-tag-get tag-id) :name))))
-                                         unique-tags " "))
-                             (new-title
-                              (string-trim
-                               (if (string-empty-p bare-title)
-                                   tag-string
-                                 (concat bare-title " " tag-string)))))
-                        (org-edit-headline new-title)
-                        (supertag-service-org-save-and-project-current-node
-                         node-id)))))
+                    (dolist (tag unique-tags)
+                      (supertag-capture-add-tag-to-nodes
+                       (list node-id) tag))))
                   (when move-spec
                     (let* ((raw-move move-spec)
                            ;; Normalize move-spec:

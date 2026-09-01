@@ -536,7 +536,11 @@ maps (NODE-ID FIELD-KEY) to a chosen value or `(:merge-values VALUES)'."
              (to (supertag-tag-merge--replace-tag-value
                   (plist-get copy :to) source-ids target-id))
              (type (plist-get copy :type))
-             (id (supertag-generate-relation-id from to type)))
+             (kind (supertag-relation-kind copy))
+             (field-id (plist-get copy :field-id))
+             (link-definition-id (plist-get copy :link-definition-id))
+             (id (supertag-generate-relation-id
+                  from to type kind field-id link-definition-id)))
         (setq copy (plist-put copy :from from))
         (setq copy (plist-put copy :to to))
         (setq copy (plist-put copy :id id))
@@ -917,7 +921,12 @@ are restored from snapshots if any later step fails."
               (to (supertag-tag-path-rename--mapped
                    (plist-get relation :to) mapping))
               (type (plist-get relation :type))
-              (new-id (supertag-generate-relation-id from to type)))
+              (new-id
+               (supertag-generate-relation-id
+                from to type
+                (supertag-relation-kind relation)
+                (plist-get relation :field-id)
+                (plist-get relation :link-definition-id))))
          (setq relation (plist-put relation :from from))
          (setq relation (plist-put relation :to to))
          (setq relation (plist-put relation :id new-id))

@@ -13,7 +13,9 @@
 (require 'subr-x)
 (require 'supertag-core-store)
 (require 'supertag-core-schema)
-(require 'supertag-core-transform) ; For supertag-with-transaction
+(require 'supertag-core-transform)
+(require 'supertag-schema-authority)
+ ; For supertag-with-transaction
 (declare-function supertag-tag--normalize-field-def "supertag-ops-tag" (field-def))
 
 (defun supertag--assoc-entry-field-id (entry)
@@ -77,7 +79,9 @@ Accepts both legacy string lists and plist entries."
 
 (defun supertag-global-field-update (field-id updater)
   "Update global field FIELD-ID using UPDATER fn returning new props."
-  (let ((previous (supertag-store-get-field-definition field-id)))
+  
+  (supertag-schema-authority-assert :field field-id :update)
+(let ((previous (supertag-store-get-field-definition field-id)))
     (unless previous
       (error "Global field '%s' not found" field-id))
     (let* ((updated (plist-put (funcall updater (copy-tree previous))
@@ -89,7 +93,9 @@ Accepts both legacy string lists and plist entries."
 
 (defun supertag-global-field-delete (field-id &optional prune-values)
   "Delete global field FIELD-ID. When PRUNE-VALUES, drop node values and associations."
-  (supertag-with-transaction
+  
+  (supertag-schema-authority-assert :field field-id :delete)
+(supertag-with-transaction
     (let ((previous (supertag-store-get-field-definition field-id)))
       (unless previous
         (error "Global field '%s' not found" field-id))
@@ -118,12 +124,23 @@ Accepts both legacy string lists and plist entries."
                            (push node-id node-ids)))
                        vals)
               (dolist (node-id node-ids)
-                (supertag-store-remove-field-value node-id field-id))))))
+                (supertag-store-remove-field-value node-id field-id)))))
+        ;; Provenance is a sidecar of the value; prune it the same way.
+        (let ((records (supertag-store-get-collection :field-provenance)))
+          (when (hash-table-p records)
+            (let ((node-ids '()))
+              (maphash (lambda (node-id table)
+                         (when (and (hash-table-p table) (ht-contains? table field-id))
+                           (push node-id node-ids)))
+                       records)
+              (dolist (node-id node-ids)
+                (supertag-store-remove-field-provenance node-id field-id))))))
       (supertag-schema-rebuild-global-field-caches)
       previous)))
 
 (defun supertag-tag-associate-field (tag-id field-id &optional order)
   "Associate FIELD-ID with TAG-ID. ORDER defaults to append."
+  (supertag-schema-authority-assert :type tag-id :associate-field)
   (let* ((assoc-table (supertag-store-get-collection :tag-field-associations))
          (raw (gethash tag-id assoc-table))
          (entries (supertag--dedupe-tag-field-associations raw))
@@ -148,6 +165,7 @@ Accepts both legacy string lists and plist entries."
 
 (defun supertag-tag-disassociate-field (tag-id field-id)
   "Remove association of FIELD-ID from TAG-ID."
+  (supertag-schema-authority-assert :type tag-id :disassociate-field)
   (let* ((raw (supertag-store-get-tag-field-associations tag-id))
          (entries (supertag--dedupe-tag-field-associations raw))
          (filtered (cl-remove field-id entries :key (lambda (e) (plist-get e :field-id)) :test #'equal)))

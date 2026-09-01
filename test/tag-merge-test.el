@@ -409,7 +409,7 @@
              (_result (supertag-tag-merge-execute plan)))
         (should-not (plist-get plan :conflicts))
         (should (equal (supertag-field-get "n1" "merged" "labels")
-                       "green"))))))
+                       '("green")))))))
 
 (ert-deftest tag-merge-global-fields-retains-selected-and-drops-orphaned-values ()
   (tag-merge-test--with-store

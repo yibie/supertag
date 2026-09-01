@@ -180,6 +180,38 @@
             (should-not (search-forward tag-id nil t)))
         (kill-buffer buffer)))))
 
+(ert-deftest supertag-tag-membership-existing-token-repairs-missing-projection ()
+  "Automation repairs missing Store membership for an existing Org occurrence."
+  (supertag-tag-membership-test--with-vault
+    (let* ((node-id supertag-ownership-test-node-a)
+           (file (car files))
+           (buffer (supertag-tag-membership-test--goto-node file node-id)))
+      (unwind-protect
+          (progn
+            (with-current-buffer buffer
+              (supertag-service-org-add-tag node-id "extra")
+              (should (search-forward "#extra" (line-end-position) t)))
+            ;; Reproduce an interrupted/stale Projection while preserving the
+            ;; already-saved Org Fact.
+            (supertag-node-remove-tag node-id "extra")
+            (dolist (relation
+                     (supertag-relation-find-between node-id "extra" :node-tag))
+              (supertag-relation-delete (plist-get relation :id)))
+            (should-not (member "extra"
+                                (plist-get (supertag-node-get node-id) :tags)))
+            (should-not
+             (supertag-relation-find-between node-id "extra" :node-tag))
+            (with-current-buffer buffer
+              (let ((before-tick (buffer-chars-modified-tick)))
+                (supertag-automation-action-add-tag
+                 node-id '(:tag "extra"))
+                (should (eq before-tick (buffer-chars-modified-tick)))))
+            (should (member "extra"
+                            (plist-get (supertag-node-get node-id) :tags)))
+            (should
+             (supertag-relation-find-between node-id "extra" :node-tag)))
+        (kill-buffer buffer)))))
+
 (ert-deftest supertag-tag-membership-ui-commands-use-org-first-path ()
   "Interactive add/change/remove retain one save-before-projection path."
   (supertag-tag-membership-test--with-vault
@@ -223,6 +255,142 @@
               (supertag-remove-tag-from-node))
             (should (equal '(save projection) (car order))))
         (kill-buffer buffer)))))
+
+(ert-deftest supertag-capture-new-tag-creates-semantic-membership ()
+  "Standalone capture succeeds only after its new Tag is fully projected."
+  (supertag-tag-membership-test--with-vault
+    (let* ((file (car files))
+           (buffer (find-file-noselect file))
+           (insert-position
+            (with-current-buffer buffer
+              (point-max)))
+           node-id)
+      (unwind-protect
+          (progn
+            (should-not (supertag-tag-resolve-occurrence "capture-new"))
+            (cl-letf (((symbol-function 'supertag-capture-interactive-headline)
+                       (lambda ()
+                         '(:headline "Captured" :tags ("capture-new"))))
+                      ((symbol-function 'supertag-ui-select-insert-position)
+                       (lambda (_file)
+                         (list :position insert-position :level 1)))
+                      ((symbol-function 'read-string)
+                       (lambda (&rest _) ""))
+                      ((symbol-function 'y-or-n-p)
+                       (lambda (&rest _) nil)))
+              (setq node-id (supertag-capture file)))
+            (let ((tag-id (supertag-tag-resolve-occurrence "capture-new")))
+              (should tag-id)
+              (should (supertag-tag-get tag-id))
+              (should (member tag-id
+                              (plist-get (supertag-node-get node-id) :tags)))
+              (should (supertag-relation-find-between
+                       node-id tag-id :node-tag)))
+            (with-current-buffer buffer
+              (goto-char (point-min))
+              (should (search-forward "#capture-new" nil t))))
+        (with-current-buffer buffer (set-buffer-modified-p nil))
+        (kill-buffer buffer)))))
+
+(ert-deftest supertag-capture-tag-registration-failure-is-not-silent ()
+  "A failed Org membership rolls back a newly-created Semantic Tag and signals."
+  (supertag-tag-membership-test--with-vault
+    (cl-letf (((symbol-function 'supertag-service-org-add-tag)
+               (lambda (&rest _) (error "deliberate membership failure"))))
+      (should-error
+       (supertag-capture-add-tag-to-nodes
+        (list supertag-ownership-test-node-a) "capture-failed"))
+      (should-not (supertag-tag-resolve-occurrence "capture-failed")))))
+
+(ert-deftest supertag-capture-membership-assertion-restores-org-file ()
+  "A late membership assertion cannot leave its saved Tag occurrence behind."
+  (supertag-tag-membership-test--with-vault
+    (let* ((file (car files))
+           (buffer (supertag-tag-membership-test--goto-node
+                    file supertag-ownership-test-node-a)))
+      (unwind-protect
+          (progn
+            (cl-letf (((symbol-function
+                        'supertag-capture--tag-membership-present-p)
+                       (lambda (&rest _) nil)))
+              (should-error
+               (supertag-capture-add-tag-to-nodes
+                (list supertag-ownership-test-node-a) "capture-rollback")))
+            (with-temp-buffer
+              (insert-file-contents file)
+              (should-not (search-forward "#capture-rollback" nil t)))
+            (should-not
+             (supertag-tag-resolve-occurrence "capture-rollback")))
+        (with-current-buffer buffer (set-buffer-modified-p nil))
+        (kill-buffer buffer)))))
+
+(ert-deftest supertag-capture-multiple-tags-save-and-project-once ()
+  "One capture batches all Tag occurrences into one save and projection."
+  (supertag-tag-membership-test--with-vault
+    (let* ((file (car files))
+           (buffer (find-file-noselect file))
+           (insert-position (with-current-buffer buffer (point-max)))
+           (real-save-and-project
+            (symbol-function
+             'supertag-service-org-save-and-project-current-node))
+           (save-and-project-count 0)
+           node-id)
+      (unwind-protect
+          (progn
+            (cl-letf (((symbol-function 'supertag-capture-interactive-headline)
+                       (lambda ()
+                         '(:headline "Captured batch"
+                           :tags ("capture-one" "capture-two"))))
+                      ((symbol-function 'supertag-ui-select-insert-position)
+                       (lambda (_file)
+                         (list :position insert-position :level 1)))
+                      ((symbol-function 'read-string)
+                       (lambda (&rest _) ""))
+                      ((symbol-function 'y-or-n-p)
+                       (lambda (&rest _) nil))
+                      ((symbol-function
+                        'supertag-service-org-save-and-project-current-node)
+                       (lambda (id)
+                         (cl-incf save-and-project-count)
+                         (funcall real-save-and-project id))))
+              (setq node-id (supertag-capture file)))
+            (should (= 1 save-and-project-count))
+            (dolist (token '("capture-one" "capture-two"))
+              (let ((tag-id (supertag-tag-resolve-occurrence token)))
+                (should tag-id)
+                (should (member tag-id
+                                (plist-get (supertag-node-get node-id) :tags))))))
+        (with-current-buffer buffer (set-buffer-modified-p nil))
+        (kill-buffer buffer)))))
+
+(ert-deftest supertag-capture-bulk-tag-service-save-and-project-once ()
+  "The capture service composes several Tag edits behind one commit seam."
+  (supertag-tag-membership-test--with-vault
+    (let* ((real-save-and-project
+            (symbol-function
+             'supertag-service-org-save-and-project-current-node))
+           (save-and-project-count 0)
+           tag-ids)
+      (cl-letf
+          (((symbol-function
+             'supertag-service-org-save-and-project-current-node)
+            (lambda (id)
+              (cl-incf save-and-project-count)
+              (funcall real-save-and-project id))))
+        (setq tag-ids
+              (supertag-capture-add-tags-to-nodes
+               (list supertag-ownership-test-node-a)
+               '("capture-one" "capture-two"))))
+      (should (= 1 save-and-project-count))
+      (should (= 2 (length tag-ids)))
+      (dolist (tag-id tag-ids)
+        (should (member tag-id
+                        (plist-get
+                         (supertag-node-get supertag-ownership-test-node-a)
+                         :tags)))
+        (should
+         (supertag-relation-find-between
+          supertag-ownership-test-node-a tag-id :node-tag))))))
 
 (ert-deftest supertag-tag-membership-automation-actions-project-once-after-save ()
   "Automation Tag actions use the same Org-first membership path."

@@ -8,12 +8,14 @@
 ;;; Code:
 
 (require 'cl-lib)
+(require 'subr-x)
 (require 'org)
 (require 'org-id)
 (require 'supertag-core-store)
 (require 'supertag-core-schema)
 (require 'supertag-core-transform)
 (require 'supertag-core-index)
+(require 'supertag-ops-link-definition)
 (require 'sha1)
 
 (declare-function supertag-node-get "supertag-ops-node" (id))
@@ -97,19 +99,39 @@ Reciprocal links are no longer written."
 ;; This prevents duplicate relations and ensures predictable behavior
 
 (defun supertag--validate-relation-data (data)
-  "Strict validation for relation data. Fails fast on any inconsistency.
-Implements immediate error reporting as preferred by the user."
+  "Strict validation for relation DATA.
+Typed ontology links additionally validate their Link Definition, endpoint
+types, and cardinality before any Store mutation occurs."
   (unless (plist-get data :type)
     (error "Relation missing required :type field: %S" data))
   (unless (plist-get data :from)
     (error "Relation missing required :from field: %S" data))
   (unless (plist-get data :to)
     (error "Relation missing required :to field: %S" data))
-  ;; Validate that from and to are strings
   (unless (stringp (plist-get data :from))
     (error "Relation :from must be a string, got: %S" (plist-get data :from)))
   (unless (stringp (plist-get data :to))
-    (error "Relation :to must be a string, got: %S" (plist-get data :to))))
+    (error "Relation :to must be a string, got: %S" (plist-get data :to)))
+  (let ((type (plist-get data :type))
+        (definition-id (plist-get data :link-definition-id)))
+    (when (eq type :ontology-link)
+      (unless (and (stringp definition-id)
+                   (not (string-empty-p definition-id)))
+        (error "Ontology Link relation requires a non-empty :link-definition-id: %S"
+               data)))
+    (when definition-id
+      (unless (stringp definition-id)
+        (error "Relation :link-definition-id must be a string: %S" data))
+      (unless (eq type :ontology-link)
+        (error "Typed Link relations must use :ontology-link type: %S" data))
+      (unless (eq (supertag-relation-kind data) :semantic-edge)
+        (error "Typed Link relations must be semantic edges: %S" data))
+      (supertag-link-definition-validate-instance
+       definition-id
+       (plist-get data :from)
+       (plist-get data :to)
+       (plist-get data :id))))
+  data)
 
 (defun supertag-ops-relation--ensure-plist (data)
   "Return a plist copy of DATA, converting hash tables when necessary."
@@ -205,13 +227,17 @@ Implements immediate error reporting as preferred by the user."
     (supertag-relation--validate-owner
      (plist-put (plist-put data :kind kind) :origin origin))))
 
-(defun supertag-generate-relation-id (from-id to-id type &optional kind field-id)
-  "Generate a deterministic relation ID for one owned relation fact."
+(defun supertag-generate-relation-id
+    (from-id to-id type &optional kind field-id link-definition-id)
+  "Generate a deterministic relation ID for one owned relation fact.
+LINK-DEFINITION-ID distinguishes different typed links between the same two
+nodes without overloading the instance's physical :type slot."
   (let ((identity (format "%s|%s|%s" from-id to-id type)))
-    ;; Reference kinds may coexist between the same two nodes; Field
-    ;; References additionally coexist once per authoritative field.
     (when (eq type :reference)
       (setq identity (format "%s|%s|%s" identity kind (or field-id ""))))
+    (when link-definition-id
+      (setq identity (format "%s|link-definition|%s"
+                             identity link-definition-id)))
     (format "rel-%s" (secure-hash 'sha1 identity))))
 
 
@@ -230,7 +256,9 @@ Returns the created relation data."
          (to   (plist-get data :to))
          (kind (plist-get data :kind))
          (field-id (plist-get data :field-id))
-         (rel-id (supertag-generate-relation-id from to type kind field-id))
+         (link-definition-id (plist-get data :link-definition-id))
+         (rel-id (supertag-generate-relation-id
+                  from to type kind field-id link-definition-id))
          (relation-plist (plist-put data :id rel-id)))
 
     ;; Ensure created-at exists but don't overwrite if caller provided it.
@@ -246,8 +274,12 @@ Returns the created relation data."
            (existing-relation
             (cl-find-if
              (lambda (relation)
-               (or (not (eq kind :field-reference))
-                   (equal field-id (plist-get relation :field-id))))
+               (and
+                (or (not (eq kind :field-reference))
+                    (equal field-id (plist-get relation :field-id)))
+                (or (null link-definition-id)
+                    (equal link-definition-id
+                           (plist-get relation :link-definition-id)))))
              existing-relations)))
       (if existing-relation
           ;; Return the first valid existing relation.
@@ -284,20 +316,24 @@ Returns the updated relation data."
        :id id
        :previous previous
        :perform (lambda ()
-                  (let ((updated-relation (funcall updater previous)))
+                  (let ((updated-relation
+                         (funcall updater (copy-tree previous))))
                     (when updated-relation
-                      (let ((final-relation
-                             (supertag-relation--validate-owner
-                              (plist-put updated-relation :modified-at
-                                         (current-time)))))
+                      (let* ((updated-relation (plist-put updated-relation :id id))
+                             (final-relation
+                              (supertag-relation--validate-owner
+                               (plist-put updated-relation :modified-at
+                                          (current-time)))))
+                        (dolist (identity-key
+                                 '(:from :to :type :kind :field-id
+                                   :link-definition-id))
+                          (unless (equal (plist-get previous identity-key)
+                                         (plist-get final-relation identity-key))
+                            (error
+                             "Relation identity field %S cannot be changed in place; delete and recreate the relation"
+                             identity-key)))
                         (supertag--validate-relation-data final-relation)
-                        (let ((old-from (plist-get previous :from))
-                              (old-to   (plist-get previous :to))
-                              (new-from (plist-get final-relation :from))
-                              (new-to   (plist-get final-relation :to)))
-                          (supertag-store-put-entity :relations id final-relation)
-                          (supertag-index--on-relation-changed
-                           id old-from old-to new-from new-to))
+                        (supertag-store-put-entity :relations id final-relation)
                         final-relation))))))))
 
 (defun supertag-relation-delete (id)
@@ -318,6 +354,102 @@ Returns the deleted relation data."
                     (supertag-index--on-relation-changed
                      id from-id to-id nil nil))
                   nil)))))
+
+;;; --- Typed Link Instance API ---
+
+(defun supertag-link-create (definition-id from-id to-id &optional properties)
+  "Create one typed Link instance from FROM-ID to TO-ID."
+  (let ((data (copy-tree properties)))
+    (setq data (plist-put data :type :ontology-link))
+    (setq data (plist-put data :kind :semantic-edge))
+    (setq data (plist-put data :origin :semantic))
+    (setq data (plist-put data :link-definition-id definition-id))
+    (setq data (plist-put data :from from-id))
+    (setq data (plist-put data :to to-id))
+    (supertag-relation-create data)))
+
+(defun supertag-link--matches-definition-p (relation definition-id)
+  (and (eq (plist-get relation :type) :ontology-link)
+       (equal definition-id (plist-get relation :link-definition-id))))
+
+(defun supertag-link-find (definition-id &optional from-id to-id)
+  "Return typed Link instances for DEFINITION-ID.
+Optional FROM-ID and TO-ID narrow either endpoint and use relation indexes."
+  (let ((candidates
+         (cond
+          ((and from-id to-id)
+           (supertag-relation-find-between from-id to-id :ontology-link
+                                           :semantic-edge))
+          (from-id
+           (supertag-relation-find-by-from from-id :ontology-link
+                                           :semantic-edge))
+          (to-id
+           (supertag-relation-find-by-to to-id :ontology-link
+                                         :semantic-edge))
+          (t
+           (let (all)
+             (maphash (lambda (_id relation) (push relation all))
+                      (supertag-store-get-collection :relations))
+             all)))))
+    (cl-remove-if-not
+     (lambda (relation)
+       (and (supertag-link--matches-definition-p relation definition-id)
+            (or (null from-id) (equal from-id (plist-get relation :from)))
+            (or (null to-id) (equal to-id (plist-get relation :to)))))
+     candidates)))
+
+(defun supertag-link-targets (definition-id from-id)
+  "Return target node IDs linked from FROM-ID through DEFINITION-ID."
+  (mapcar (lambda (relation) (plist-get relation :to))
+          (supertag-link-find definition-id from-id nil)))
+
+(defun supertag-link-sources (definition-id to-id)
+  "Return source node IDs linked to TO-ID through DEFINITION-ID."
+  (mapcar (lambda (relation) (plist-get relation :from))
+          (supertag-link-find definition-id nil to-id)))
+
+(defun supertag-link-delete (definition-id from-id to-id)
+  "Delete the typed Link instance identified by schema and endpoints."
+  (let ((relation (car (supertag-link-find definition-id from-id to-id))))
+    (when relation
+      (supertag-relation-delete (plist-get relation :id)))))
+
+(defun supertag-link-conflicts (definition-id from-id to-id)
+  "Return existing instances that conflict with FROM-ID -> TO-ID cardinality."
+  (let ((definition (supertag-link-definition-get definition-id)) conflicts)
+    (unless definition (error "Unknown Link Definition %s" definition-id))
+    (when (eq (plist-get definition :from-cardinality) :one)
+      (dolist (relation (supertag-link-find definition-id from-id nil))
+        (unless (equal to-id (plist-get relation :to))
+          (push relation conflicts))))
+    (when (eq (plist-get definition :to-cardinality) :one)
+      (dolist (relation (supertag-link-find definition-id nil to-id))
+        (unless (equal from-id (plist-get relation :from))
+          (push relation conflicts))))
+    (cl-delete-duplicates conflicts
+                          :key (lambda (relation) (plist-get relation :id))
+                          :test #'equal)))
+
+(defun supertag-link-create-replacing-conflicts
+    (definition-id from-id to-id &optional properties)
+  "Create FROM-ID -> TO-ID, atomically replacing cardinality conflicts."
+  (or (car (supertag-link-find definition-id from-id to-id))
+      (supertag-with-transaction
+        (dolist (relation (supertag-link-conflicts definition-id from-id to-id))
+          (supertag-relation-delete (plist-get relation :id)))
+        (supertag-link-create definition-id from-id to-id properties))))
+
+(defun supertag-link-instances-for-node (node-id)
+  "Return all typed Link instances touching NODE-ID."
+  (cl-delete-duplicates
+   (append
+    (cl-remove-if-not
+     (lambda (relation) (eq (plist-get relation :type) :ontology-link))
+     (supertag-relation-find-by-from node-id :ontology-link :semantic-edge))
+    (cl-remove-if-not
+     (lambda (relation) (eq (plist-get relation :type) :ontology-link))
+     (supertag-relation-find-by-to node-id :ontology-link :semantic-edge)))
+   :key (lambda (relation) (plist-get relation :id)) :test #'equal))
 
 ;; 5.2 Reference Service
 
@@ -493,8 +625,8 @@ Keeps the first relation for each owned relation identity."
         (duplicates-found 0)
         (removed-count 0))
 
-    ;; Projection kinds and Field IDs are distinct facts even with the same
-    ;; endpoints and relation type.
+    ;; Projection kinds, Field IDs, and Link Definition IDs are distinct facts
+    ;; even with the same endpoints and physical relation type.
     (when (hash-table-p relations)
       (maphash (lambda (id relation-data)
                  (let* ((from (plist-get relation-data :from))
@@ -502,8 +634,11 @@ Keeps the first relation for each owned relation identity."
                         (type (plist-get relation-data :type))
                         (kind (supertag-relation-kind relation-data))
                         (field-id (plist-get relation-data :field-id))
-                        (key (format "%s|%s|%s|%s|%s"
-                                     from to type kind (or field-id ""))))
+                        (link-definition-id
+                         (plist-get relation-data :link-definition-id))
+                        (key (format "%s|%s|%s|%s|%s|%s"
+                                     from to type kind (or field-id "")
+                                     (or link-definition-id ""))))
                    (when (and from to type)
                      (let ((existing-group (gethash key relation-groups)))
                        (if existing-group

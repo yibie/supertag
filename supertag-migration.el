@@ -1467,7 +1467,7 @@ Return a deterministic report plist.  Conflicts and orphans set
 ;;; --- Stable Semantic Tag ID audit ---
 
 (defconst supertag-migration--stable-tag-collections
-  '(:tags :nodes :relations :fields :field-definitions
+  '(:tags :nodes :relations :link-definitions :fields :field-definitions
     :tag-field-associations :field-values :boards :automations)
   "Collections whose Tag references task017 must migrate atomically.")
 
@@ -1859,7 +1859,8 @@ ALIAS-CLAIMS maps occurrence tokens to their current Semantic Tag owners."
                       (supertag-generate-relation-id
                        new-from new-to (plist-get relation :type)
                        (plist-get relation :kind)
-                       (plist-get relation :field-id)))
+                       (plist-get relation :field-id)
+                       (plist-get relation :link-definition-id)))
                 references))
         (when (and relation
                    (or (eq (plist-get relation :type) :node-tag)
@@ -1868,6 +1869,36 @@ ALIAS-CLAIMS maps occurrence tokens to their current Semantic Tag owners."
           (push (list :reason :membership-relation-missing-tag
                       :relation-id id :old-tag-id to)
                 conflicts))))
+    (dolist (entry
+             (supertag-migration--sorted-table-entries
+              (supertag-store-get-collection :link-definitions)))
+      (let* ((id (car entry))
+             (definition
+              (supertag-migration--audit-definition-plist (cdr entry)))
+             (from (and definition (plist-get definition :from-tag-id)))
+             (to (and definition (plist-get definition :to-tag-id)))
+             (new-from (and (stringp from)
+                            (supertag-migration--mapping-value from mapping)))
+             (new-to (and (stringp to)
+                          (supertag-migration--mapping-value to mapping))))
+        (unless (and definition (stringp from) (assoc from mapping))
+          (push (list :reason :link-definition-missing-source-tag
+                      :link-definition-id id :old-tag-id from)
+                conflicts))
+        (unless (and definition (stringp to) (assoc to mapping))
+          (push (list :reason :link-definition-missing-target-tag
+                      :link-definition-id id :old-tag-id to)
+                conflicts))
+        (when (and definition
+                   (or (not (equal from new-from))
+                       (not (equal to new-to))))
+          (push (list :kind :link-definition-endpoints
+                      :owner-id id
+                      :old-from-tag-id from
+                      :stable-from-tag-id new-from
+                      :old-to-tag-id to
+                      :stable-to-tag-id new-to)
+                references))))
     (dolist (node-entry
              (supertag-migration--sorted-table-entries
               (supertag-store-get-collection :field-values)))
@@ -2185,7 +2216,9 @@ ALIAS-CLAIMS maps occurrence tokens to their current Semantic Tag owners."
                    (plist-get relation :to) mapping))
               (id (supertag-generate-relation-id
                    from to (plist-get relation :type)
-                   (plist-get relation :kind) (plist-get relation :field-id))))
+                   (plist-get relation :kind)
+                   (plist-get relation :field-id)
+                   (plist-get relation :link-definition-id))))
          (setq relation (plist-put relation :id id))
          (setq relation (plist-put relation :from from))
          (setq relation (plist-put relation :to to))
@@ -2194,6 +2227,30 @@ ALIAS-CLAIMS maps occurrence tokens to their current Semantic Tag owners."
          (puthash id relation result)))
      (supertag-store-get-collection :relations))
     (supertag-update '(:relations) result)))
+
+(defun supertag-migration--rewrite-stable-tag-link-definitions (mapping)
+  "Rewrite Link Definition endpoint Tag IDs using MAPPING."
+  (let ((result (make-hash-table :test 'equal)))
+    (maphash
+     (lambda (id raw-definition)
+       (let* ((definition (copy-tree raw-definition))
+              (from (plist-get definition :from-tag-id))
+              (to (plist-get definition :to-tag-id)))
+         (unless (and (stringp from) (assoc from mapping))
+           (error "Link Definition '%s' references unmapped source Tag '%S'"
+                  id from))
+         (unless (and (stringp to) (assoc to mapping))
+           (error "Link Definition '%s' references unmapped target Tag '%S'"
+                  id to))
+         (setq definition
+               (plist-put definition :from-tag-id
+                          (supertag-migration--mapping-value from mapping)))
+         (setq definition
+               (plist-put definition :to-tag-id
+                          (supertag-migration--mapping-value to mapping)))
+         (puthash id definition result)))
+     (supertag-store-get-collection :link-definitions))
+    (supertag-update '(:link-definitions) result)))
 
 (defun supertag-migration--rewrite-stable-tag-legacy-fields (mapping)
   "Rekey migration-only legacy field buckets using MAPPING."
@@ -2302,6 +2359,7 @@ With FORCE-WRITE non-nil (or a prefix argument), create backups and apply."
                  (supertag-migration--stable-tag-definitions audit mapping))
                 (supertag-tag--assert-all-tokens-unique)
                 (supertag-migration--rewrite-stable-tag-nodes mapping)
+                (supertag-migration--rewrite-stable-tag-link-definitions mapping)
                 (supertag-migration--rewrite-stable-tag-relations mapping)
                 (supertag-migration--rewrite-stable-tag-legacy-fields mapping)
                 (supertag-update
@@ -2746,6 +2804,71 @@ Returns a keyword like :string, :number, :date, etc."
      ;; Default to string
      (t :string))))
 
+(defun supertag-migration--migrate-property-occurrences
+    (occurrences tag-id property-name)
+  "Migrate OCCURRENCES to PROPERTY-NAME on TAG-ID without early abort.
+
+Each occurrence is handled independently.  A malformed historical value,
+missing node, or Org projection error is recorded in `:failures' and later
+nodes are still attempted.  Return counters plus explicit successful and
+failed node lists."
+  (let ((values-set 0)
+        (tags-added 0)
+        (nodes-skipped 0)
+        successful-nodes
+        failures)
+    (dolist (occurrence occurrences)
+      (let ((node-id (car occurrence))
+            (value (cdr occurrence)))
+        (condition-case err
+            (let ((node (supertag-node-get node-id)))
+              (unless node
+                (error "Node %s is missing from the Store" node-id))
+              (let* ((node-tags (plist-get node :tags))
+                     (has-tag (and node-tags (member tag-id node-tags))))
+                (unless has-tag
+                  (let ((updated (supertag-node-add-tag node-id tag-id)))
+                    (unless updated
+                      (error "Could not add tag %s to node %s" tag-id node-id))
+                    (setq node updated
+                          node-tags (plist-get updated :tags)
+                          has-tag (and node-tags (member tag-id node-tags)))
+                    (unless has-tag
+                      (error "Tag %s was not retained on node %s"
+                             tag-id node-id))
+                    (supertag-migration--insert-tag-in-org-file node-id tag-id)
+                    (cl-incf tags-added)))
+                (supertag-field-set node-id tag-id property-name value)
+                (cl-incf values-set)
+                (push node-id successful-nodes)))
+          (error
+           (cl-incf nodes-skipped)
+           (push (list :node node-id
+                       :value (copy-tree value)
+                       :error (error-message-string err))
+                 failures)))))
+    (setq successful-nodes (nreverse successful-nodes)
+          failures (nreverse failures))
+    (list :values-set values-set
+          :tags-added tags-added
+          :nodes-skipped nodes-skipped
+          :successful-nodes successful-nodes
+          :failed-nodes (mapcar (lambda (failure)
+                                  (plist-get failure :node))
+                                failures)
+          :failures failures)))
+
+(defun supertag-migration--format-property-failures (failures)
+  "Return FAILURES as a compact node-and-error summary."
+  (if failures
+      (mapconcat (lambda (failure)
+                   (format "%s (%s)"
+                           (plist-get failure :node)
+                           (plist-get failure :error)))
+                 failures
+                 "; ")
+    "none"))
+
 ;;;###autoload
 (defun supertag-convert-properties-to-field (property-name)
   "Convert an org property to a tag field.
@@ -2793,10 +2916,7 @@ This function:
     (let* ((props-table (supertag-migration--collect-all-properties))
            (occurrences (supertag-migration--nodes-with-property props-table property-name))
            (field-type (supertag-migration--infer-field-type occurrences))
-           (field-id (supertag-sanitize-field-id property-name))
-           (values-set 0)
-           (tags-added 0)
-           (nodes-skipped 0))
+           (field-id (supertag-sanitize-field-id property-name)))
 
       (unless occurrences
         (user-error "Property '%s' not found in any nodes" property-name))
@@ -2817,45 +2937,28 @@ This function:
         ;; Use the production global field path.
         (supertag-tag-add-field tag-id field-def))
 
-      ;; Step 2: For each node with this property, set the field value
-      ;; but ONLY if the node also has the specified tag
+      ;; Step 2: Migrate every occurrence.  Per-node failures are retained
+      ;; in the result so one malformed historical value cannot abort later
+      ;; nodes after earlier Org files have already changed.
       (message "Migrating property values to field values...")
-
-      (dolist (occurrence occurrences)
-        (let* ((node-id (car occurrence))
-               (value (cdr occurrence))
-               (node (supertag-node-get node-id)))
-          (if node
-              (let* ((node-tags (plist-get node :tags))
-                     (has-tag (and node-tags (member tag-id node-tags))))
-                (unless has-tag
-                  ;; Add tag to database
-                  (let ((updated (supertag-node-add-tag node-id tag-id)))
-                    (when updated
-                      (setq node updated
-                            node-tags (plist-get updated :tags)
-                            has-tag (and node-tags (member tag-id node-tags)))
-                      ;; Also insert #tag in the org file
-                      (supertag-migration--insert-tag-in-org-file node-id tag-id)
-                      (cl-incf tags-added))))
-                (if has-tag
-                    (progn
-                      (supertag-field-set node-id tag-id property-name value)
-                      (cl-incf values-set))
-                  (cl-incf nodes-skipped)))
-            (cl-incf nodes-skipped))))
-
-      ;; Report results
-      (message "Conversion complete on tag '%s': %d values migrated, %d tags added automatically (in DB and org files), %d nodes skipped (missing node data or failed tag assignment)"
-               tag-id values-set tags-added nodes-skipped)
-
-      (list :property property-name
-            :tag tag-id
-            :field-id field-id
-            :field-type field-type
-            :values-set values-set
-            :tags-added tags-added
-            :nodes-skipped nodes-skipped))))
+      (let ((migration
+             (supertag-migration--migrate-property-occurrences
+              occurrences tag-id property-name)))
+        (message
+         "Conversion complete on tag '%s': %d succeeded, %d failed; successful nodes: %s; failed nodes: %s"
+         tag-id
+         (plist-get migration :values-set)
+         (length (plist-get migration :failures))
+         (if-let* ((nodes (plist-get migration :successful-nodes)))
+             (string-join nodes ", ")
+           "none")
+         (supertag-migration--format-property-failures
+          (plist-get migration :failures)))
+        (append (list :property property-name
+                      :tag tag-id
+                      :field-id field-id
+                      :field-type field-type)
+                migration)))))
 
 ;;;###autoload
 (defun supertag-batch-convert-properties-to-fields ()
@@ -2933,11 +3036,16 @@ For each selected property:
                     (let ((result (supertag-migration--convert-single-property
                                    prop tag-id props-table)))
                       (push result results)
-                      (message "✓ Converted: %s → tag '%s' (%d values migrated, %d tags added, %d nodes skipped)"
-                               prop tag-id
-                               (plist-get result :values-set)
-                               (or (plist-get result :tags-added) 0)
-                               (plist-get result :nodes-skipped)))
+                      (if-let* ((failures (plist-get result :failures)))
+                          (message
+                           "⚠ Converted %s → tag '%s': %d succeeded; failed nodes: %s"
+                           prop tag-id
+                           (plist-get result :values-set)
+                           (supertag-migration--format-property-failures
+                            failures))
+                        (message
+                         "✓ Converted %s → tag '%s': %d nodes succeeded, none failed"
+                         prop tag-id (plist-get result :values-set))))
                   (error
                    (message "✗ Error converting '%s': %s" prop (error-message-string err))
                    (push (list :property prop
@@ -2951,12 +3059,27 @@ For each selected property:
                                           (>= (plist-get r :values-set) 0)))
                                    results))
            (skipped (cl-count-if (lambda (r) (eq (plist-get r :status) 'skipped)) results))
-           (errors (cl-count-if (lambda (r) (eq (plist-get r :status) 'error)) results)))
+           (errors (cl-count-if (lambda (r) (eq (plist-get r :status) 'error)) results))
+           (successful-nodes
+            (cl-mapcan (lambda (result)
+                         (copy-sequence
+                          (or (plist-get result :successful-nodes) nil)))
+                       results))
+           (failures
+            (cl-mapcan (lambda (result)
+                         (copy-tree (or (plist-get result :failures) nil)))
+                       results)))
       (message "\n=== Batch Conversion Summary ===")
       (message "Total: %d properties" (length selected-props))
       (message "Completed: %d" completed)
       (message "Skipped: %d" skipped)
       (message "Errors: %d" errors)
+      (message "Successful nodes: %s"
+               (if successful-nodes
+                   (string-join successful-nodes ", ")
+                 "none"))
+      (message "Failed nodes: %s"
+               (supertag-migration--format-property-failures failures))
       (nreverse results))))
 
 (defun supertag-migration--insert-tag-in-org-file (node-id tag-id)
@@ -2994,10 +3117,7 @@ at the end of the headline (e.g., '* My Heading #tag')."
 PROPS-TABLE is the pre-collected properties table."
   (let* ((occurrences (supertag-migration--nodes-with-property props-table property-name))
          (field-type (supertag-migration--infer-field-type occurrences))
-         (field-id (supertag-sanitize-field-id property-name))
-         (values-set 0)
-         (tags-added 0)
-         (nodes-skipped 0))
+         (field-id (supertag-sanitize-field-id property-name)))
 
     (unless occurrences
       (error "Property '%s' not found in any nodes" property-name))
@@ -3008,38 +3128,13 @@ PROPS-TABLE is the pre-collected properties table."
                        :type ,field-type)))
       (supertag-tag-add-field tag-id field-def))
 
-    ;; For each node with this property, set the field value
-    (dolist (occurrence occurrences)
-      (let* ((node-id (car occurrence))
-             (value (cdr occurrence))
-             (node (supertag-node-get node-id)))
-        (if node
-            (let* ((node-tags (plist-get node :tags))
-                   (has-tag (and node-tags (member tag-id node-tags))))
-              (unless has-tag
-                ;; Add tag to database
-                (let ((updated (supertag-node-add-tag node-id tag-id)))
-                  (when updated
-                    (setq node updated
-                          node-tags (plist-get updated :tags)
-                          has-tag (and node-tags (member tag-id node-tags)))
-                    ;; Also insert #tag in the org file
-                    (supertag-migration--insert-tag-in-org-file node-id tag-id)
-                    (cl-incf tags-added))))
-              (if has-tag
-                  (progn
-                    (supertag-field-set node-id tag-id property-name value)
-                    (cl-incf values-set))
-                (cl-incf nodes-skipped)))
-          (cl-incf nodes-skipped))))
-
-    (list :property property-name
-          :tag tag-id
-          :field-id field-id
-          :field-type field-type
-          :values-set values-set
-          :tags-added tags-added
-          :nodes-skipped nodes-skipped)))
+    (append
+     (list :property property-name
+           :tag tag-id
+           :field-id field-id
+           :field-type field-type)
+     (supertag-migration--migrate-property-occurrences
+      occurrences tag-id property-name))))
 
 ;;;###autoload
 (defun supertag-migration-add-ids-to-org-headings (directory)

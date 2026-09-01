@@ -7,6 +7,7 @@
 ;;; Code:
 
 (require 'cl-lib)
+(require 'seq)
 (require 'supertag-services-query)
 (require 'supertag-services-ui)
 (require 'supertag-core-schema)
@@ -15,9 +16,13 @@
 (require 'supertag-ops-tag-merge)
 (require 'supertag-ops-schema)
 (require 'supertag-ops-global-field)
+(require 'supertag-ops-field)
 (require 'supertag-view-api)
 (require 'supertag-virtual-column)
 (require 'supertag-view-framework)
+(require 'supertag-schema-authority)
+(require 'supertag-ui-link-definition)
+(require 'supertag-view-link-definition)
 
 (declare-function supertag-view-table "supertag-view-table"
                   (data-source &optional columns view-config named-views))
@@ -58,7 +63,8 @@ tag contains its own ID, ensuring consistency for later processing."
      (lambda (id tag)
        (let ((node (copy-sequence tag)))
          (setq node (plist-put node :id id))
-         (setq node (plist-put node :label id))
+         (setq node (plist-put node :label
+                               (or (plist-get tag :name) id)))
          (puthash id node nodes-by-id)))
      tags-by-id)
     (cl-labels
@@ -106,14 +112,116 @@ tag contains its own ID, ensuring consistency for later processing."
       (and (> (point) (point-min))
            (get-text-property (1- (point)) 'supertag-context))))
 
+(define-error 'supertag-schema-type-change-cancelled
+  "Schema field type change cancelled")
+
+(defun supertag-schema--field-values (field-id)
+  "Return stored values for FIELD-ID as node/value plists.
+Entries are returned for every node bucket that contains FIELD-ID, even
+when the stored value itself is nil."
+  (let ((values (supertag-store-get-collection :field-values))
+        result)
+    (when (hash-table-p values)
+      (maphash
+       (lambda (node-id node-values)
+         (when (and (hash-table-p node-values)
+                    (ht-contains? node-values field-id))
+           (push (list :node-id node-id
+                       :value (gethash field-id node-values))
+                 result)))
+       values))
+    (nreverse result)))
+
+(defun supertag-schema--field-type-impact (field-id new-definition)
+  "Preview converting FIELD-ID values to NEW-DEFINITION's type.
+Return a plist with `:total', `:convertible', and `:failed'.  Each result
+entry records the node and original value; convertible entries also carry
+`:converted', while failures carry a human-readable `:error'."
+  (let (convertible
+        failed)
+    (dolist (entry (supertag-schema--field-values field-id))
+      (condition-case err
+          ;; Dry-run the same normalization + validation seam used by
+          ;; `supertag-field-set'.  Supplying the candidate definition via
+          ;; the existing lookup seam avoids copying type rules into View.
+          (let ((converted
+                 (cl-letf
+                     (((symbol-function 'supertag-field--definition)
+                       (lambda (_tag-id _field-name) new-definition)))
+                   (supertag-field--normalize-for-write
+                    "schema-impact-preview" field-id
+                    (plist-get entry :value) new-definition))))
+            (push (append entry (list :converted converted)) convertible))
+        (error
+         (push (append entry
+                       (list :error (error-message-string err)))
+               failed))))
+    (list :total (+ (length convertible) (length failed))
+          :convertible (nreverse convertible)
+          :failed (nreverse failed))))
+
+(defun supertag-schema--type-name (type)
+  "Return TYPE without the keyword colon for display."
+  (if (keywordp type)
+      (substring (symbol-name type) 1)
+    (format "%s" type)))
+
+(defun supertag-schema--impact-examples (entries convertible-p)
+  "Format up to three ENTRIES for an impact prompt.
+When CONVERTIBLE-P, show the converted value; otherwise show the error."
+  (if (null entries)
+      "none"
+    (mapconcat
+     (lambda (entry)
+       (if convertible-p
+           (format "%s: %S -> %S"
+                   (plist-get entry :node-id)
+                   (plist-get entry :value)
+                   (plist-get entry :converted))
+         (format "%s: %S (%s)"
+                 (plist-get entry :node-id)
+                 (plist-get entry :value)
+                 (plist-get entry :error))))
+     (seq-take entries 3)
+     "; ")))
+
+(defun supertag-schema--confirm-field-type-change
+    (field-id old-definition new-definition)
+  "Confirm FIELD-ID's OLD-DEFINITION to NEW-DEFINITION type change.
+The prompt previews conversions using the same conversion function used by
+normal field writes.  This schema edit deliberately does not rewrite stored
+values."
+  (let* ((old-type (plist-get old-definition :type))
+         (new-type (plist-get new-definition :type))
+         (impact (supertag-schema--field-type-impact field-id new-definition))
+         (convertible (plist-get impact :convertible))
+         (failed (plist-get impact :failed)))
+    (y-or-n-p
+     (format
+      (concat "Change global field '%s' type %s -> %s?\n"
+              "Impact: %d node(s) have stored values; %d can convert and %d will fail.\n"
+              "Convertible examples: %s\nFailure examples: %s\n"
+              "Stored values will NOT be rewritten. Failed values remain saved, "
+              "but future validation/editing may reject them. Apply schema change? ")
+      field-id
+      (supertag-schema--type-name old-type)
+      (supertag-schema--type-name new-type)
+      (plist-get impact :total)
+      (length convertible)
+      (length failed)
+      (supertag-schema--impact-examples convertible t)
+      (supertag-schema--impact-examples failed nil)))))
+
 (defun supertag-schema--rename-tag-at-point ()
   "Interactively rename the tag at the current line. Internal helper."
   (let* ((context (supertag-schema--get-context-at-point))
-         (old-name (plist-get context :tag-id))
+         (tag-id (plist-get context :tag-id))
+         (tag (supertag-tag-get tag-id))
+         (old-name (or (plist-get tag :name) tag-id))
          (new-name (read-string (format "Rename tag '%s' to: " old-name) nil nil old-name)))
     (if (and new-name (not (string-empty-p new-name)) (not (string= old-name new-name)))
         (progn
-          (supertag-tag-rename old-name new-name)
+          (supertag-tag-rename tag-id new-name)
           (message "Tag '%s' renamed to '%s'. Refreshing view..." old-name new-name)
           (supertag-schema-refresh))
       (message "Tag rename cancelled."))))
@@ -169,9 +277,39 @@ For inherited fields, jumps to the parent tag definition."
               (supertag-schema--goto-tag inherited-from))
 
           (if field-id
-              (progn
-                (supertag-global-field-edit-interactive field-id)
-                (supertag-schema-refresh))
+              (let ((original-update
+                     (symbol-function 'supertag-global-field-update)))
+                (condition-case nil
+                    (progn
+                      ;; Keep the established interactive editor and Ops
+                      ;; mutation path.  Intercept only its final update so a
+                      ;; type change can be previewed before any write occurs.
+                      (cl-letf
+                          (((symbol-function 'supertag-global-field-update)
+                            (lambda (candidate-id updater)
+                              (let* ((old-definition
+                                      (supertag-global-field-get candidate-id))
+                                     (new-definition
+                                      (funcall updater
+                                               (copy-tree old-definition))))
+                                (when (and
+                                       (not (eq
+                                             (plist-get old-definition :type)
+                                             (plist-get new-definition :type)))
+                                       (not
+                                        (supertag-schema--confirm-field-type-change
+                                         candidate-id old-definition
+                                         new-definition)))
+                                  (signal
+                                   'supertag-schema-type-change-cancelled
+                                   (list candidate-id)))
+                                (funcall original-update candidate-id
+                                         (lambda (_old) new-definition))))))
+                        (supertag-global-field-edit-interactive field-id))
+                      (supertag-schema-refresh))
+                  (supertag-schema-type-change-cancelled
+                   (message "Field '%s' type change cancelled; no schema or stored value changed."
+                            field-name))))
             (message "Field '%s' has no global definition." field-name)))))))
 
 ;;; --- Rendering ---
@@ -186,10 +324,11 @@ For inherited fields, jumps to the parent tag definition."
       (insert "Tags:\n")
       (dolist (root-tag tag-tree)
         (supertag-schema--render-tag-node root-tag))
+      (supertag-view-link-definition-insert-section)
       (supertag-view-helper-insert-simple-footer
-       "Add:    [a f] Field | [a n] Child Tag | [a r] Root Tag"
-       "Edit:   [e e] Edit Field | [e r] Rename | [e p] Parent | [e b] Bind Field"
-       "Delete: [d d] Delete | [d m] Delete Marked"
+       "Add:    [a f] Field | [a n] Child Tag | [a r] Root Tag | [a l] Link"
+       "Edit:   [e e] Field | [e r] Rename | [e p] Parent | [e b] Bind | [e l] Link"
+       "Action: [d d] Unbind field or delete globally | [d m] Delete/Unbind Marked"
        "Mark:   [m m] Mark | [m u] Unmark | [m U] Unmark All | [m e] Extend Marked"
        "View:   [v v] Custom View | [v t] Table | [?] Full Help | [q] Quit")
       (goto-char (point-min)))))
@@ -315,6 +454,7 @@ Reads global associations and definitions."
       (define-key add-map "n" #'supertag-schema--add-child-tag-at-point)  ; a n: Add Child Tag
       (define-key add-map "c" #'supertag-schema--add-child-tag-at-point)  ; a c: Compatibility alias
       (define-key add-map "r" #'supertag-schema--add-new-tag)             ; a r: Add Root Tag
+      (define-key add-map "l" #'supertag-schema--add-link-definition)       ; a l: Add Link Definition
       (define-key map "a" add-map))
 
     ;; ========== Edit Commands (e prefix) ==========
@@ -323,6 +463,7 @@ Reads global associations and definitions."
       (define-key edit-map "r" #'supertag-schema--rename-at-point)                  ; e r: Rename
       (define-key edit-map "p" #'supertag-view-schema-set-extends)                  ; e p: Edit Parent (extends)
       (define-key edit-map "b" #'supertag-schema--bind-existing-field-at-point)     ; e b: Bind Field
+      (define-key edit-map "l" #'supertag-schema--edit-link-definition-at-point) ; e l: Edit Link Definition
       (define-key map "e" edit-map))
 
     ;; ========== Delete Commands (d prefix) ==========
@@ -570,9 +711,77 @@ Offers choice between creating a new tag or selecting an existing tag."
                 (message "Bound field %s to tag %s" fid tag-id))))))
       (message "Not on a valid tag line.")))
 
+(defun supertag-schema--add-link-definition ()
+  "Create a Link Definition and refresh Schema View."
+  (interactive)
+  (supertag-ui-link-definition-create)
+  (supertag-schema-refresh))
+
+(defun supertag-schema--edit-link-definition-at-point ()
+  "Edit the Link Definition at point."
+  (interactive)
+  (let ((context (supertag-schema--get-context-at-point)))
+    (unless (eq (plist-get context :type) :link-definition)
+      (user-error "Not on a Link Definition line"))
+    (let* ((definition-id (plist-get context :link-definition-id))
+           (definition (supertag-link-definition-get definition-id))
+           (authority (supertag-schema-authority-get :link definition-id))
+           (module (or (plist-get authority :module)
+                       (plist-get definition :ontology-module)))
+           (managed-p (or (and authority
+                               (eq (plist-get authority :owner) :ontology))
+                          (eq (plist-get definition :managed-by) :ontology))))
+      (if managed-p
+          (progn
+            (unless module
+              (user-error "Managed Link Definition %s has no source module"
+                          definition-id))
+            (require 'supertag-view-ontology)
+            (supertag-ontology-goto-definition module))
+        (supertag-ui-link-definition-edit definition-id)
+        (supertag-schema-refresh)))))
+
+(defun supertag-schema--field-association-count (field-id)
+  "Return the number of tags directly associated with FIELD-ID."
+  (let ((associations
+         (supertag-store-get-collection :tag-field-associations))
+        (count 0))
+    (when (hash-table-p associations)
+      (maphash
+       (lambda (_tag-id entries)
+         (when (cl-find field-id entries
+                        :key (lambda (entry)
+                               (if (listp entry)
+                                   (plist-get entry :field-id)
+                                 entry))
+                        :test #'equal)
+           (cl-incf count)))
+       associations))
+    count))
+
+(defun supertag-schema--read-field-delete-action
+    (tag-id field-name field-id value-count)
+  "Ask how to remove FIELD-NAME from TAG-ID.
+FIELD-ID and VALUE-COUNT make the global-delete choice explicit."
+  (let* ((unbind-label
+          (format "Unbind from tag %s (keep global definition and %d node value(s))"
+                  tag-id value-count))
+         (delete-label
+          (and field-id
+               (format "Delete global field %s (remove definition, all bindings, and %d node value(s))"
+                       field-name value-count)))
+         (choices
+          (append (list (cons unbind-label :unbind))
+                  (when delete-label (list (cons delete-label :delete-global)))
+                  (list (cons "Cancel (make no changes)" :cancel))))
+         (choice
+          (completing-read "Field action: " (mapcar #'car choices) nil t)))
+    (cdr (assoc choice choices))))
+
 (defun supertag-schema--delete-at-point ()
-  "Interactively delete the tag or field at the current line.
-Dispatches to the correct deletion logic based on context."
+  "Interactively remove the tag or field at the current line.
+For a field, explicitly choose between unbinding it from this tag while
+retaining data, and deleting its global definition, bindings, and data."
   (interactive)
   (let ((context (supertag-schema--get-context-at-point)))
     (pcase (plist-get context :type)
@@ -580,23 +789,51 @@ Dispatches to the correct deletion logic based on context."
        (let* ((tag-id (plist-get context :tag-id))
              (field-name (plist-get context :field-name))
              (field-id (plist-get context :field-id))
-             (inherited-from (plist-get context :inherited-from)))
+             (inherited-from (plist-get context :inherited-from))
+             (value-count (and field-id
+                               (length
+                                (supertag-schema--field-values field-id)))))
          (if inherited-from
-             (message "Cannot delete: Field '%s' is inherited from '%s'. Delete it from the parent tag." field-name inherited-from)
-           (when (yes-or-no-p (format "Really delete field '%s' from tag '%s'?" field-name tag-id))
-             (if (and field-id (stringp field-id)
-                      (not (string-empty-p field-id)))
-                 (supertag-tag-disassociate-field tag-id field-id)
-               (supertag-tag-remove-field tag-id field-name))
-             (message "Field '%s' deleted. Refreshing view..." field-name)
-             (supertag-schema-refresh)))))
+             (message "Cannot remove inherited field '%s' here: it comes from '%s'. Go to the parent tag to unbind or delete it."
+                      field-name inherited-from)
+           (pcase (supertag-schema--read-field-delete-action
+                   tag-id field-name field-id (or value-count 0))
+             (:unbind
+              (if (and field-id (stringp field-id)
+                       (not (string-empty-p field-id)))
+                  (supertag-tag-disassociate-field tag-id field-id)
+                (supertag-tag-remove-field tag-id field-name))
+              (supertag-schema-refresh)
+              (message "Unbound field '%s' from tag '%s'; the global definition and %d stored node value(s) were preserved."
+                       field-name tag-id (or value-count 0)))
+             (:delete-global
+              (let ((association-count
+                     (supertag-schema--field-association-count field-id)))
+                (when
+                    (yes-or-no-p
+                     (format
+                      (concat "Globally DELETE field '%s'? This removes its definition, "
+                              "%d tag binding(s), %d stored node value(s), and their provenance. "
+                              "This cannot be undone. ")
+                      field-name association-count (or value-count 0)))
+                  (supertag-global-field-delete field-id t)
+                  (supertag-schema-refresh)
+                  (message "Deleted global field '%s': its definition, %d tag binding(s), and %d stored node value(s) were removed."
+                           field-name association-count
+                           (or value-count 0)))))
+             (_
+              (message "Field action cancelled; no binding, definition, or value changed."))))))
+      (:link-definition
+       (supertag-ui-link-definition-delete
+        (plist-get context :link-definition-id))
+       (supertag-schema-refresh))
       (:tag
        (let ((tag-id (plist-get context :tag-id)))
          (when (yes-or-no-p (format "DELETE tag '%s' and ALL its uses? This is irreversible." tag-id))
            (supertag-ops-delete-tag-everywhere tag-id)
            (supertag-schema-refresh))))
       (_
-       (message "Not on a valid tag or field line.")))))
+       (message "Not on a valid Schema line.")))))
 
 (defun supertag-schema--move-field-up ()
   "Move the field at the current line up in the tag's field list."
@@ -655,7 +892,8 @@ Tries three strategies in order:
         (wanted-tag (plist-get context :tag-id))
         (wanted-path (plist-get context :path))
         (wanted-field (plist-get context :field-name))
-        (wanted-origin (plist-get context :inherited-from)))
+        (wanted-origin (plist-get context :inherited-from))
+        (wanted-link (plist-get context :link-definition-id)))
     (goto-char (point-min))
     (while (and (not foundp) (not (eobp)))
       (let ((candidate
@@ -666,7 +904,9 @@ Tries three strategies in order:
                    (equal wanted-path (plist-get candidate :path))
                    (equal wanted-field (plist-get candidate :field-name))
                    (equal wanted-origin
-                          (plist-get candidate :inherited-from)))
+                          (plist-get candidate :inherited-from))
+                   (equal wanted-link
+                          (plist-get candidate :link-definition-id)))
           (setq foundp t))
         (unless foundp (forward-line 1))))
     foundp))
@@ -717,7 +957,10 @@ Tries three strategies in order:
           (:field
            (supertag-tag-remove-field (plist-get context :tag-id) (plist-get context :field-name)))
           (:tag
-           (supertag-ops-delete-tag-everywhere (plist-get context :tag-id)))))
+           (supertag-ops-delete-tag-everywhere (plist-get context :tag-id)))
+          (:link-definition
+           (supertag-link-definition-delete
+            (plist-get context :link-definition-id) nil))))
       (setq supertag-schema--marked-items nil)
       (supertag-schema-refresh)
       (message "Batch delete complete."))))
@@ -1015,18 +1258,21 @@ a parent tag and a child tag."
     (princ "  a f     Add Field to current tag\n")
     (princ "  a n     Add child (create new OR select existing)\n")
     (princ "  a c     Same as a n (compatibility alias)\n")
-    (princ "  a r     Add Root Tag (no parent)\n\n")
+    (princ "  a r     Add Root Tag (no parent)\n")
+    (princ "  a l     Add Link Definition\n\n")
 
     (princ "Edit Commands (prefix: e):\n")
     (princ "  e e     Edit Field definition (with pre-filled values)\n")
     (princ "  e r     Rename tag or field\n")
     (princ "  e p     Edit Parent (set extends)\n")
     (princ "  e b     Bind existing global field\n")
+    (princ "  e l     Edit Link Definition\n")
     (princ "  r       Rename (legacy shortcut)\n\n")
 
     (princ "Delete Commands (prefix: d):\n")
-    (princ "  d d     Delete item at point\n")
-    (princ "  d m     Delete all marked items\n")
+    (princ "  d d     Field: choose unbind (data kept) or global delete (definition + all data removed)\n")
+    (princ "          Tag/Link Definition: delete at point with confirmation\n")
+    (princ "  d m     Delete tags/links and unbind marked fields\n")
     (princ "  D       Delete marked (legacy shortcut)\n\n")
 
     (princ "Mark Commands (prefix: m):\n")
@@ -1056,6 +1302,9 @@ a parent tag and a child tag."
 
     (princ "Notes:\n")
     (princ "  - Field editing now uses pre-filled values from existing definition\n")
+    (princ "  - Changing a field type previews stored-value conversion impact; values are not rewritten\n")
+    (princ "  - Unbinding a field preserves its global definition and every stored node value\n")
+    (princ "  - Global field deletion removes the definition, every tag binding, stored value, and provenance\n")
     (princ "  - Inherited fields cannot be edited directly; jump to parent instead\n")
     (princ "  - Batch operations work on marked items across the entire schema\n")))
 

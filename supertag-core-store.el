@@ -22,10 +22,29 @@
   "The central hash table for all application state.
 Data is stored in a tree-like structure using nested hash tables.")
 
+(defvar supertag-store-read-only-context nil
+  "Non-nil while a trusted caller may read but must not mutate the Store.")
+
+(defun supertag-store-assert-mutable (&optional operation)
+  "Reject Store mutation in a read-only context.
+OPERATION is included in the diagnostic when supplied."
+  (when supertag-store-read-only-context
+    (error "Store mutation%s is forbidden in %s"
+           (if operation (format " (%s)" operation) "")
+           supertag-store-read-only-context)))
+
 (defconst supertag--store-collections
   '(:nodes
     :tags
     :relations
+    :link-definitions         ; Link schema; concrete instances remain in :relations
+    :ontology-bindings       ; logical ontology identity -> runtime entity binding
+    :ontology-modules        ; deployed module provenance
+    :ontology-migrations     ; applied ontology migration ledger
+    :ontology-functions      ; deployed read-only Function contracts
+    :ontology-actions        ; deployed Action contracts
+    :ontology-policies       ; deployed Action authorization contracts
+    :ontology-action-executions ; successful Action audit ledger
     ;; Legacy nested field values (node -> tag -> field); read-only migration
     ;; source, no production writer remains (task014).
     :fields
@@ -33,6 +52,7 @@ Data is stored in a tree-like structure using nested hash tables.")
     :field-definitions          ; field-id -> field plist
     :tag-field-associations     ; tag-id -> ordered list of association plists
     :field-values               ; node-id -> field-id -> value
+    :field-provenance           ; node-id -> field-id -> provenance plist (supertag-ops-field)
     :boards                     ; board-id -> board plist (whiteboard layouts)
     :queries                    ; query-name -> saved query plist
     :views                      ; view-id -> persisted view config plist
@@ -47,7 +67,10 @@ writes it, and old files still load their `:embeds' lines via the loader's
 normalization arms; the data is simply not persisted on the next save.")
 
 (defconst supertag--canonical-collections
-  '(:nodes :tags :relations :field-definitions
+  '(:nodes :tags :relations :link-definitions :field-definitions
+    :ontology-bindings :ontology-modules :ontology-migrations
+    :ontology-functions :ontology-actions :ontology-policies
+    :ontology-action-executions
     :boards :automations :sync-conflicts)
   "Collections expected to contain entity plists keyed by identifier.")
 
@@ -56,6 +79,7 @@ normalization arms; the data is simply not persisted on the next save.")
 
 (defun supertag-store--put-and-notify (collection id data &optional emit-event-p)
   "Internal helper to store DATA under COLLECTION/ID and optionally emit event."
+  (supertag-store-assert-mutable (list :put collection id))
   (let* ((bucket (supertag-store-get-collection collection))
          (existing (gethash id bucket supertag--not-found))
          (existed-p (not (eq existing supertag--not-found)))
@@ -123,6 +147,7 @@ When EMIT-EVENT-P is non-nil, emit :store-changed notification."
 
 (defun supertag-store-remove-entity (collection id)
   "Remove entity under COLLECTION/ID. Returns removed value or nil."
+  (supertag-store-assert-mutable (list :remove collection id))
   (let* ((bucket (supertag-store-get-collection collection))
          (old (and bucket (gethash id bucket))))
     (when old
@@ -240,6 +265,7 @@ Returns the normalized hash table and updates `supertag--store' when DATA is nil
 
 (defun supertag-store-put-field-value (node-id field-id value &optional emit-event-p)
   "Set VALUE for FIELD-ID on NODE-ID."
+  (supertag-store-assert-mutable (list :put-field-value node-id field-id))
   (let* ((root (supertag-store-get-collection :field-values))
          (node-table (gethash node-id root)))
     (unless (hash-table-p node-table)
@@ -272,6 +298,7 @@ Returns the normalized hash table and updates `supertag--store' when DATA is nil
 
 (defun supertag-store-remove-field-value (node-id field-id)
   "Remove FIELD-ID value for NODE-ID. Returns removed value or nil."
+  (supertag-store-assert-mutable (list :remove-field-value node-id field-id))
   (let* ((root (supertag-store-get-collection :field-values))
          (node-table (and (hash-table-p root) (gethash node-id root))))
     (when (and (hash-table-p node-table)
@@ -282,6 +309,59 @@ Returns the normalized hash table and updates `supertag--store' when DATA is nil
         (when (fboundp 'supertag-index-note-store-change)
           (supertag-index-note-store-change :field-values))
         (supertag-emit-event :store-changed (list :field-values node-id field-id) old nil)
+        old))))
+
+;;; --- Field Provenance (sidecar of :field-values) ---
+
+;; `:field-provenance' mirrors the node -> field nesting of `:field-values'.
+;; An entry records who asserted the value (`supertag-field-set' in
+;; supertag-ops-field.el owns the record shape); the value itself is never
+;; stored here, so readers of `:field-values' are unaffected.
+
+(defun supertag-store-put-field-provenance (node-id field-id record)
+  "Store provenance RECORD for FIELD-ID on NODE-ID."
+  (supertag-store-assert-mutable (list :put-field-provenance node-id field-id))
+  (let* ((root (supertag-store-get-collection :field-provenance))
+         (node-table (gethash node-id root)))
+    (unless (hash-table-p node-table)
+      ;; Record the bucket's absence first so a rollback removes it again
+      ;; instead of leaving an empty shell (see `supertag-store-put-field-value').
+      (supertag--transaction-record-old-value (list :field-provenance node-id) nil nil)
+      (setq node-table (ht-create))
+      (puthash node-id node-table root))
+    (let* ((had-value (ht-contains? node-table field-id))
+           (old-value (and had-value (gethash field-id node-table))))
+      (supertag--transaction-record-old-value
+       (list :field-provenance node-id field-id) had-value old-value))
+    (puthash field-id record node-table)
+    (when (fboundp 'supertag-index-note-store-change)
+      (supertag-index-note-store-change :field-provenance))
+    (supertag-emit-event :store-changed (list :field-provenance node-id field-id) nil record)
+    record))
+
+(defun supertag-store-get-field-provenance (node-id field-id &optional default)
+  "Return the provenance record for FIELD-ID on NODE-ID, or DEFAULT."
+  (let* ((root (supertag-store-get-collection :field-provenance))
+         (node-table (and (hash-table-p root) (gethash node-id root))))
+    (if (and (hash-table-p node-table)
+             (ht-contains? node-table field-id))
+        (gethash field-id node-table)
+      default)))
+
+(defun supertag-store-remove-field-provenance (node-id field-id)
+  "Remove the provenance record for FIELD-ID on NODE-ID.
+Returns the removed record or nil."
+  (supertag-store-assert-mutable (list :remove-field-provenance node-id field-id))
+  (let* ((root (supertag-store-get-collection :field-provenance))
+         (node-table (and (hash-table-p root) (gethash node-id root))))
+    (when (and (hash-table-p node-table)
+               (ht-contains? node-table field-id))
+      (let ((old (gethash field-id node-table)))
+        (supertag--transaction-record-old-value (list :field-provenance node-id field-id) t old)
+        (remhash field-id node-table)
+        (when (fboundp 'supertag-index-note-store-change)
+          (supertag-index-note-store-change :field-provenance))
+        (supertag-emit-event :store-changed (list :field-provenance node-id field-id) old nil)
         old))))
 
 ;;; --- Legacy Nested Field Collection (:fields) ---
@@ -336,6 +416,8 @@ nested `:fields' collection, creating the per-node and per-tag hash
 tables on demand. Records a rollback marker at each level the first
 time it is touched in an active transaction (see the Commentary above
 this section). Returns VALUE."
+  (supertag-store-assert-mutable
+   (list :put-legacy-field node-id tag-id field-name))
   (let* ((fields-root (supertag-store-get-collection :fields))
          (raw-node (gethash node-id fields-root))
          (node-table
@@ -380,6 +462,8 @@ this section). Returns VALUE."
 Records a rollback marker before mutating, mirroring
 `supertag-store-put-legacy-field'. Never creates node/tag tables that
 do not already exist."
+  (supertag-store-assert-mutable
+   (list :remove-legacy-field node-id tag-id field-name))
   (let* ((fields-root (supertag-store-get-collection :fields))
          (raw-node (gethash node-id fields-root))
          (node-table (cond ((hash-table-p raw-node) raw-node)
@@ -399,6 +483,8 @@ do not already exist."
   "Remove the complete legacy field table for NODE-ID and TAG-ID.
 Returns the removed table, or nil when absent.  The table-level write is
 recorded by the active transaction so a failed migration restores it."
+  (supertag-store-assert-mutable
+   (list :remove-legacy-tag-fields node-id tag-id))
   (let* ((fields-root (supertag-store-get-collection :fields))
          (node-table (gethash node-id fields-root))
          (tag-table (and (hash-table-p node-table)
@@ -512,6 +598,7 @@ Supports mixed structures: hash-tables and plists."
 
 In canonical mode PATH must reference either a collection (:nodes) or
 a collection entity (:nodes \"id\")."
+  (supertag-store-assert-mutable (list :update path))
   ;; Ensure store is initialized
   (supertag--ensure-store)
 
@@ -548,6 +635,7 @@ a collection entity (:nodes \"id\")."
 
 (defun supertag-delete (path)
   "Atomically delete a value from the central store at PATH."
+  (supertag-store-assert-mutable (list :delete path))
   ;; Ensure store is initialized
   (supertag--ensure-store)
 
@@ -579,6 +667,7 @@ a collection entity (:nodes \"id\")."
   "Clear the entire data store.
 This is primarily intended for testing and system resets."
   (interactive)
+  (supertag-store-assert-mutable :clear)
   (setq supertag--store (ht-create))
   (when (fboundp 'supertag-index-rebuild-all)
     (supertag-index-rebuild-all))
@@ -595,6 +684,45 @@ Each function receives a plist containing at least
   "Hook run after `supertag-ops-commit`.
 Each function receives a plist containing the commit payload plus
 `:current' and `:changed' keys.")
+
+(defvar supertag-ops-defer-events nil
+  "Non-nil while `supertag-ops-commit' must defer post-mutation delivery.")
+
+(defvar supertag-ops-deferred-events nil
+  "Dynamically accumulated post-mutation event bundles.")
+
+(defvar supertag-ops-deferred-event-errors nil
+  "Captured deferred event delivery failures, newest first.")
+
+(defun supertag-ops--deliver-event-bundle (bundle)
+  "Deliver one committed operation BUNDLE.
+Store events are emitted only for a changed operation.  The compatibility
+`supertag-after-operation-hook' still runs for no-op operations, matching the
+non-deferred `supertag-ops-commit' contract."
+  (let ((event (plist-get bundle :event))
+        (event-payload (plist-get bundle :event-payload))
+        (path (plist-get bundle :path))
+        (previous (plist-get bundle :previous))
+        (current (plist-get bundle :current)))
+    (when (plist-get event :changed)
+      (supertag-emit-event :store-committed event-payload)
+      (when path
+        (supertag-emit-event :store-changed path previous current)))
+    (run-hook-with-args 'supertag-after-operation-hook event)))
+
+(defun supertag-ops-flush-deferred-events (bundles)
+  "Deliver committed operation BUNDLES after their outer transaction.
+
+Failures are isolated because the Store has already committed.  They are
+recorded in `supertag-ops-deferred-event-errors'."
+  (dolist (bundle bundles)
+    (condition-case err
+        (supertag-ops--deliver-event-bundle bundle)
+      (error
+       (push (list :bundle bundle :error (error-message-string err))
+             supertag-ops-deferred-event-errors)
+       (message "[supertag] Deferred operation event failed: %s"
+                (error-message-string err))))))
 
 (defun supertag-ops-commit (&rest spec)
   "Execute a datastore mutation described by SPEC and broadcast a unified event.
@@ -661,13 +789,18 @@ Returns the updated entity when available, otherwise falls back to :result or :p
                    (not (plist-get spec :suppress-mark-dirty))
                    (fboundp 'supertag-mark-dirty))
           (supertag-mark-dirty))
-        (when changed
-          (let ((event-payload (plist-put event :result result)))
-            (supertag-emit-event :store-committed event-payload)
-            ;; Backward compatible signal for existing subscribers.
-            (when path
-              (supertag-emit-event :store-changed path previous current))))
-        (run-hook-with-args 'supertag-after-operation-hook event)
+        (let ((bundle
+               (list :event event
+                     :event-payload (plist-put
+                                     (copy-tree event)
+                                     :result result)
+                     :path path :previous previous :current current)))
+          (if supertag-ops-defer-events
+              (push bundle supertag-ops-deferred-events)
+            (when changed
+              (supertag-ops--deliver-event-bundle bundle))
+            (unless changed
+              (run-hook-with-args 'supertag-after-operation-hook event))))
         (cond
          ((plist-member spec :return) (plist-get spec :return))
          (current current)

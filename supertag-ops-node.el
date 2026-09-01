@@ -149,6 +149,7 @@ This operation is atomic and ensures no dangling references remain."
                       (supertag-relation-delete-for-node node-id)
                       (supertag-store-remove-entity :fields node-id)
                       (supertag-store-remove-entity :field-values node-id)
+                      (supertag-store-remove-entity :field-provenance node-id)
                       (supertag-store-remove-entity :nodes node-id)
                       nil)))))))
 

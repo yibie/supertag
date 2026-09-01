@@ -30,6 +30,9 @@
 (declare-function supertag-view-node--goto-field "supertag-view-node" (&optional tag-id field-name))
 (declare-function supertag-view-node-edit-at-point "supertag-view-node" ())
 (declare-function supertag-view-build-node-state "supertag-services-ui" (node-id))
+(declare-function supertag-reference-materialize-at-point
+                  "supertag-ui-reference"
+                  (target-id title))
 (defvar supertag-view-node--current-node-id) ; For supertag--rebuild-all-indexes
 
 ;;; --- Customization ---
@@ -438,9 +441,14 @@ current file and inserted into the target file at a chosen position."
 
             ;; 5. KEY DIFFERENCE: Replace original content with a link
             (delete-region begin end)
-            (insert (make-string original-level ?*) " "
-                    (format "[[id:%s][%s]]\n" node-id title))
-            (save-buffer)
+            ;; The headline identifies the stub; its body owns the backlink.
+            ;; The reference extractor intentionally ignores headline titles.
+            (insert (make-string original-level ?*) " " (or title "MOVED") "\n\n")
+            (backward-char 1)
+            (require 'supertag-ui-reference)
+            (let ((inhibit-message t))
+              (supertag-reference-materialize-at-point
+               node-id (or title "MOVED")))
 
             (message "Node %s moved and link created." node-id)))))))
 
@@ -493,12 +501,13 @@ Works for both heading nodes and file nodes (level 0)."
              (link-exists (save-excursion
                             (goto-char (car bounds))
                             (re-search-forward link-pattern (cdr bounds) t))))
-        (unless link-exists
+        (if link-exists
+            (supertag-ui--reproject-containing-node from-id)
           (unless (<= (car bounds) (point) (cdr bounds))
             (goto-char (car bounds)))
-          (insert (supertag-node-format-link to-id to-title))
-          (save-buffer))
-        (supertag-ui--reproject-containing-node from-id)
+          (require 'supertag-ui-reference)
+          (let ((inhibit-message t))
+            (supertag-reference-materialize-at-point to-id to-title)))
         (message "Reference added.")))))
 
 (defun supertag-ui--create-heading-node (title target-file insert-info)
@@ -525,7 +534,8 @@ Works for both heading nodes and file nodes (level 0)."
 
 (defun supertag-ui--replace-region-with-reference
     (beg-marker end-marker from-id to-id title)
-  "Replace marked text with FROM-ID's Document Link to TO-ID titled TITLE."
+  "Implement `supertag-reference-materialize' for FROM-ID, TO-ID, and TITLE.
+This private helper is the materializer's only low-level buffer mutation."
   (goto-char beg-marker)
   (delete-region beg-marker end-marker)
   (insert (supertag-node-format-link to-id title))
@@ -537,43 +547,6 @@ Works for both heading nodes and file nodes (level 0)."
     (user-error
      "The Org link was saved, but its Document Link projection failed")))
 
-(defun supertag-add-reference-and-create (beg end)
-  "Create a new node from the selected region and replace it with a link.
-Interactively asks for a target location to save the new node."
-  (interactive "r")
-  (let ((title (buffer-substring-no-properties beg end)))
-    (when (or (null title) (string-empty-p title))
-      (user-error "Region is empty. Cannot create a node."))
-    ;; Creating the source ID may insert a property drawer before the region.
-    ;; Markers keep the selected text stable across that buffer mutation.
-    (let ((beg-marker (copy-marker beg))
-          (end-marker (copy-marker end t)))
-      (unwind-protect
-          (let* ((from-id (supertag-ui--get-containing-node-at-point))
-                 target-file
-                 insert-info
-                 new-node-id)
-            (unless from-id
-              (user-error "The source cannot own a reference."))
-            (supertag-ui--ensure-node-synced from-id)
-            (unless (supertag-node-get from-id)
-              (user-error "The source node could not be synchronized."))
-            (setq target-file
-                  (expand-file-name
-                   (read-file-name "Create node in file: " nil nil t))
-                  insert-info
-                  (when (file-exists-p target-file)
-                    (supertag-ui-select-insert-position target-file)))
-            (unless insert-info
-              (user-error "No valid insert position selected. Aborting."))
-            (setq new-node-id
-                  (supertag-ui--create-heading-node
-                   title target-file insert-info))
-            (supertag-ui--replace-region-with-reference
-             beg-marker end-marker from-id new-node-id title)
-            (message "Node '%s' created and linked." title))
-        (set-marker beg-marker nil)
-        (set-marker end-marker nil)))))
 
 (defun supertag-remove-reference ()
   "Remove a source-owned Document Link from the current node."
@@ -674,19 +647,18 @@ new tag name, bypassing fuzzy completion matching."
                                token (length node-ids))
                      (format "Tag '%s' does not exist. Create and add it to %d node(s)? "
                              token (length node-ids)))))
-          (unless tag-id
-            (setq tag-id (plist-get (supertag-tag-create `(:name ,token)) :id)))
           (dolist (node-id node-ids)
             (unless (supertag-node-get node-id)
               (when-let* ((marker (supertag-ui--find-node-marker node-id)))
                 (with-current-buffer (marker-buffer marker)
                   (goto-char marker)
-                  (supertag-node-sync-at-point))))
-            (supertag-service-org-add-tag
-             node-id tag-id
-             (if batch-mode
-                 supertag-batch-tag-insert-position
-               current-marker)))
+                  (supertag-node-sync-at-point)))))
+          (setq tag-id
+                (supertag-capture-add-tag-to-nodes
+                 node-ids token
+                 (if batch-mode
+                     supertag-batch-tag-insert-position
+                   current-marker)))
           (message "Tag '%s' added to %d node(s)." tag-id (length node-ids)))))))
 
 (defun supertag-remove-tag-from-node ()
@@ -786,8 +758,62 @@ This command reads the authoritative list of tags from the database."
 
 ;;; --- Capture Commands ---
 
-(defvar supertag-capture--last-node-id nil
-  "Stores the ID of the last node created during capture for enrichment.")
+(defun supertag-edit-fields (&optional node-id tag-id)
+  "Edit all fields for one Tag on NODE-ID in a continuous pass.
+
+Each prompt carries the existing value as its default.  Changed values are
+committed together through `supertag-field-set-many', whose transaction calls
+`supertag-field-set' for normalization and validation.  When NODE-ID or TAG-ID
+is omitted, use the node at point and prompt only when it has multiple Tags.
+Return the number of changed fields."
+  (interactive)
+  (let* ((node-id (or node-id (supertag-ui--get-containing-node-at-point))))
+    (unless node-id
+      (user-error "No Supertag node at point"))
+    (supertag-ui--ensure-node-synced node-id)
+    (unless (supertag-node-get node-id)
+      (user-error "Node '%s' is not available in the Store" node-id))
+    (let* ((tag-ids (supertag-view--resolve-node-tags node-id))
+           (selected-tag
+            (or tag-id
+                (cond
+                 ((null tag-ids) nil)
+                 ((null (cdr tag-ids)) (car tag-ids))
+                 (t (supertag-ui-read-tag
+                     "Edit all fields for Tag: " tag-ids nil nil))))))
+      (unless selected-tag
+        (user-error "Node '%s' has no Tags with editable fields" node-id))
+      (unless (member selected-tag tag-ids)
+        (user-error "Tag '%s' is not attached to node '%s'"
+                    selected-tag node-id))
+      (let ((fields (supertag-tag-get-all-fields selected-tag))
+            (changes nil))
+        (unless fields
+          (user-error "Tag '%s' has no editable fields" selected-tag))
+        (dolist (field fields)
+          (let* ((field-name (plist-get field :name))
+                 (current (supertag-field-get-with-default
+                           node-id selected-tag field-name))
+                 (new-value (supertag-ui-read-field-value field current)))
+            (unless (or (equal new-value current)
+                        (and (null current)
+                             (or (null new-value)
+                                 (and (stringp new-value)
+                                      (string-empty-p new-value)))))
+              (push (list :tag selected-tag
+                          :field field-name
+                          :value new-value
+                          :provenance '(:origin :human))
+                    changes))))
+        (setq changes (nreverse changes))
+        (when changes
+          (supertag-field-set-many node-id changes))
+        (when (called-interactively-p 'interactive)
+          (message "%s field%s updated for Tag '%s'"
+                   (length changes)
+                   (if (= (length changes) 1) "" "s")
+                   selected-tag))
+        (length changes)))))
 
 (defun supertag-capture (&optional target-file headline)
   "Independent capture command for Supertag.
@@ -797,13 +823,25 @@ HEADLINE is optional headline text."
   (interactive)
 
   ;; Phase 1: Get capture details
-  (let* ((capture-info (supertag-capture-interactive-headline))
+  (let* ((source-file (buffer-file-name))
+         (source-position (point))
+         (capture-info (supertag-capture-interactive-headline))
          (full-title (plist-get capture-info :headline))
          (selected-tags (plist-get capture-info :tags))
-         (target-file (expand-file-name (or target-file (read-file-name "Capture to file: "))))
+         (target-file
+          (expand-file-name
+           (or target-file (supertag-capture-read-target-file))))
          ;; Optional body content below the headline
          (body (read-string "Body (optional, RET to skip): "))
-         (insert-info (supertag-ui-select-insert-position target-file))
+         (suggested-position
+          (and source-file
+               (file-equal-p (expand-file-name source-file) target-file)
+               source-position))
+         (insert-info
+          (if suggested-position
+              (supertag-ui-select-insert-position
+               target-file suggested-position)
+            (supertag-ui-select-insert-position target-file)))
          (insert-pos (plist-get insert-info :position))
          (insert-level (plist-get insert-info :level)))
 
@@ -814,7 +852,7 @@ HEADLINE is optional headline text."
     (let ((new-node-id (supertag-node-identity-new)))
       (supertag-capture--insert-node-into-buffer
        (find-file-noselect target-file)
-       insert-pos insert-level full-title selected-tags body new-node-id
+       insert-pos insert-level full-title nil body new-node-id
        supertag-capture-tag-position)
 
       ;; Phase 3: Sync and enrich
@@ -822,29 +860,36 @@ HEADLINE is optional headline text."
         (when node-id
           (supertag-node-create (list :id node-id
                                       :title full-title
-                                      :tags selected-tags
+                                      :tags nil
                                       :file target-file))
-          (message "Node %s created in %s" node-id (file-name-nondirectory target-file))
-
-          ;; Phase 4: Auto field enrichment for tags with fields
-          (when selected-tags
-            (let ((fields (supertag-capture--get-fields-for-tags selected-tags)))
-              (when fields
-                (let* ((field-values (supertag-capture--prompt-for-field-values fields))
-                       (batch-entries
-                        (cl-loop for fv in field-values append
-                                 (cl-loop for tag-id in selected-tags
-                                          collect (list :tag tag-id
-                                                        :field (car fv)
-                                                        :value (cdr fv))))))
-                  (when batch-entries
-                    (supertag-field-set-many node-id batch-entries)))))))
-
-          ;; Phase 5: Optional manual field enrichment
-          (when (y-or-n-p "Add additional properties to this node? ")
-            (supertag-capture-enrich-node node-id))
-
-          node-id))))
+          (setq selected-tags
+                (supertag-capture-add-tags-to-nodes
+                 (list node-id)
+                 (cl-delete-duplicates selected-tags :test #'equal)
+                 supertag-capture-tag-position))
+          ;; Phase 4: One optional continuous field pass per Tag schema.
+          (let* ((editable-tags
+                  (cl-remove-if-not
+                   (lambda (tag-id) (supertag-tag-get-all-fields tag-id))
+                   selected-tags))
+                 (fields-deferred
+                  (and editable-tags
+                       (not (y-or-n-p
+                             "Fill fields now? (No: use M-x supertag-edit-fields later) ")))))
+            (unless fields-deferred
+              (dolist (tag-id editable-tags)
+                (supertag-edit-fields node-id tag-id)))
+            (supertag-capture-remember-target-file target-file)
+            (message "Node %s created in %s%s%s"
+                     node-id
+                     (file-name-nondirectory target-file)
+                     (if selected-tags
+                         ""
+                       "; Tags skipped—use M-x supertag-add-tag later")
+                     (if fields-deferred
+                         "; fields skipped—use M-x supertag-edit-fields later"
+                       "")))
+          node-id)))))
 
 
 

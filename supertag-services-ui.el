@@ -42,41 +42,81 @@ all subheadings proportionally."
                              )))))
       (buffer-string))))
 
-    (defun supertag-ui-select-insert-position (file)
-    "Interactively let user select an insert position in FILE.
-  This provides a two-step selection for clarity.
-  Returns a plist (:position POS :level LVL)."
-    (unless file
-      (user-error "FILE parameter cannot be nil"))
-    (unless (file-exists-p file)
-      (user-error "File does not exist: %s" file))
-    (with-current-buffer (find-file-noselect file)
-      (let* ((headlines (org-map-entries
-                         #'(lambda ()
+(defun supertag-ui--safe-current-insert-position (position)
+  "Return a safe Org headline insertion point at or after POSITION.
+When POSITION is already on a heading, keep that heading boundary.  Inside a
+subtree, move to its end so a new sibling cannot split existing prose.  In the
+file preamble, use the next heading boundary or the end of the file."
+  (save-excursion
+    (save-restriction
+      (widen)
+      (goto-char position)
+      (cond
+       ((org-at-heading-p)
+        (list :position (line-beginning-position)
+              :level (org-outline-level)))
+       ((org-before-first-heading-p)
+        (let ((next-heading
+               (save-excursion
+                 (when (re-search-forward org-heading-regexp nil t)
+                   (line-beginning-position)))))
+          (list :position (or next-heading (point-max)) :level 1)))
+       (t
+        (org-back-to-heading t)
+        (let ((level (org-outline-level)))
+          (org-end-of-subtree t t)
+          (list :position (point) :level level)))))))
+
+(defun supertag-ui-select-insert-position (file &optional suggested-position)
+  "Interactively let user select an insert position in FILE.
+SUGGESTED-POSITION, when valid in FILE, makes the current point the default.
+Without it, file end is the default.  Returns (:position POS :level LVL)."
+  (unless file
+    (user-error "FILE parameter cannot be nil"))
+  (unless (file-exists-p file)
+    (user-error "File does not exist: %s" file))
+  (with-current-buffer (find-file-noselect file)
+    (let* ((suggested
+            (cond
+             ((and (markerp suggested-position)
+                   (eq (marker-buffer suggested-position) (current-buffer)))
+              (marker-position suggested-position))
+             ((and (integerp suggested-position)
+                   (<= (point-min) suggested-position)
+                   (<= suggested-position (point-max)))
+              suggested-position)))
+           (headlines (org-map-entries
+                       #'(lambda ()
                            (list (org-get-heading t t) (point) (org-outline-level)))
-                         t 'file))
-             (options '("File Top" "File End" "Under Heading..." "After Heading..."))
-             (choice (completing-read "Insert position: " options nil t)))
-        (cond
-         ((string= choice "File Top")
-          (list :position (point-min) :level 1))
-         ((string= choice "File End")
-          (list :position (point-max) :level 1))
-         ((or (string= choice "Under Heading...") (string= choice "After Heading..."))
-          (let* ((headline-titles (mapcar #'car headlines))
-                 (selected-title (completing-read "Select target heading: " headline-titles nil t))
-                 (headline-info (assoc selected-title headlines)))
-            (when headline-info
-              (let* ((pos (nth 1 headline-info))
-                     (level (nth 2 headline-info)))
-                (goto-char pos)
-                (if (string= choice "Under Heading...")
-                    (list :position (save-excursion (org-end-of-subtree t) (point))
-                          :level (1+ level))
-                  ;; After Heading...
-                  (list :position (save-excursion (org-end-of-subtree t t) (point))
-                        :level level))))))
-         (t nil)))))
+                       t 'file))
+           (options (append (when suggested '("Current Position"))
+                            '("File Top" "File End"
+                              "Under Heading..." "After Heading...")))
+           (default (if suggested "Current Position" "File End"))
+           (choice (completing-read
+                    "Insert position: " options nil t nil nil default)))
+      (cond
+       ((string= choice "Current Position")
+        (supertag-ui--safe-current-insert-position suggested))
+       ((string= choice "File Top")
+        (list :position (point-min) :level 1))
+       ((string= choice "File End")
+        (list :position (point-max) :level 1))
+       ((or (string= choice "Under Heading...") (string= choice "After Heading..."))
+        (let* ((headline-titles (mapcar #'car headlines))
+               (selected-title (completing-read "Select target heading: " headline-titles nil t))
+               (headline-info (assoc selected-title headlines)))
+          (when headline-info
+            (let* ((pos (nth 1 headline-info))
+                   (level (nth 2 headline-info)))
+              (goto-char pos)
+              (if (string= choice "Under Heading...")
+                  (list :position (save-excursion (org-end-of-subtree t) (point))
+                        :level (1+ level))
+                ;; After Heading...
+                (list :position (save-excursion (org-end-of-subtree t t) (point))
+                      :level level))))))
+       (t nil)))))
 
 (defun supertag-goto-node (node-id &optional other-window)
   "Navigate to the location of NODE-ID based on data in the supertag store.
@@ -182,20 +222,27 @@ File nodes (level 0) get a \"📄 \" prefix and fall back to filename when untit
                 (format "  (in %s)" (file-name-nondirectory file))
               "  [orphaned]"))))
 
-(defun supertag-ui-select-node (&optional prompt use-cache with-preview)
+(defun supertag-ui-format-node-display (node-data)
+  "Return the public human-readable display string for NODE-DATA."
+  (supertag-ui--format-node-display node-data))
+
+(defun supertag-ui-select-node (&optional prompt use-cache with-preview initial)
   "Interactively prompt user to select a node.
 PROMPT is the prompt string (defaults to 'Select node: ').
 USE-CACHE when non-nil uses cached data for better performance.
 WITH-PREVIEW when non-nil enables live preview in another window
 if a supported completion framework (Ivy, Vertico) is active.
+INITIAL is an existing node ID offered as the completion default.
 Returns the selected node's ID, or nil."
   (let* ((prompt-str (or prompt "Select node: "))
          (candidates (if use-cache
                          (supertag-ui--get-cached-nodes)
                        (supertag-ui--build-node-candidates)))
+         (default-display (and initial (car (rassoc initial candidates))))
          (supertag-ui--select-node-candidates candidates)) ; For external hooks
     (if (not (and with-preview candidates))
-        (let ((selected (completing-read prompt-str candidates nil t)))
+        (let ((selected (completing-read
+                         prompt-str candidates nil t nil nil default-display)))
           (when selected (cdr (assoc selected candidates))))
       (let ((preview-func (lambda (id) (when id (supertag-goto-node id t)))))
         (cond
@@ -207,6 +254,7 @@ Returns the selected node's ID, or nil."
                       (funcall preview-func id))))
                  (selection (ivy-read prompt-str (mapcar #'car candidates)
                                       :require-match t
+                                      :preselect default-display
                                       :history 'supertag-ui-select-node-history
                                       :caller 'supertag-ui-select-node)))
             (when selection (cdr (assoc selection candidates)))))
@@ -220,12 +268,15 @@ Returns the selected node's ID, or nil."
             (unwind-protect
                 (progn
                   (add-hook 'vertico-selection-hook preview-hook)
-                  (setq selection (completing-read prompt-str candidates nil t)))
+                  (setq selection (completing-read
+                                   prompt-str candidates nil t nil nil
+                                   default-display)))
               (remove-hook 'vertico-selection-hook preview-hook))
             (when selection (cdr (assoc selection candidates)))))
           (t
            (message "Live preview supported with Ivy or Vertico. Falling back to default.")
-           (let ((selected (completing-read prompt-str candidates nil t)))
+           (let ((selected (completing-read
+                            prompt-str candidates nil t nil nil default-display)))
              (when selected (cdr (assoc selected candidates))))))))))
 
 (defun supertag-ui-select-multiple-nodes (&optional prompt use-cache initial with-preview)
@@ -377,16 +428,44 @@ Returns the new value entered by the user."
          (prompt (format "New value for %s: " field-name))
          (options (plist-get field-def :options)))
     (pcase field-type
-      (:options (completing-read prompt options nil t nil))
+      (:options
+       (let* ((current-options
+               (cond
+                ((null current-value) nil)
+                ((and (listp current-value) (not (stringp current-value)))
+                 (copy-sequence current-value))
+                ((and (stringp current-value)
+                      (not (string-empty-p current-value)))
+                 (if (string-match-p "," current-value)
+                     (split-string current-value "," t "[ \t\n\r]+")
+                   (list current-value)))
+                (t (list (format "%s" current-value)))))
+              (initial-input
+               (when current-options
+                 (concat (string-join current-options ", ") ", ")))
+              (selected
+               (completing-read-multiple
+                (format "Options for %s (edit to add/remove): " field-name)
+                options nil t initial-input)))
+         (pcase selected
+           ('() nil)
+           (`(,single) single)
+           (_ selected))))
       (:tag (supertag-ui--read-tag-field current-value))
       (:node-reference
-       (let* ((initial (supertag-field-normalize-node-reference-list current-value))
-              (selected (supertag-ui-select-multiple-nodes
-                         (format "Edit links for %s" field-name)
-                         t
-                         initial))
-              (packed (supertag-field-pack-node-reference-value selected)))
-         packed))
+       (if (or (plist-get field-def :multiple)
+               (memq (plist-get field-def :cardinality) '(:many many))
+               (equal (plist-get field-def :cardinality) "many")
+               (consp current-value))
+           (let* ((initial
+                   (supertag-field-normalize-node-reference-list current-value))
+                  (selected (supertag-ui-select-multiple-nodes
+                             (format "Edit links for %s" field-name)
+                             t
+                             initial)))
+             (supertag-field-pack-node-reference-value selected))
+         (supertag-ui-select-node
+          (format "Node for %s: " field-name) t nil current-value)))
       (:date (supertag-field-read-date-value prompt))
       (:timestamp (supertag-field-read-timestamp-value prompt))
       (:boolean (if (y-or-n-p (format "%s: " (replace-regexp-in-string ": $" "" prompt))) "true" "false"))

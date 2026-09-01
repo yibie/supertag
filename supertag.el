@@ -428,6 +428,7 @@ active vault when `supertag-sync-auto-start` is non-nil."
 (require 'supertag-ops-node)
 (require 'supertag-ops-tag)
 (require 'supertag-ops-field)
+(require 'supertag-ops-link-definition)
 (require 'supertag-ops-relation)
 (require 'supertag-ops-schema)
 (require 'supertag-ops-batch)
@@ -439,11 +440,18 @@ active vault when `supertag-sync-auto-start` is non-nil."
 
 ;; --- Service Functions (services) ---
 (require 'supertag-services-query)
+(require 'supertag-query-link)
+(require 'supertag-services-link)
+(require 'supertag-services-reference)
+(require 'supertag-services-mention)
 (require 'supertag-services-sync)
 (require 'supertag-services-ui)
 (require 'supertag-services-capture)
 (require 'supertag-services-embed)
 (require 'supertag-services-scheduler)
+
+;; --- Agent-facing plain-data API (callee surface for bridges) ---
+(require 'supertag-api)
 
 
 ;; --- User Interface (ui) ---
@@ -452,6 +460,9 @@ active vault when `supertag-sync-auto-start` is non-nil."
 (require 'supertag-ui-query-block)
 (require 'supertag-ui-search)
 (require 'supertag-ui-completion)
+(require 'supertag-ui-link)
+(require 'supertag-ui-reference)
+(require 'supertag-ui-mention)
 
 ;; --- View ---
 (require 'supertag-view-framework)
@@ -463,11 +474,15 @@ active vault when `supertag-sync-auto-start` is non-nil."
 (require 'supertag-view-helper)
 (require 'supertag-concept)
 (require 'supertag-view-svg-tag)
+(require 'supertag-view-link)
+(require 'supertag-view-reference)
+(require 'supertag-view-mention)
 (require 'supertag-view-node)
 (require 'supertag-view-stream)
 (require 'supertag-view-table)
 (require 'supertag-view-kanban)
-(require 'supertag-smart-key)
+(require 'supertag-ui-act)
+(require 'supertag-ui-embark)
 
 ;; --- RAG ---
 ;; (archived: supertag-rag, supertag-ui-chat — moved to archive/)
@@ -679,6 +694,10 @@ Consider running: M-x supertag-reindex-org" db-file)
   (add-hook 'emacs-startup-hook #'supertag-init))
 (add-hook 'org-mode-hook #'supertag-vault-auto-activate)
 (add-hook 'org-mode-hook #'supertag-sync-setup-realtime-hooks)
+
+
+;; Declarative ontology modules are optional and remain inert until applied.
+(require 'supertag-ontology nil t)
 
 (provide 'supertag)
 

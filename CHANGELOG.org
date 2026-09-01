@@ -1,5 +1,174 @@
 * Changelog
 * [Unreleased]
+** Field-value provenance and plain-data agent API
+- Field values can carry a provenance record in the new =:field-provenance=
+  Store collection (node -> field -> plist): =:origin= (=:agent= or
+  =:human=), =:at=, =:model=, =:source-hash= (the node text hash the value was
+  derived from) and =:note=. Values stay scalar in =:field-values=; provenance
+  never changes a value. =supertag-field-set= takes an optional PROVENANCE
+  argument; a writer that passes none drops an earlier record when it changes
+  the value and keeps it otherwise. Added =supertag-field-provenance=,
+  =supertag-field-confirm= (upgrade to =:human=), =supertag-field-stale-p=
+  (agent value whose =:source-hash= no longer matches the node =:hash=);
+  =supertag-field-set-many= accepts =:provenance=. Field removal, node
+  deletion, global-field pruning, transaction rollback, canonical persistence,
+  and conflict resolution cover the sidecar.
+- Node View shows agent-written values with an =⟨AI⟩= badge (=⟨AI · outdated⟩=
+  when stale) and =c= confirms the value at point; Table View marks such cells
+  =⟨AI⟩= / =⟨AI?⟩=. Values edited in Node View, Table View, or Kanban are
+  recorded as =:human=.
+- Added =supertag-api.el=, loaded by =supertag.el=: six plain-data functions
+  for an agent host (=supertag-api-query=, =-node=, =-schema=, =-set-field=,
+  =-link=, =-add-field=), =supertag-api-catalog= declaring each function's
+  effect (=:read= / =:write=) and parameters, and =supertag-api-json=. Writes
+  go through the existing Ops functions, validation, and transactions;
+  =set-field= records agent provenance bound to the node's current hash;
+  =link= creates typed Links only, never document references.
+- Tests: =tests/supertag-field-provenance-test.el=, =tests/supertag-api-test.el=,
+  =tests/supertag-view-provenance-test.el=.
+
+** Runtime verification and fixes
+- Executed every ERT suite under =tests/= on Emacs 31 for the first time
+  (12 suites, 225 tests) and fixed the runtime defects this exposed:
+  =supertag-ontology-model= used a bare =nil= pcase pattern that stopped
+  =(require 'supertag)= on Emacs 31; =supertag-ontology-apply= referenced an
+  undeclared dynamic variable; =supertag-with-transaction= captured a body
+  variable named =result=, so migration =transform-field= wrote =nil= into
+  every field; =:options= values were normalized into lists that
+  =supertag-field-validate= then rejected, and boolean =false= was rejected;
+  =json-parse-string= was called with an invalid =:array-type=.
+- Deployed Ontology Types answer to their declaration key as a Tag alias
+  (=#project= binds to =(type project :label "Project")=) and =type= accepts
+  =:aliases=. Aliases are a diffed SAFE =update-type= slot; user-added aliases
+  are preserved. Field =:type= changes are classified DESTRUCTIVE.
+- Migration preview reports a =:transform-clears-value= warning and a
+  =cleared= count when a transform maps existing values to =nil=, and accepts
+  unregistered normalized migrations in tests.
+- Create-or-link accepts =【【= as well as =[[= through
+  =supertag-reference-shorthand-openers=; an auto-paired closer is consumed.
+- Node View shows Tag display names, wraps Unlinked Mention excerpts like
+  reference cards, and Action proposals show planned values. LLM tool
+  descriptions are joined as sentences (catalog hash changes; tool names and
+  fingerprints do not).
+- Validator reports =:invalid-fields=, =:invalid-aliases=, =:alias-collision=,
+  and =:incompatible-precondition-argument= for =options= parameters.
+
+** Ontology LLM Tool Generation v12
+- Added explicit =:llm-tool t= exposure metadata for deployed Function and
+  Action contracts, with optional stable base name and description. Tool
+  metadata participates in behavioral planning and contract hashes.
+- Added a transient provider-neutral catalog with JSON Schema for subject Type,
+  ordered parameters, defaults, options, lists, nullable values, node
+  references, and sensitive/write-only inputs. No tool registry is persisted.
+- Action tools are generated strictly from the =:llm= Policy decision:
+  =allow= executes, =confirm= requires an out-of-band one-use capability,
+  =propose-only= never executes, and =deny= is omitted.
+- Generated names include Function/Action and Policy contract fingerprints;
+  stale catalogs fail closed after any executable or authorization change.
+- Added typed JSON invocation with distinct missing, =false=, =null=, and empty
+  array semantics; confirmation and execution share the same conversion path.
+- Added read-only catalog UI and provider-neutral JSON export. v12 deliberately
+  includes no provider SDK, network transport, MCP server, or arbitrary =defun=
+  scanning.
+- Added focused ERT source and =tests/run-ontology-tool-tests.sh=; runtime ERT
+  execution remains reported separately when Emacs is unavailable.
+
+** Ontology Policy v11
+- Added one fail-closed Policy per Action with complete actor-class coverage for
+  =interactive-user=, =automation=, =llm=, and =external=.
+- Added the closed decisions =allow=, =deny=, =confirm=, and =propose-only=.
+  Proposal-only actors may inspect a transient Action proposal but cannot be
+  elevated to execution by a confirmation token.
+- Added one-use, expiring, memory-only confirmation capabilities bound to the
+  Action contract, Policy contract, subject, actor, normalized arguments, and
+  exact planned effects.
+- Function, Action, and Policy changes are classified as behavioral and require
+  explicit deployment approval; safe auto-apply no longer deploys executable
+  contracts.
+- Corrected Action atomicity: preconditions/effects are replanned inside the
+  Action-owned transaction, Field/Link Ops notifications are deferred until
+  outer commit, and rollback discards those notifications.
+- Added recursive defensive copying, true missing-vs-nil argument semantics,
+  subject-anchored Link effects, deployment-time Action contract proof,
+  bounded/redacted audit, and isolated post-commit hooks.
+- Added Policy-aware Node View Action rows and =M-x supertag-action-run=.
+- Added focused Policy/Action ERT source and static/package reproducibility
+  checks. Runtime ERT execution remains reported separately when Emacs is not
+  available.
+
+** Ontology Migration DSL v8
+- Added a registration-only =supertag-defmigration= DSL and a read-only planner
+  that requires exact coverage for every destructive live Ontology operation.
+- Migration DSL v1 supports =transform-field=, =detach-field=, and
+  =tighten-link=. Type/global-Field deletion, parent or Link-endpoint changes,
+  optional-to-required Field tightening, and logical/runtime rebinding remain
+  explicitly unsupported rather than hidden behind a force flag.
+- Added stale Schema/data detection, deterministic Link conflict resolvers,
+  target Field normalization, and source-node/relation revalidation immediately
+  before mutation.
+- Migration callbacks run behind a read-only transaction check. Canonical Store
+  writes during Preview are rolled back and reported, and Apply also rejects a
+  plan when either its migration declaration or desired Ontology changed.
+- Data actions, destructive Schema deployment, derived Field-Reference
+  reconciliation, module provenance, and the applied-migration ledger commit in
+  one existing Store transaction. Applied records live in
+  =:ontology-migrations= and follow normal persistence, backup, restore, and
+  sync lifecycles.
+- Split migration responsibilities across model, registry, validator, coverage,
+  Field planner, Link planner, orchestrator, runtime ledger, deployer, and View
+  modules. Existing =supertag-embed= remains the sole Transclusion boundary.
+- Added focused ERT source and =tests/run-ontology-migration-tests.sh=; runtime
+  execution remains reported separately from static/package validation.
+
+** Unlinked Mentions v8
+- Node View now discovers title/alias occurrences in direct source-node content
+  as disposable candidates, without adding a persisted mention collection or a
+  second Backlink database.
+- Added exact single-occurrence linking, source-node-wide linking, and
+  source-owned ignore decisions through =SUPERTAG_IGNORE_MENTIONS=.
+- Existing Org links and literal/code regions are protected; ASCII identifiers
+  use boundaries while Chinese and other non-ASCII terms avoid incorrect ASCII
+  word-boundary assumptions. Longer overlapping terms win deterministically.
+- Added separate service, UI, and View modules plus focused ERT source.
+
+** Contextual Reference Workflow v6
+- Added Roam-like create-or-link completion after an unmatched =[[=. Existing
+  node titles and aliases are completion targets; a new concept is created only
+  through an explicit =[Create new concept]= candidate.
+- Create-or-link writes one canonical physical Org link in the source document
+  and then uses the existing document projector. It does not create reciprocal
+  text or a second Backlink owner.
+- New concepts use a configurable, non-interactive target policy by default.
+  The active vault or matching sync root wins, and a prefix argument keeps an
+  explicit destination chooser available.
+- Node View now renders contextual outgoing References and incoming Backlinks
+  with file/outline location, relation-kind summary, and excerpts derived from
+  existing node content. Multiple relation kinds for one endpoint are grouped
+  into one card.
+- Added =supertag-services-reference.el=, =supertag-ui-reference.el=, and
+  =supertag-view-reference.el= without adding a durable collection or cache.
+- Added focused ERT source and =tests/run-contextual-reference-tests.sh=; the
+  release artifact records separately whether an Emacs process executed it.
+
+** Ontology Links v3
+- Added durable Link Definitions in =:link-definitions=; concrete Link instances
+  remain Semantic Edges in =:relations=.
+- Added Ontology-as-Code =(link ...)= declarations with source/target Semantic
+  Tag constraints, endpoint cardinalities, and an optional reverse display name.
+- Added =supertag-link-create=, =supertag-link-find=, =supertag-link-targets=,
+  =supertag-link-sources=, and =supertag-link-delete=.
+- Link creation validates endpoint types (including subtype membership) and both
+  cardinality directions before mutation. Link Definition identity participates
+  in deterministic Relation identity, so different definitions may connect the
+  same two nodes without collapsing.
+- Structural changes and deletion are blocked when instances would require a
+  migration. Endpoint Tags cannot be deleted while a Link Definition depends on
+  them. Ontology-managed Link Definitions reject interactive structural edits.
+- Stable Semantic Tag ID migration now audits and atomically rewrites Link
+  Definition endpoint Tag IDs together with the rest of the semantic graph.
+- Added focused ERT test source and =tests/run-link-tests.sh=. The release
+  artifact records whether those tests were actually executed.
+
 ** Breaking: project renamed from Org-Supertag to Supertag
 - The repository, package entry, feature, current Lisp interfaces,
   Customization group, and documentation now use =supertag= exclusively.

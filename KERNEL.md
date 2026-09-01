@@ -64,6 +64,20 @@ source: `CONTEXT.md:27`; `CONTEXT.md:31`; `CONTEXT.md:35`
 A Document Link is physical Org text. A Semantic Edge is Store-owned typed
 semantics. A Backlink is a derived query answer over those two relation kinds,
 not a reciprocal physical link.
+Physical Org links inside machine-generated views, including dynamic blocks and
+other generated regions, are not Document Link assertions and synchronization
+does not extract them.
+
+### Link Definition and Link Instance
+
+since: Ontology Links v3
+source: `supertag-ops-link-definition.el`; `supertag-ops-relation.el`
+
+A Link Definition is schema owned by the semantic Store. It identifies the
+allowed source type, target type, endpoint cardinalities, and optional inverse.
+A Link Instance is a Semantic Edge in `:relations` that cites exactly one Link
+Definition. Definitions MUST NOT be stored as relation instances, and instances
+MUST NOT duplicate their definition as an independent schema fact.
 
 ## Identities
 
@@ -88,8 +102,10 @@ aliases, paths, and Tag Occurrence text are not identity.
 since: K1
 source: `supertag-ops-relation.el:208`
 
-Relation identity is deterministic for its typed endpoints so repeated
-reconciliation does not create duplicate relations.
+Relation identity is deterministic for its owned fact identity so repeated
+reconciliation does not create duplicates. For ontology Link instances, the
+Link Definition ID is part of identity; two different Link Definitions may
+connect the same endpoint pair without collapsing into one relation.
 
 ## Relations
 
@@ -452,3 +468,101 @@ batches, topic exclusivity, bounded bridge diagnostics, and
 `supertag-board-create` as the sole production Canonical writer. It does not
 enact ambient transaction support, another writer or consumer migration, a
 durable event log, or deletion of legacy `:store-changed`.
+
+
+## Ontology Declaration Authority
+
+Ontology-as-Code is a control-plane declaration, not a second semantic store.
+
+- Loading an ontology source file MUST NOT mutate canonical or semantic state.
+- A normalized ontology specification MUST be validated and diffed before apply.
+- A code-managed schema entity has exactly one authority: its ontology module.
+- Interactive editors MUST NOT silently overwrite a code-managed entity.
+- Stable ontology IDs are independent from mutable display labels.
+- A deployment is one atomic store transaction followed by one notification.
+- Destructive changes require an explicit migration; force-apply is not a migration.
+- UI projections, previews, and generated lenses are never fact owners.
+
+The deployment boundary covers Field Definitions, semantic Types, Type
+inheritance, Type/Field associations, typed Link Definitions, Function
+Definitions, Action Definitions, and Policy Definitions. Concrete Link
+instances remain Semantic Facts in `:relations`; ontology deployment creates
+Link schema, while Action execution may create or remove instances only through
+the canonical typed-Link Ops boundary.
+
+## Ontology Function, Action, and Policy
+
+since: K4 candidate
+source: `.specs/ontology-policy-v11/SPEC.md`; `ONTOLOGY-POLICY-V11.md`;
+`supertag-ontology-function.el`; `supertag-ontology-action.el`;
+`supertag-ontology-policy.el`; `tests/supertag-ontology-action-test.el`;
+`tests/supertag-ontology-policy-test.el`
+status: implemented; runtime ERT verification pending
+scope: executable ontology behavior and authorization
+applies_when: deploying or invoking Function, Action, or Policy contracts
+verification: focused ERT source, static structure/dependency checks, exact
+patch reproduction, and ZIP reproduction; real Emacs execution remains pending
+
+- A Function is a typed, read-only computation. It may read the Store through
+  trusted code, but official Store mutations are rejected and rolled back. Its
+  result is a transient Projection and is not persisted by the Function layer.
+- Function, Action, and Policy create/update plans are `:behavioral`. Safe
+  auto-apply never deploys executable contract changes; explicit behavioral
+  approval is required. Destructive removal or structural rebinding remains a
+  Migration concern.
+- An Action is a Semantic Fact writer. It owns one outer Canonical Change with
+  `:authority :semantic` and `:scope :fact`; it re-resolves its deployed
+  contract, actor Policy, parameters, Function preconditions, Field facts, Link
+  facts, and cardinality inside that transaction before applying effects.
+- Action v1 effects are declarative Field and typed-Link operations. The Action
+  subject occupies one Link endpoint; `node-reference` Field mutation is not a
+  second relationship writer.
+- Ops post-events produced inside an Action are deferred until the outer Action
+  commits and are discarded on rollback. Failed Action attempts are not durable
+  success facts. Post-commit hook failures are isolated from the committed
+  Action result.
+- A Policy is data, not a callback. Every deployed Action has exactly one Policy
+  covering exactly the closed actor classes `:interactive-user`, `:automation`,
+  `:llm`, and `:external`. The closed decisions are `:allow`, `:deny`,
+  `:confirm`, and `:propose-only`. Missing, duplicate, ambiguous, or malformed
+  policy data denies by default.
+- Action callers state an actor explicitly. `:confirm` uses a memory-only,
+  expiring, one-use capability bound to Action and Policy contract hashes,
+  subject, actor, normalized arguments, and exact planned effects.
+  `:propose-only` can inspect a transient proposal but cannot be elevated into
+  execution by confirmation.
+- Policy authorizes an actor; Function preconditions validate the current world.
+  Neither layer substitutes for the other. Actor-ID-specific rules, roles,
+  attribute conditions, and durable proposal queues remain outside K4.
+
+## Ontology LLM Tool Projection
+
+since: K5 candidate
+source: `.specs/ontology-llm-tool-v12/SPEC.md`;
+`ONTOLOGY-LLM-TOOL-V12.md`; `supertag-ontology-tool.el`;
+`tests/supertag-ontology-tool-test.el`
+status: implemented; runtime ERT verification pending
+scope: transient provider-neutral capability projection
+applies_when: discovering or invoking explicitly exposed Ontology capabilities
+verification: focused ERT source, static structure/dependency checks, exact
+patch reproduction, and ZIP reproduction; real Emacs execution remains pending
+
+- Tool generation scans no arbitrary Emacs Lisp symbols. Only deployed Function
+  or Action contracts with explicit `:llm-tool t` may become descriptors.
+- The generated catalog, tool descriptors, proposals, and confirmation tokens
+  are transient Projections. They are not durable fact collections or a second
+  execution registry.
+- Function tools are read-only. Action tools are filtered by the closed `:llm`
+  Policy decision: `allow` maps to execution, `confirm` requires an out-of-band
+  one-use capability, `propose-only` maps to proposal-only, and `deny` is not
+  exposed.
+- Generated names include current executable and authorization fingerprints.
+  A Function, Action, or Policy contract change invalidates older names; stale
+  calls fail closed instead of being redirected to newer behavior.
+- JSON `false`, JSON `null`, omission, and empty arrays preserve distinct typed
+  meanings. Confirmation and execution use the same typed argument conversion
+  before Policy fingerprints are calculated.
+- Provider transport is outside K5. OpenAI, Anthropic, gptel, MCP, HTTP, or
+  other adapters may translate the provider-neutral catalog, but may not bypass
+  the catalog resolver, Policy decision, Action transaction, or confirmation
+  boundary.

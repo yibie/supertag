@@ -390,3 +390,73 @@ a separately confirmed and verified after-commit design exists.
 - `supertag-core-notify.el`
 - `supertag-board-ops.el`
 - `test/canonical-change-test.el`
+
+## E-20260828-011 — Ontology Policy v11 implemented and statically verified
+
+### Observation
+
+The user-uploaded `supertag-ontology-action-v10(1).zip` was used as the exact
+baseline. Policy v11 adds a fail-closed, Store-owned authorization contract for
+every deployed Action and corrects the Action boundaries required for Policy to
+be meaningful.
+
+The closed actor classes are `:interactive-user`, `:automation`, `:llm`, and
+`:external`; decisions are `:allow`, `:deny`, `:confirm`, and
+`:propose-only`. Action execution now requires an explicit actor, re-resolves
+Policy and all business facts inside one Action-owned Canonical Change, and
+defers Ops post-events until commit. Confirmation is an in-memory one-use
+capability bound to the exact Action/Policy contracts and transition plan.
+
+### Verification
+
+- Elisp structure scanner: 120 files, zero structural errors.
+- Local `require` / `provide` audit: 120 unique providers, 601 local
+  dependency edges, zero missing providers, and no Policy-module cycle.
+- Shell syntax: all 7 test runners passed `bash -n`; `git diff --check` passed.
+- Focused ERT source: `tests/supertag-ontology-action-test.el` and
+  `tests/supertag-ontology-policy-test.el`.
+- Runtime ERT: not executed in the build environment because no Emacs binary is
+  available; this limitation must remain visible in release artifacts.
+- Patch and ZIP tree reproduction are recorded in the release artifacts, not
+  asserted by this source-tree evidence entry.
+
+### Boundary
+
+Policy v11 does not enact roles, groups, actor-ID-specific rules, contextual
+Policy callbacks, durable proposal queues, or LLM Tool generation. Function or
+Action business preconditions remain separate from actor authorization.
+
+## E-20260828-012 — Ontology LLM Tool Generation v12 implemented and statically verified
+
+### Observation
+
+The user-uploaded Ontology Policy v11 ZIP was used as the exact baseline. v12
+adds explicit Function/Action exposure metadata and a transient,
+provider-neutral catalog with versioned names, JSON Schema, typed JSON
+invocation, Policy-filtered Action modes, and an out-of-band confirmation
+boundary. The implementation scans no arbitrary `defun`, persists no tool
+registry or proposal queue, and opens no provider connection.
+
+### Interpretation
+
+The stable Ontology Function, Action, and Policy contracts can now be projected
+into LLM-callable capabilities without creating another execution authority.
+Tool discovery is opt-in; denied Actions are absent; proposal-only tools cannot
+execute; confirmation and execution use identical typed arguments; stale
+Function, Action, or Policy catalogs fail closed. Provider adapters remain a
+separate translation layer.
+
+### Verification
+
+- Focused ERT source: `tests/supertag-ontology-tool-test.el`.
+- Runner: `tests/run-ontology-tool-tests.sh`.
+- Structural and local require/provide scans report zero errors.
+- All shell runners pass `bash -n`; `git diff --check` passes.
+- Patch and ZIP tree reproduction are recorded in the v12 release artifacts.
+- Runtime ERT execution remains unverified when the build environment has no
+  Emacs executable; release artifacts must state that boundary.
+
+### Boundary
+
+v12 does not implement a provider SDK, HTTP service, MCP server, gptel adapter,
+durable proposal queue, arbitrary Elisp discovery, or Policy roles/ABAC.

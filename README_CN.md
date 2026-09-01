@@ -23,7 +23,7 @@ Supertag 把普通的 Org 标题变成一个**可结构化查询的知识库**�
 |---|---|
 | 每个字段都要手写 `:PROPERTIES:` 抽屉 | 打一次 `#tag`，定义一次字段，之后在表格视图里填 |
 | `grep` + 正则找"高优先级本周任务" | `M-x supertag-search`，结构化查询，秒出结果 |
-| 不同笔记之间靠复制粘贴关联 | `M-x supertag-add-reference`，只写一条正向 Org link，自动显示 Backlink |
+| 不同笔记之间靠复制粘贴关联 | 输入 `[[` 后补全，只写一条正向 Org link，并显示上下文 Backlink |
 | 每开一个新项目都要从零搭跟踪系统 | 定义一次 `#project` 的字段模板，终身复用 |
 | "那个会议记录到底写在哪了？" | 按日期、参与人、决议查 `#meeting` |
 
@@ -42,7 +42,7 @@ Supertag 把普通的 Org 标题变成一个**可结构化查询的知识库**�
 然后在 Emacs 里：
 
 1. **`M-x supertag-setup`** —— 引导式配置向导。它会报告当前状态，让你选择要同步的目录、选择 file-ID 来源（Org-roam、Denote 或两者都要）、设置持久化选项，并可选地执行首次扫描。
-2. **`M-x supertag-menu`** —— 汇集所有 SuperTag 功能的菜单。用它来发现命令，而不是死记硬背。
+2. **`M-x supertag-menu`** —— 按「记录、整理、查找、维护」组织的任务菜单。用它来发现命令，而不是死记硬背。
 3. **`M-x supertag-doctor`** —— 任何时候感觉不对劲都可以跑一下。它是一次完整的健康检查，并会引导你修复问题。
 
 就这些。不需要 API key，不需要运行数据库服务器。**你现有的 Org 文件直接就能用。**
@@ -51,12 +51,12 @@ Supertag 把普通的 Org 标题变成一个**可结构化查询的知识库**�
 
 ## 记住这一个命令就够了
 
-**`M-x supertag-menu`** 是通往所有功能的 transient 入口：打标签、视图、搜索、捕获、同步、concept 等等，按任务分类，不用死记硬背每个命令。这篇 README 如果你只记住一件事，记住它就够了。
+**`M-x supertag-menu`** 按四类任务组织入口：**记录 Capture & Write**、**整理 Organize**、**查找 Find & View**、**维护 Maintain**。日常命令留在首屏，自动化、迁移、查询和显示等低频命令收进对应的 `More...` 二级菜单。这篇 README 如果你只记住一件事，记住它就够了。
 
 最省事的快捷键方案是内置的全局 minor mode：
 
 ```emacs-lisp
-(supertag-smart-key-mode 1)  ; C-c s → 光标处智能操作，C-c S → supertag-menu
+(supertag-act-mode 1)  ; C-c s → 默认动作，C-c S → 上下文动作菜单
 ```
 
 也可以用 `global-set-key` 把菜单绑到任何你喜欢的键上。
@@ -218,20 +218,29 @@ rating   →  数字（1–5）
 | 看一个标签的所有节点 | `M-x supertag-view-table` | 电子表格视图。可排序、过滤、直接编辑单元格 |
 | 按时间浏览一个标签 | `M-x supertag-view-stream` | 单列标题流，包含传递 `:extends` 后代；按 `e` 打开完整源节点 |
 | 编辑单个节点的字段 | `M-x supertag-view-node` | 表单视图，带自动补全、选择器和校验 |
+| 一次填完节点字段 | `M-x supertag-edit-fields` | 依次询问一个 Tag 的全部字段，最后把改动一起提交 |
 | 看板视图 | `M-x supertag-view-kanban` | 拖拽式看板，列之间移动 |
 | 定义标签字段 | `M-x supertag-view-schema` | 增删字段、设置类型、配置继承关系 |
+| 定义类型化关系 | Schema View 中按 `a l` | 声明 source/target Type、正反向名称与基数 |
+| 连接类型化节点 | `M-x supertag-link-menu` | 只显示并创建符合当前节点 Type 的关系 |
+| 用代码声明 Type、Field、Link | 在 Elisp 文件中写 `supertag-defontology`，然后 `M-x supertag-ontology-preview` / `M-x supertag-ontology-apply` | 加载只注册声明；preview 把每个变更标为 SAFE / BEHAVIORAL / DESTRUCTIVE；apply 在一个事务中部署 |
+| 对节点执行 Action | `M-x supertag-action-run`（或在 Node View 按 `A`） | 先显示计划效果（`set-field status = "active" -> "done"`），再按该 Action 的 Policy 执行 |
 | 合并重复标签 | Schema View 中用 `m m` 标记，再按 `m M` | 预览后合并到新/已有 tag；原子更新字段、节点、引用和 Org 文件 |
 | 快速捕获新节点 | `M-x supertag-capture` | 模板化快速录入，自动写入 Org 文件 |
 | 搜索 | `M-x supertag-search` | 结构化查询，结果可导出到文件 |
-| 关联节点 | `M-x supertag-add-reference` | 只写 source 的正向 Org link；target Backlink 由查询派生 |
+| 关联节点 | 输入 `[[` 后补全，或执行 `M-x supertag-reference-insert` | 复用已有节点或显式创建 concept，只写 source 的正向 Org link，target Backlink 自动派生 |
+| 处理未链接提及 | 打开 Node View，使用 **Unlinked Mentions** | 将普通文字中的 title/alias 提及作为临时候选；可链接一次、链接来源节点内全部，或在该来源节点忽略 |
+| 预览 Ontology 迁移 | `M-x supertag-ontology-migration-preview` | 将迁移声明与实时破坏性 Schema diff 对照，在写入前列出所有数据动作 |
+| 执行 Ontology 迁移 | `M-x supertag-ontology-migration-apply` | 在一个事务中转换数据、部署破坏性 Schema、重建派生关系并写入已执行账本 |
 | 将选中文本提升为概念 | `M-x supertag-promote-concept` | 创建/复用概念节点，从当前节点建立 reference，原文保持普通文本 |
+| 确认 Agent 填写的字段值 | 在 Node View 按 `c` | 值不变，来源记为 human，⟨AI⟩ 角标消失 |
 | 高亮概念提及 | `M-x supertag-concept-link-mode` | 将概念 title/alias 的提及显示为琥珀色语义高亮，不落库为链接 |
-| 操作光标下的对象 | `M-x supertag-smart-key` | 执行当前 tag、node、field、link、button 或 table cell 的默认动作 |
-| 选择光标对象的相关动作 | `M-x supertag-assist` | 只显示对象相关动作，并保留完整菜单出口 |
+| 操作光标下的对象 | `M-x supertag-act` | 列出适用于当前 tag、node、field、mention、选区、link、button 或 table cell 的动作，默认动作排第一 |
+| 直接执行默认动作 | `M-x supertag-act-dwim` | 不弹菜单，立即执行光标处对象的默认动作 |
 | 重建 Org 索引 | `M-x supertag-reindex-org` | 从一个完整快照重建 Document Projection；绝不恢复 Semantic Facts |
 
-除了单条命令，Supertag 还提供一套小巧的 S-expression 查询语言，可以组合标签、字段、日期和全文搜索，例如
-`(and (tag "task") (not (field "status" "done")))`。可以把它写进 `supertag-query-block`
+除了单条命令，Supertag 还提供一套小巧的 S-expression 查询语言，可以组合标签、字段、日期、全文搜索和类型化 Link 遍历，例如
+`(and (tag "task") (not (field "status" "done")))`，或 `(link work/tasks (field "status" "blocked"))`。可以把它写进 `supertag-query-block`
 babel 代码块，用 `M-x supertag-query-save` 保存以便复用，或者用 `M-x supertag-query-build`
 交互式构建。完整语法见 `doc/QUERY.md`（英文）。
 
@@ -239,8 +248,122 @@ babel 代码块，用 `M-x supertag-query-save` 保存以便复用，或者用 `
 
 ```emacs-lisp
 (with-eval-after-load 'org
+  (define-key org-mode-map (kbd "C-c n l") #'supertag-reference-insert)
   (define-key org-mode-map (kbd "C-c n p") #'supertag-promote-concept)
   (define-key org-mode-map (kbd "C-c n o") #'supertag-concept-open-at-point))
+```
+
+### Create-or-link 与上下文 Backlink
+
+在普通 Org 正文中输入 `[[`，即可补全已有节点的 title 或 alias。没有精确
+匹配时，补全列表才会出现显式的 `[Create new concept]` 项；仅仅输入文字不会
+创建数据。选中后，临时写法会被替换为规范的物理 Org link，再由既有文档投影
+流程生成 Backlink。系统不会向 target 文件写入一条反向链接。
+
+中文等全角输入法可以直接输入 `【【` 代替 `[[`：两种写法触发同一套补全，
+输入法自动配对出来的 `】】` 会在写入链接时一并消掉。可识别的括号对由
+`supertag-reference-shorthand-openers` 决定，可以自行追加。
+
+`M-x supertag-reference-insert` 提供不依赖弹窗的同一流程；存在选区时，选中文本
+会作为初始标题。新 concept 默认追加到当前 vault 或匹配 sync root 下的
+`concepts.org`，不再询问文件和位置；使用前缀参数可以显式选择目标，也可以
+自定义 `supertag-concept-create-target-function` 接入 Org-roam、Denote 或其他
+capture 系统。
+
+Node View 现在分别显示当前节点的 **References** 与 **Backlinks**。每个条目都带
+可跳转标题、文件与 outline path、关系类型，以及围绕 title/alias 提取的正文
+片段。它们只是由现有 Store 数据即时生成的 Projection，不是第二套引用索引。
+
+### 未链接提及（Unlinked Mentions）
+
+Node View 还会在其他来源节点的普通正文中查找当前节点的 title 与 alias。未链接
+提及只是候选，不会落库；只有用户执行 **Link** 或 **Link all in node** 后，才会
+写成规范 Org ID Link，并沿既有投影流程成为 Backlink。已有 Org Link 与 literal/code
+区域不会重复匹配；中文匹配也不会套用错误的 ASCII 词边界。
+
+**Ignore in node** 会把 `SUPERTAG_IGNORE_MENTIONS` 写到来源 heading，因此忽略决定是
+可检查、可同步的 Org 数据，而不是隐藏缓存。发现过程只使用小型、不可持久化的
+解析缓存。完整边界见 `UNLINKED-MENTIONS.md`。
+
+### 用代码声明 Ontology
+
+当某个标签/字段模式稳定下来后，可以改用 Elisp 声明，而不是在 Schema View 里
+手工维护：
+
+```emacs-lisp
+(supertag-defontology work
+  :version 1
+  (field status :label "Status" :type options :options (idea active blocked done))
+  (type project :label "Project" :fields (status))
+  (type task    :label "Task"    :fields (status))
+  (link tasks :label "Tasks" :inverse-label "Project"
+        :from project :to task :from-cardinality many :to-cardinality one))
+```
+
+加载文件只注册声明。`M-x supertag-ontology-preview` 会对照实时 Store 给出部署
+计划，每个操作被标为 **SAFE**（新增字段、类型、Link，改 label）、
+**BEHAVIORAL**（Function、Action、Policy——apply 时要求显式批准）或
+**DESTRUCTIVE**（字段类型变更、删除选项、收紧基数——没有配套迁移时 apply 直接
+拒绝）。`M-x supertag-ontology-apply` 在一个事务中部署；重复部署未变化的声明
+不会产生任何操作。
+
+已部署的 Type 同时响应声明里的 key 和 label：上面的模块部署后，`#project` 与
+`#Project` 都绑定到 Project；在 `type` 表单上加 `:aliases (proj 项目)` 可以再增加
+写法。你在 Schema View 里手工加的别名会被保留。
+
+之后类型化 Link 会强制检查端点类型和基数（`Link Tasks permits only one source
+for target node …`），查询可以沿 Link 遍历：
+`(and (tag "Project") (link work/tasks (field "status" "blocked")))`。Node View
+会列出节点的类型化 Link；再加上 `function`、`action`、`policy` 表单后，还会显示
+可计算的 Functions 和可执行的 Actions。可从 `examples/personal-work-ontology.el`
+起步；完整语法见 `ONTOLOGY-LINK-WORKFLOW-V5.md` 与
+`ONTOLOGY-FUNCTION-ACTION-V10.md`。
+
+### Ontology 迁移
+
+普通 Ontology 部署只接受安全增加和兼容更新。Field 类型转换、移除 Type/Field
+关联、收紧 Link 基数等破坏性变更，必须配套显式的 `supertag-defmigration` 声明。
+加载迁移文件只注册纯声明；Preview 不写 Store；Apply 则在一个事务中完成数据
+动作、Schema 部署、派生关系对账和 Store-owned 已执行账本。
+
+Preview 还会标出会悄悄清空数据的转换：当 `transform-field` 回调把已有值映射成
+`nil` 时，计划里会出现 `WARNING :transform-clears-value` 和 `cleared=N` 计数。
+要有意删除某个值，请返回 `supertag-ontology-migration-drop`。
+
+Migration DSL v1 刻意只支持 `transform-field`、`detach-field` 与 `tighten-link`。
+每一个破坏性操作都必须被精确覆盖；Type/全局 Field 删除、父类型或 Link 端点
+改变、runtime rebinding 仍然直接拒绝，不提供模糊的 force 开关。详见
+`ONTOLOGY-MIGRATION-V8.md` 与 `examples/ontology-migration-v8-example.el`。
+
+本阶段不会再实现一套 Transclusion。现有嵌入能力继续由
+`supertag-ops-embed.el`、`supertag-services-embed.el` 与
+`supertag-ui-embed.el` 统一拥有。
+
+### Agent 填写的字段值与纯数据 API
+
+设计字段的价值，在于有别人替你填。当 Agent（例如 superchat 通过它的 Supertag
+桥接）写入一个字段时，值本身和手填的值存在同一个地方，旁边多一条**来源
+（provenance）**记录：谁断言的（`:agent` 或 `:human`）、什么时候、用的哪个模型、
+以及当时节点正文的 `:hash`。Node View 会给这类值加上 **⟨AI⟩** 角标；如果之后节点
+正文改过，角标变成 **⟨AI · outdated⟩**；Table View 的单元格则标记 ⟨AI⟩ / ⟨AI?⟩。
+在 Node View 的字段上按 `c` 即可确认：值不变，来源升级为 `:human`，角标消失。
+你在 Node View、Table View 或看板里亲手编辑的值会记为 human；sync、automation
+或旧代码写入的值没有来源记录，视为普通事实。
+
+Agent 一侧通过 `supertag-api.el` 里的六个纯数据函数和 Supertag 对话：
+`supertag-api-query`、`supertag-api-node`、`supertag-api-schema` 负责读；
+`supertag-api-set-field`、`supertag-api-link`、`supertag-api-add-field` 负责写。
+参数与返回值都是普通 Elisp 数据（字符串、数字、关键字、plist），
+`supertag-api-json` 可把结果转成 JSON，`supertag-api-catalog` 声明每个函数的
+效果（`:read` / `:write`）与参数，宿主据此把它们注册为 LLM 工具并套用自己的
+授权模型。写操作走的是与 UI 相同的校验和事务；`set-field` 会把 Agent 的值绑定到
+节点当前的 hash；`link` 只创建类型化 Link，不会伪造文档引用（那由 Org 正文拥有）。
+
+```emacs-lisp
+(supertag-api-set-field "node-id" "Status" "active" :model "claude-sonnet-5")
+;; => (:node "node-id" :tag "project" :field "status" :name "Status"
+;;     :value "active" :previous nil :changed t
+;;     :provenance (:origin :agent :at "…" :model "claude-sonnet-5" :source-hash "…"))
 ```
 
 ### Concept mention 的行为边界
@@ -251,13 +374,15 @@ babel 代码块，用 `M-x supertag-query-save` 保存以便复用，或者用 `
 
 如果在 SuperTag 之外修改了 concept title 或 alias，请在已启用的 buffer 中执行 `M-x supertag-concept-refresh`。
 
-### 语义 Smart Key
+### 光标处上下文动作
 
-把光标放在 inline tag、node、field、concept mention、Org link、Emacs button 或 table cell
-上，执行 `M-x supertag-smart-key` 即可触发默认动作。执行 `M-x supertag-assist`，或以前缀参数
-调用 `C-u M-x supertag-smart-key`，只会显示与当前对象相关的动作；其中始终保留完整
-`supertag-menu` 的入口，光标下没有语义对象时也会直接回落到该菜单。两个命令都不设置默认按键，
-因此不会覆盖 Org 与各 View 的既有局部键。
+把光标放在 inline tag、node、field、concept mention、选区、Org link、Emacs button 或
+table cell 上，执行 `M-x supertag-act` 即可从适用于该对象的动作中选择，默认动作排在第一位。
+`M-x supertag-act-dwim` 则不弹菜单、立即执行默认动作。动作列表中始终保留完整
+`supertag-menu` 的入口，光标下没有语义对象时也会直接回落到该菜单。安装了 Embark 的用户，
+同样的对象也会成为 `embark-act` 的 target，执行动作时沿用最初检测到的完整对象。除非启用
+`supertag-act-mode`，两个命令都不设置默认按键；启用后 `C-c s` 直接执行默认动作，`C-c S`
+打开上下文动作菜单。完整命令目录仍通过 `M-x supertag-menu` 打开。
 
 ---
 
@@ -304,6 +429,8 @@ Supertag 按定时器读取你的文件（可通过 `doc/SYNC-CONFIGURATION.md` 
 | 标签和表格视图 | **自动化规则**——条件触发自动填字段 (`doc/AUTOMATION-SYSTEM-GUIDE_cn.md`) |
 | 手动捕获 | **捕获模板**——预定义常用录入表单 (`doc/CAPTURE-GUIDE_cn.md`) |
 | 基本查询 | **查询块**——在 Org 文件里嵌入动态查询结果 (`doc/ABOUT-QUERY-BLOCK_cn.md`) |
+| 反复重建的标签/字段模式 | **用代码声明 Ontology**——一次声明 Type、Field 和类型化 Link，预览后部署 (`examples/personal-work-ontology.el`, `ONTOLOGY-LINK-WORKFLOW-V5.md`) |
+| 已经稳定的 Ontology 模块 | **Ontology Migration DSL**——预览并安全执行破坏性模型升级 (`ONTOLOGY-MIGRATION-V8.md`) |
 | 默认视图 | **自定义视图**——用原生按钮和可编辑字段构建声明式仪表盘 (`doc/VIEW_FRAMEWORK_DEV_GUIDE.md`) |
 | 单资料库 | **多 Vault**——工作/个人分开管理 (`doc/SYNC-CONFIGURATION.md`) |
 | 写插件 | **插件开发指南**——自定义抽取器和扩展 (`doc/SUPERTAG-PLUGIN-GUIDE_cn.md`) |
@@ -426,6 +553,26 @@ link 与用户手写 link 完全同形，因此系统绝不自动删除。先运
 | **Notion** | Notion 把数据锁在云端。SuperTag 离线，数据在你自己的文件里。 |
 | **Obsidian** | Obisidian 是另一个编辑器。SuperTag 原生在 Emacs 里，不用切换工具。 |
 | **org-ql** | org-ql 查询 Org 内联属性。SuperTag 把字段数据单独存储，不污染 Org 文件，还支持视图和自动化。 |
+
+---
+
+## Ontology Policy
+
+每个已部署 Action 现在必须由一个 fail-closed Policy 管理，完整覆盖
+`interactive-user`、`automation`、`llm`、`external`。决策只有 `allow`、
+`deny`、`confirm`、`propose-only`。在 Org heading 或 Node View 中执行
+`M-x supertag-action-run`；只允许提案的 LLM 应调用
+`supertag-ontology-action-propose`，不能直接执行。完整边界见
+[`ONTOLOGY-POLICY-V11.md`](ONTOLOGY-POLICY-V11.md)。
+
+## Ontology LLM Tools
+
+只有在 Ontology 源码中显式声明 `:llm-tool t` 的 Function 或 Action，才会
+进入 LLM 工具目录。Function 始终只读；Action 再根据 `llm` Policy 决策：
+`allow` 可以执行，`confirm` 需要独立的一次性确认能力，`propose-only` 只能
+返回临时提案，`deny` 完全不进入目录。使用 `M-x supertag-ui-tool-list` 检查
+当前目录，或用 `M-x supertag-ui-tool-copy-catalog-json` 复制中立 JSON。完整
+边界见 [`ONTOLOGY-LLM-TOOL-V12.md`](ONTOLOGY-LLM-TOOL-V12.md)。
 
 ---
 

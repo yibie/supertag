@@ -29,7 +29,9 @@ A stable semantic identity that can own a schema, inheritance, a canonical name,
 _Avoid_: Tag token, tag string
 
 **Document Link**:
-A physical Org link owned by the document in which it appears.
+A physical Org link owned by the document in which it appears. Links inside
+machine-generated views, such as dynamic blocks and other generated regions,
+are presentation only and do not assert Document Links.
 _Avoid_: Semantic relation, backlink
 
 **Semantic Edge**:
@@ -51,6 +53,18 @@ _Avoid_: Reindex, rescan
 **Canonical Change**:
 A bounded domain description of one committed mutation, stating fact authority and change scope separately without exposing a raw Store diff.
 _Avoid_: Store event, path diff, notification payload
+
+**Ontology Function**:
+A deployed, typed, read-only domain computation over a semantic subject. Its result is a transient Projection, not a stored fact.
+_Avoid_: Formula string, arbitrary callback, cached field
+
+**Ontology Action**:
+A deployed, named semantic state transition with typed parameters, Function preconditions, declarative effects, one outer Canonical Change, and a successful-run audit record.
+_Avoid_: Emacs command, automation rule, arbitrary callback
+
+**Ontology Policy**:
+A deployed, fail-closed authorization contract that decides whether one explicit actor may execute, must confirm, may only propose, or is denied for an Action. It does not replace Action preconditions.
+_Avoid_: Business precondition, UI prompt, role cache
 
 ## Runtime boundary
 

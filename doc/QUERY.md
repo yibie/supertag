@@ -1,272 +1,195 @@
 # Supertag Query Language
 
-Supertag's query language is a small S-expression grammar: a handful of
-leaf conditions (`tag`, `field`, `term`, `after`, `before`, `between`)
-combined with three combinators (`and`, `or`, `not`). It is parsed and
-executed by `supertag-query--parse-sexp` / `supertag-query--execute-ast` in
-`supertag-services-query.el`. Every operator and example in this document was
-checked against that parser directly — nothing here is aspirational syntax.
-
-This guide covers the grammar, the date formats, worked examples from simple
-to complex, the places you can use a query, and how to read the errors the
-engine raises when a query is malformed.
-
-For hands-on help while writing a query, see:
-
-- `M-x supertag-query-describe-syntax` — a short in-Emacs cheat sheet (same
-  content as the table below, condensed).
-- `M-x supertag-query-build` — an interactive wizard that assembles a query
-  for you, with tag/field completion from your own data.
-
-## Grammar reference
-
-| Operator | Arguments | Meaning | Example |
-|---|---|---|---|
-| `and` | one or more conditions | all of them must match | `(and (tag "task") (tag "work"))` |
-| `or` | one or more conditions | any of them must match | `(or (tag "work") (tag "personal"))` |
-| `not` | one or more conditions | none of them may match (excludes their union) | `(not (tag "archived") (tag "done"))` |
-| `sort-by` | `KEY` and optional `asc`/`desc` (default `desc`) | result modifier: sorts the matching nodes; nodes missing the key sort last | `(and (tag "task") (sort-by "created" desc))` |
-| `tag` | `NAME` | nodes carrying tag `NAME` | `(tag "project")` |
-| `task` | zero or more `STATE`s (OR) | nodes whose todo state equals one of `STATE`s (case-sensitive; nodes without a todo state never match) | `(task "TODO" "DOING")` |
-| `priority` | zero or more `P`s (OR) | nodes whose priority cookie is one of `P`s (case-insensitive) | `(priority "A" "B")` |
-| `field` | `KEY VALUE` | nodes whose field `KEY` equals `VALUE` (exact match) | `(field "status" "active")` |
-| `term` | `WORD` | substring search over node title and content (case-insensitive) | `(term "meeting")` |
-| `after` | `DATE` | nodes dated after `DATE` | `(after "2025-01-01")` |
-| `before` | `DATE` | nodes dated before `DATE` | `(before "2025-12-31")` |
-| `between` | `START END` | nodes dated between `START` and `END` | `(between "-7d" "now")` |
-| `recent-days` | `N` | nodes created in the last `N` days (sugar for `(after "-Nd")`) | `(recent-days 7)` |
-| `in-month` | `"YYYY-MM"` | nodes created in that calendar month | `(in-month "2025-06")` |
-| `in-year` | `"YYYY"` | nodes created in that calendar year (integer also accepted) | `(in-year "2025")` |
-
-Notes on argument types, verified against `supertag-query--parse-sexp`:
-
-- `NAME`, `KEY`, `VALUE`, and `WORD` should be double-quoted strings. Bare
-  symbols are also accepted (e.g. `(tag project)` works the same as
-  `(tag "project")`), but **numbers are not** — `(field "priority" 5)` raises
-  `wrong-type-argument symbolp 5`. Write `(field "priority" "5")` instead.
-- `tag` takes exactly one argument, `field` exactly two, `after`/`before`
-  exactly one, `between` exactly two, `not` exactly one condition. Passing
-  the wrong number of arguments raises an explicit error naming the operator,
-  e.g. `'field' operator expects exactly two arguments, but got (...)`.
-- An unknown operator raises `Invalid query operator: NAME`.
-- An empty `(and)` matches every node (the identity for AND); an empty `(or)`
-  matches no nodes (the identity for OR). This is rarely intentional — it
-  usually means a combinator lost its children while you were editing.
-- `field` matching is an exact `equal` comparison, not a substring or
-  case-insensitive match. Use `term` if you want fuzzy/substring matching
-  over title and content instead.
-
-## Dynamic variables
-
-Query text supports three dynamic variables, expanded before parsing:
-
-| Variable | Expands to |
-|---|---|
-| `<%today%>` | `today` (local midnight) |
-| `<%yesterday%>` | `yesterday` |
-| `<%tomorrow%>` | `tomorrow` |
-
-They are meant for date operators: `(and (task "TODO") (after "<%today%>"))`
-is the same as `(and (task "TODO") (after "today"))`.
-
-## Aggregation
-
-Aggregate and grouping modifiers live inside `and` like other clauses but
-never filter; they shape the result.  Use `supertag-query-evaluate` (the
-query block does this automatically):
-
-| Modifier | Meaning |
-|---|---|
-| `(sum FIELD)` | sum of non-empty FIELD values; nil when any value is non-numeric |
-| `(count)` | number of matching nodes (no arguments) |
-| `(avg FIELD)` | average; nil when any value is non-numeric |
-| `(min FIELD)` / `(max FIELD)` | minimum / maximum value |
-| `(first FIELD)` / `(last FIELD)` | first / last value in result order |
-| `(unique-count FIELD)` | number of distinct values |
-| `(concat FIELD)` | values joined with `", "` |
-| `(group-by FIELD)` | group results before aggregating |
+Supertag queries are S-expressions. Public entry points include:
 
 ```elisp
-(and (tag "book") (sum "pages"))                    ;; a scalar
-(and (tag "book") (group-by "genre") (sum "pages")) ;; ((genre . sum) ...)
-(and (sort-by "pages" desc) (first "title"))        ;; sort feeds aggregate order
+(supertag-query-node-ids QUERY)
+(supertag-query-evaluate QUERY)
+(supertag-query-validate QUERY)
 ```
 
-- Without an aggregate, `supertag-query-evaluate` returns node IDs (same
-  shape as `supertag-query-node-ids`).
-- At most one aggregate and one group-by are allowed; `group-by` requires
-  an aggregate; nodes missing the group key land in `"__ungrouped__"`.
-- `supertag-query-node-ids` signals on aggregate queries; use
-  `supertag-query-evaluate`.
+They are also used by saved queries, query blocks and the guided builder.
 
-## Date formats
+## Boolean composition
 
-`after`, `before`, and `between` all resolve their date arguments the same
-way (`supertag-query--resolve-date-string`, supertag-services-query.el
-around lines 214-247):
+```elisp
+(and CONDITION...)
+(or CONDITION...)
+(not CONDITION...)
+```
 
-| Format | Example | Meaning |
-|---|---|---|
-| `"now"` | `(after "now")` | the current moment |
-| Day symbol | `"today"`, `"yesterday"`, `"tomorrow"` | local midnight of that day (`"today"` = today 00:00; `(after "today")` covers from midnight, `(before "today")` excludes today entirely) |
-| Absolute date | `"2025-06-01"` | `YYYY-MM-DD`, exactly four digits, two digits, two digits |
-| Relative offset | `"-7d"`, `"+2w"`, `"-4h"`, `"30min"` | a signed (or unsigned) integer followed by `d`/`w`/`m`/`y`/`h`/`min` |
+Examples:
 
-Relative-offset details:
+```elisp
+(and (tag "task")
+     (not (field "status" "done")))
 
-- The unit is one of `d` (day), `w` (week, 7 days), `m` (month, approximated
-  as **30 days**), or `y` (year, approximated as **365.25 days**).
-- **A missing sign means `+`**, i.e. the future: `"7d"` is the same as
-  `"+7d"` (seven days from now), *not* seven days ago. If you mean "the last
-  7 days", write `"-7d"` explicitly.
-- Anything that doesn't match `"now"`, an absolute date, or this relative
-  pattern is treated as invalid and raises `Invalid date format for 'after':
-  ...` (or `'before'`/the corresponding start/end date for `between`).
+(or (tag "work")
+    (tag "personal"))
+```
 
-Known limitation (verified, not a documentation gap): as of this writing,
-absolute `YYYY-MM-DD` dates passed to `after`, `before`, or `between` raise
-`Invalid time specification` at query time, because the date is parsed with
-`parse-time-string` (which returns a decoded-time list with `nil` fields for
-an unqualified day) and then compared with `time-less-p`, which requires a
-real time value. **Relative offsets (`"-7d"`, `"+2w"`, ...) and `"now"` work
-correctly; plain `YYYY-MM-DD` currently does not.** Until this is fixed
-upstream, prefer relative offsets for date filtering, e.g. `(after "-30d")`
-instead of `(after "2025-06-01")`.
+## Basic conditions
 
-## Composition examples, simple to complex
+```elisp
+(tag NAME)
+(field KEY VALUE)
+(term WORD)
+(task STATE...)
+(priority PRIORITY...)
+```
 
-1. Everything tagged `project`:
+## Date conditions
 
-   ```
-   (tag "project")
-   ```
+```elisp
+(after DATE)
+(before DATE)
+(between START END)
+(recent-days N)
+(in-month "YYYY-MM")
+(in-year "YYYY")
+```
 
-2. Everything tagged `task` whose `status` field is `active`:
+Dates accept absolute values such as `"2026-08-27"`, `"now"`, and relative
+values such as `"-7d"`, `"+2w"`, `"-1m"` and `"1y"`.
 
-   ```
-   (and (tag "task") (field "status" "active"))
-   ```
+## Typed-Link conditions
 
-3. Anything tagged `work` or `personal`:
+### Forward traversal
 
-   ```
-   (or (tag "work") (tag "personal"))
-   ```
+```elisp
+(link REF TARGET-QUERY)
+(exists-link REF TARGET-QUERY)
+```
 
-4. Tasks that are not done:
+Returns source Nodes that have the referenced Link to at least one target
+matching `TARGET-QUERY`.
 
-   ```
-   (and (tag "task") (not (field "status" "done")))
-   ```
+```elisp
+(link work/tasks
+      (field "status" "blocked"))
+```
 
-5. Tasks created in the last 7 days (see the relative-date caveat above —
-   this uses a relative offset, not an absolute date):
+### Reverse traversal
 
-   ```
-   (and (tag "task") (after "-7d"))
-   ```
+```elisp
+(reverse-link REF SOURCE-QUERY)
+```
 
-6. A larger example combining nested `or`, `not`, and a relative date filter:
+Returns target Nodes that have an incoming referenced Link from at least one
+source matching `SOURCE-QUERY`.
 
-   ```
-   (and
-     (or (tag "work") (tag "project"))
-     (not (field "status" "completed"))
-     (after "-30d"))
-   ```
+```elisp
+(reverse-link work/tasks
+              (tag "project"))
+```
 
-## Where queries can be used
+### Existence
 
-- **Babel query blocks** — the primary way to embed a live query result table
-  in an Org file:
+```elisp
+(has-link REF)
+(has-reverse-link REF)
+```
 
-  ```org
-  #+BEGIN_SRC supertag-query-block :results raw
-  (and (tag "task") (field "status" "active"))
-  #+END_SRC
-  ```
+`has-link` returns sources with at least one outgoing instance.
+`has-reverse-link` returns targets with at least one incoming instance.
 
-  Insert one with `M-x supertag-insert-query-block`. The block layer is also
-  gaining extra babel header parameters (`:sort`, `:order`, `:limit`,
-  `:columns`) for controlling result presentation without changing the query
-  itself — see the docstring of `org-babel-execute:supertag-query-block`
-  in `supertag-ui-query-block.el` for the current, authoritative parameter
-  list, e.g.:
+### Link references
 
-  ```org
-  #+BEGIN_SRC supertag-query-block :results raw :sort modified :order desc :limit 10
+`REF` can be:
+
+```text
+runtime ID       "linkdef-..."
+unique name      "Tasks"
+unique key       tasks
+module/key       work/tasks
+```
+
+Saved queries should use `module/key`. A short name or key raises an error when
+ambiguous rather than selecting a relation by accident.
+
+### Composition
+
+```elisp
+(and
+  (tag "project")
+  (link work/tasks
+        (and
+          (tag "task")
+          (field "status" "blocked"))))
+```
+
+Nested traversal:
+
+```elisp
+(link work/projects
+      (link work/tasks
+            (field "status" "blocked")))
+```
+
+Negation:
+
+```elisp
+(and
+  (tag "project")
+  (not (has-link work/tasks)))
+```
+
+Reverse composition:
+
+```elisp
+(and
   (tag "task")
-  #+END_SRC
-  ```
+  (reverse-link work/tasks
+                (field "status" "active")))
+```
 
-- **Dynamic blocks** — a `#+BEGIN: supertag-query ... #+END:` form is also
-  being added alongside the babel block (`org-dblock-write:supertag-query`,
-  insertable with `M-x supertag-insert-query-dblock`), for queries that
-  re-render in place with `C-c C-c` or `org-update-all-dblocks`. See
-  `supertag-ui-query-block.el` for the exact header arguments; the query
-  S-expression syntax itself is identical to what's documented here, for
-  example:
+## Result modifiers
 
-  ```org
-  #+BEGIN: supertag-query :query "(tag \"task\")"
-  #+END:
-  ```
+Modifiers belong inside `and`:
 
-- **Saved queries** — name a query once, reuse it forever:
-  - `M-x supertag-query-save` — save a query (from the region, or typed in)
-    under a name, in `supertag-query-saved`.
-  - `M-x supertag-query-run-saved` — pick a saved query and see its results
-    immediately in a temp buffer.
-  - `M-x supertag-query-insert-saved` — insert a saved query as a block at
-    point (babel form, or the dynamic-block form if that layer is loaded).
+```elisp
+(sort-by KEY [asc|desc])
+(group-by KEY)
+(sum KEY)
+(count)
+(avg KEY)
+(min KEY)
+(max KEY)
+(first KEY)
+(last KEY)
+(unique-count KEY)
+(concat KEY)
+```
 
-- **The guided builder** — `M-x supertag-query-build` walks you through
-  picking an operator, filling in its arguments (with completion for tag and
-  field names pulled from your own data), and combining conditions with
-  AND/OR/NOT, then lets you copy, insert, run, or save the result.
+Example:
 
-## Troubleshooting
+```elisp
+(and
+  (link work/tasks (tag "task"))
+  (sort-by "modified" desc))
+```
 
-**`Invalid query operator: NAME`**
-You used an operator the parser doesn't recognize. Only `and`, `or`, `not`,
-`tag`, `field`, `after`, `before`, `between`, `term`, `recent-days`,
-`in-month`, and `in-year` are implemented.
+Aggregate queries use `supertag-query-evaluate`; plain node-list queries use
+`supertag-query-node-ids`.
 
-**`'OPERATOR' operator expects ... arguments, but got (...)`**
-You passed the wrong number of arguments to `tag`, `field`, `not`, `after`,
-`before`, or `between`. Check the grammar table above for the exact arity.
+## Guided builder and help
 
-**`wrong-type-argument symbolp N`**
-You passed a bare number where a string or symbol was expected, e.g.
-`(field "priority" 5)`. Quote it: `(field "priority" "5")`.
+```text
+M-x supertag-query-build
+M-x supertag-query-describe-syntax
+```
 
-**`Invalid date format for 'after': ...` (or `'before'`)**
-The date string didn't match `"now"`, `YYYY-MM-DD`, or a relative offset
-like `-7d`/`+2w`. Check for typos, and remember the unit letters are
-lowercase `d`/`w`/`m`/`y`.
+The builder reads Link Definitions from the live Schema and emits a stable
+reference when available.
 
-**`Invalid time specification`**
-You used an absolute `YYYY-MM-DD` date with `after`/`before`/`between`. See
-the known limitation above; use a relative offset instead.
+## Failure behavior
 
-**A query returns no results and you expected some**
-- Double-check tag/field spelling — `tag` and `field` do exact matches, not
-  substring matches. Use `term` for fuzzy text search.
-- If you're combining conditions, confirm you meant `and` (all must match)
-  and not `or` (any must match), or vice versa.
-- For `between`, confirm `START` really is earlier than `END` — if reversed,
-  the query silently matches nothing rather than erroring.
-- A query result table only shows columns for fields explicitly named in a
-  `field` condition; a node can still match without every field being
-  populated, in which case that column is blank for that row, not missing.
+The parser rejects:
 
-## Related commands
+- unknown operators;
+- wrong operator arity;
+- malformed nested queries;
+- unknown Link Definitions;
+- ambiguous Link names or keys.
 
-| Command | What it does |
-|---|---|
-| `supertag-insert-query-block` | Insert an empty babel query block, then prompt for the S-expression |
-| `supertag-query-build` | Interactive wizard to assemble a query S-expression |
-| `supertag-query-save` | Save a query under a name |
-| `supertag-query-run-saved` | Run a saved query and show results in a buffer |
-| `supertag-query-insert-saved` | Insert a saved query as a block at point |
-| `supertag-query-describe-syntax` | Show the quick-reference cheat sheet |
+A traversal that is valid but has no matching instances returns an empty list.

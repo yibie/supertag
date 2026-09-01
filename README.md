@@ -25,7 +25,7 @@ No external services. No Python. No lock-in. Your `.org` files stay yours — we
 |---|---|
 | Manually typing `:PROPERTIES:` drawers for every field | Type `#tag` once, define fields once, fill values in a Table View |
 | `grep` + regex to find "high priority tasks this week" | `M-x supertag-search` — structured query, instant results |
-| Copy-pasting between notes to link related items | `M-x supertag-add-reference` — one forward Org link, automatic backlinks |
+| Copy-pasting between notes to link related items | Type `[[` and complete — one forward Org link, contextual backlinks |
 | Every new project means rebuilding your tracking system from scratch | Define a `#project` tag schema once, reuse forever |
 | "Where did I write that meeting note?" | Query `#meeting` by date, participant, or decision |
 
@@ -44,7 +44,7 @@ No external services. No Python. No lock-in. Your `.org` files stay yours — we
 Then, in Emacs:
 
 1. **`M-x supertag-setup`** — the guided setup wizard. It reports your current status, lets you pick which directories to sync, choose a file-ID source (Org-roam, Denote, or both), set persistence options, and optionally run the first scan.
-2. **`M-x supertag-menu`** — the menu that surfaces every SuperTag feature. Use it to discover commands instead of memorizing them.
+2. **`M-x supertag-menu`** — the task menu for Capture & Write, Organize, Find & View, and Maintain. Use it to discover commands instead of memorizing them.
 3. **`M-x supertag-doctor`** — run this any time something looks off. It's a full health check with guided repairs.
 
 That's it. No API keys, no database server to run. Your existing Org files are already compatible.
@@ -53,12 +53,12 @@ That's it. No API keys, no database server to run. Your existing Org files are a
 
 ## The one command to remember
 
-**`M-x supertag-menu`** is the transient entry point to everything: tagging, views, search, capture, sync, concepts, and more, organized so you can find what you need without memorizing individual commands. If you remember nothing else from this README, remember this one.
+**`M-x supertag-menu`** is organized around four jobs: **Capture & Write**, **Organize**, **Find & View**, and **Maintain**. Daily commands stay on the first screen; specialized automation, migration, query, and display commands live in the matching `More...` submenu. If you remember nothing else from this README, remember this one.
 
 The easiest way to get keybindings is the built-in global minor mode:
 
 ```emacs-lisp
-(supertag-smart-key-mode 1)  ; C-c s → smart action at point, C-c S → supertag-menu
+(supertag-act-mode 1)  ; C-c s → default action, C-c S → context action menu
 ```
 
 Or bind the menu directly to any key you like with `global-set-key`.
@@ -220,21 +220,31 @@ Define fields on `#meeting`: `date`, `participants`, `decisions`, `action-items`
 | See all nodes of a tag | `M-x supertag-view-table` | Spreadsheet view. Sort, filter, edit cells |
 | Browse a tag chronologically | `M-x supertag-view-stream` | Single-column creation-day groups with `title  #tags` rows, including transitive `:extends` descendants; `e` opens an expanded source edit, `C-c C-c` confirms and `C-c C-k` aborts |
 | Edit a node's fields | `M-x supertag-view-node` | Form view with completion, pickers, and validation |
+| Fill a node's fields in one pass | `M-x supertag-edit-fields` | Prompts for every field of one tag, then commits the changed values together |
 | Board view | `M-x supertag-view-kanban` | Drag-and-drop between columns |
 | Define tag fields | `M-x supertag-view-schema` | Add/remove fields, set types, configure inheritance |
+| Define typed relations | Schema View: `a l` | Declare a source Type, target Type, direction labels, and cardinalities |
+| Link typed nodes | `M-x supertag-link-menu` | Add/remove only relations valid for the current node's Type |
+| Declare Types, Fields, and Links in code | `supertag-defontology` in an Elisp file, then `M-x supertag-ontology-preview` / `M-x supertag-ontology-apply` | Loading only registers the declaration; preview classifies every change as SAFE, BEHAVIORAL, or DESTRUCTIVE; apply deploys it in one transaction |
+| Run an Action on a node | `M-x supertag-action-run` (or `A` in Node View) | Shows the planned effect (`set-field status = "active" -> "done"`) and executes it under the Action's Policy |
 | Merge duplicate tags | Schema View: mark tags with `m m`, then press `m M` | Preview and merge into a new/existing tag; updates fields, nodes, references, and Org files atomically |
 | Capture new node | `M-x supertag-capture` | Quick entry with template, adds to your Org file |
 | Search | `M-x supertag-search` | Structured query. Save results to file |
-| Link related nodes | `M-x supertag-add-reference` | Writes one forward Org link; target backlinks are derived |
+| Link related nodes | Type `[[` and complete, or `M-x supertag-reference-insert` | Reuses a node or explicitly creates a concept, writes one forward Org link, and derives the target Backlink |
+| Review unlinked mentions | Open Node View and use **Unlinked Mentions** | Finds plain-text title/alias mentions as disposable candidates; link one, link all in the source node, or ignore that target in the source |
+| Preview an ontology migration | `M-x supertag-ontology-migration-preview` | Compares a declared migration with the live destructive Schema diff and shows every data action before mutation |
+| Apply an ontology migration | `M-x supertag-ontology-migration-apply` | Converts data, deploys the destructive Schema change, reconciles derived relations, and records one applied ledger entry atomically |
 | Promote selected text to a concept | `M-x supertag-promote-concept` | Creates/reuses a concept node, references it from the current node, and keeps the text plain |
+| Confirm an agent-written field value | `c` in Node View | The value stays; its provenance becomes human and the ⟨AI⟩ badge goes away |
 | Highlight concept mentions | `M-x supertag-concept-link-mode` | Shows concept title/alias mentions as amber semantic highlights, not stored links |
-| Act on the object at point | `M-x supertag-smart-key` | Runs the default action for the current tag, node, field, link, button, or table cell |
-| Choose actions for the object at point | `M-x supertag-assist` | Shows only relevant actions, with the complete menu as a fallback |
+| Act on the object at point | `M-x supertag-act` | Lists the actions that apply to the current tag, node, field, mention, region, link, button, or table cell, default first |
+| Run the default action immediately | `M-x supertag-act-dwim` | Executes the default action for the object at point without a menu |
 | Reindex Org documents | `M-x supertag-reindex-org` | Rebuilds Document Projections from one complete snapshot; never restores Semantic Facts |
 
 Beyond single-command lookups, Supertag has a small S-expression query
-language for combining tags, fields, dates, and full-text search, e.g.
-`(and (tag "task") (not (field "status" "done")))`. Write one in a
+language for combining tags, fields, dates, full-text search, and typed-Link
+traversal, e.g. `(and (tag "task") (not (field "status" "done")))` or
+`(link work/tasks (field "status" "blocked"))`. Write one in a
 `supertag-query-block` babel block, save it with `M-x supertag-query-save`
 for reuse, or build one interactively with `M-x supertag-query-build`. See
 `doc/QUERY.md` for the full grammar.
@@ -243,8 +253,139 @@ Optional keybindings:
 
 ```emacs-lisp
 (with-eval-after-load 'org
+  (define-key org-mode-map (kbd "C-c n l") #'supertag-reference-insert)
   (define-key org-mode-map (kbd "C-c n p") #'supertag-promote-concept)
   (define-key org-mode-map (kbd "C-c n o") #'supertag-concept-open-at-point))
+```
+
+### Create-or-link and contextual backlinks
+
+Type `[[` in ordinary Org prose to complete an existing node title or alias.
+When there is no exact term, completion includes an explicit
+`[Create new concept]` row; typing alone never creates data. The shorthand is
+replaced with the canonical physical Org link, and the existing document
+projector derives the Backlink. No reciprocal link is written to the target.
+
+Chinese and other full-width input methods can type `【【` instead of `[[`:
+both openers trigger the same completion, and an auto-paired `】】` after
+point is consumed when the link is written. The recognised pairs live in
+`supertag-reference-shorthand-openers`, so other bracket pairs can be added.
+
+`M-x supertag-reference-insert` provides the same workflow without relying on
+a popup. With an active region it uses the selected text as the initial title.
+New concepts normally append to `concepts.org` in the active vault or matching
+sync root without another location prompt; use a prefix argument to choose the
+destination, or customize `supertag-concept-create-target-function`.
+
+Node View now shows both outgoing **References** and incoming **Backlinks** as
+context cards: clickable source/target title, file and outline path, relation
+kind, and an excerpt centered on the referenced title or alias. These cards are
+disposable projections over the existing Store; they are not a second index.
+
+### Unlinked mentions
+
+Node View also discovers plain-text occurrences of the current node's title and
+aliases in other source nodes. An unlinked mention is only a candidate: it is
+not persisted and does not become a Backlink until you choose **Link** or
+**Link all in node**. Existing Org links and literal/code regions are excluded;
+Chinese text is matched without imposing incorrect ASCII word boundaries.
+
+**Ignore in node** writes `SUPERTAG_IGNORE_MENTIONS` on the source heading, so
+the decision remains inspectable, syncable Org data rather than a hidden cache.
+Mention discovery itself uses only a small disposable parse cache. See
+`UNLINKED-MENTIONS.md` for the exact boundaries.
+
+### Ontology as code
+
+Once a tag/field pattern stabilises, declare it in Elisp instead of maintaining
+it by hand in Schema View:
+
+```emacs-lisp
+(supertag-defontology work
+  :version 1
+  (field status :label "Status" :type options :options (idea active blocked done))
+  (type project :label "Project" :fields (status))
+  (type task    :label "Task"    :fields (status))
+  (link tasks :label "Tasks" :inverse-label "Project"
+        :from project :to task :from-cardinality many :to-cardinality one))
+```
+
+Loading the file only registers the declaration. `M-x supertag-ontology-preview`
+shows the deployment plan against the live Store, with every operation classed
+as **SAFE** (new fields, types, links, label changes), **BEHAVIORAL** (Functions,
+Actions, Policies — apply asks for explicit approval), or **DESTRUCTIVE** (field
+type changes, removed options, tightened cardinality — apply refuses until a
+matching migration exists). `M-x supertag-ontology-apply` deploys the plan in
+one transaction; redeploying an unchanged declaration is a no-op.
+
+A deployed Type answers to its declaration key as well as its label: with the
+module above, `#project` and `#Project` both bind to the Project type, and
+`:aliases (proj 项目)` on a `type` form adds more spellings. Aliases you add by
+hand in Schema View are kept.
+
+Typed links then enforce endpoint types and cardinality (`Link Tasks permits
+only one source for target node …`), and queries can traverse them:
+`(and (tag "Project") (link work/tasks (field "status" "blocked")))`. Node View
+lists each node's typed links and — once you add `function`, `action`, and
+`policy` forms — its computed Functions and runnable Actions. Start from
+`examples/personal-work-ontology.el`; see `ONTOLOGY-LINK-WORKFLOW-V5.md` and
+`ONTOLOGY-FUNCTION-ACTION-V10.md` for the full forms.
+
+### Ontology migrations
+
+Ordinary ontology deployment accepts safe additions and compatible updates. A
+destructive change—such as converting a Field type, removing a Type/Field
+association, or tightening Link cardinality—must be paired with an explicit
+`supertag-defmigration` declaration. Loading migration files only registers
+pure declarations; preview is read-only, and apply commits data actions, the
+Schema deployment, derived-relation reconciliation, and the Store-owned applied
+ledger through one transaction.
+
+Preview also flags transforms that would silently clear data: when a
+`transform-field` callback maps an existing value to `nil`, the plan shows a
+`WARNING :transform-clears-value` issue and a `cleared=N` count. Return
+`supertag-ontology-migration-drop` to remove a value on purpose.
+
+Migration DSL v1 deliberately supports only `transform-field`, `detach-field`,
+and `tighten-link`. Every destructive operation must have exact coverage; Type
+or global Field deletion, parent/endpoint changes, and rebinding remain blocked
+instead of being hidden behind a force flag. See `ONTOLOGY-MIGRATION-V8.md` and
+`examples/ontology-migration-v8-example.el`.
+
+Supertag does not add another Transclusion implementation here. Existing embed
+behavior remains owned by `supertag-ops-embed.el`,
+`supertag-services-embed.el`, and `supertag-ui-embed.el`.
+
+### Agent-written values and the plain-data API
+
+Designing fields pays off when something else fills them. When an agent (for
+example superchat through its Supertag bridge) writes a field, the value is
+stored like any other, and a **provenance** record is kept beside it: who
+asserted it (`:agent` or `:human`), when, with which model, and the node's text
+`:hash` at that moment. Node View shows such values with an **⟨AI⟩** badge, or
+**⟨AI · outdated⟩** once the node's text changed after the extraction; Table
+View marks the cell ⟨AI⟩ / ⟨AI?⟩. Press `c` on the field in Node View to
+confirm it: the value stays, its provenance becomes `:human`, and the badge
+disappears. Values you edit in Node View, Table View, or Kanban are recorded as
+human-written; values written by sync, automation, or older code carry no
+record and count as plain facts.
+
+The agent side talks to Supertag through six plain-data functions in
+`supertag-api.el`: `supertag-api-query`, `supertag-api-node`,
+`supertag-api-schema` read; `supertag-api-set-field`, `supertag-api-link`,
+`supertag-api-add-field` write. Arguments and results are plain Elisp data
+(strings, numbers, keywords, plists), `supertag-api-json` renders a result as
+JSON, and `supertag-api-catalog` declares each function's effect (`:read` /
+`:write`) and parameters so a host can register them as LLM tools under its own
+authority model. Writes use the same validation and transactions as the UI;
+`set-field` binds the agent value to the node's current hash, and `link` only
+creates typed Links (document references stay owned by the Org text).
+
+```emacs-lisp
+(supertag-api-set-field "node-id" "Status" "active" :model "claude-sonnet-5")
+;; => (:node "node-id" :tag "project" :field "status" :name "Status"
+;;     :value "active" :previous nil :changed t
+;;     :provenance (:origin :agent :at "…" :model "claude-sonnet-5" :source-hash "…"))
 ```
 
 ### How concept mentions behave
@@ -255,14 +396,19 @@ Optional keybindings:
 
 After changing concept titles or aliases outside SuperTag, run `M-x supertag-concept-refresh` in enabled buffers.
 
-### Semantic Smart Key
+### Context actions at point
 
-Run `M-x supertag-smart-key` on an inline tag, node, field, concept mention,
-Org link, Emacs button, or table cell to perform its default action. Run
-`M-x supertag-assist`, or use `C-u M-x supertag-smart-key`, to choose from
-actions relevant to that object. The complete `supertag-menu` remains available
-from the Assist list and is used directly when point has no semantic target.
-Neither command has a default keybinding, so existing Org and View keys are unchanged.
+Run `M-x supertag-act` on an inline tag, node, field, concept mention,
+selected region, Org link, Emacs button, or table cell to choose from the
+actions that apply to that object; the default action is listed first.
+`M-x supertag-act-dwim` runs the default action immediately. The complete
+`supertag-menu` remains available from the action list and opens directly
+when point has no semantic target. With Embark installed, the same objects
+are also exposed as `embark-act` targets, with the originally detected object
+preserved for the selected action. Neither command has a default keybinding
+unless you enable `supertag-act-mode`; then `C-c s` runs the default action
+and `C-c S` opens the context action menu. Open the full command catalog with
+`M-x supertag-menu`.
 
 ---
 
@@ -309,6 +455,8 @@ Supertag grows with you. Start simple, add power when you need it:
 | Tags and Table View | **Automation** — rules that auto-fill fields based on conditions (`doc/AUTOMATION-SYSTEM-GUIDE.md`) |
 | Manual capture | **Capture Templates** — predefined forms for common entries (`doc/CAPTURE-GUIDE.md`) |
 | Basic queries | **Query Blocks** — embed live query results inside Org files (`doc/ABOUT-QUERY-BLOCK.md`) |
+| A tag/field pattern you keep recreating | **Ontology as code** — declare Types, Fields, and typed Links once, preview, and deploy (`examples/personal-work-ontology.el`, `ONTOLOGY-LINK-WORKFLOW-V5.md`) |
+| A stable Ontology module | **Ontology Migration DSL** — preview and safely apply destructive model upgrades (`ONTOLOGY-MIGRATION-V8.md`) |
 | Default views | **Custom Views** — build declarative dashboards with native buttons and editable fields (`doc/VIEW_FRAMEWORK_DEV_GUIDE.md`) |
 | Single vault | **Multi-Vault** — separate databases for work/personal (`doc/SYNC-CONFIGURATION.md`) |
 | Writing plugins | **Plugin Guide** — extend with your own extractors and services (`doc/SUPERTAG-PLUGIN-GUIDE.md`) |
@@ -436,6 +584,28 @@ and every file is restored if reprojection fails.
 | **Notion** | Notion locks your data in a proprietary cloud. SuperTag works offline on your own files. |
 | **Obsidian** | Obsidian is a different editor. SuperTag is native Emacs — no context switching. |
 | **org-ql** | org-ql queries Org properties inline. SuperTag stores field data separately, enabling views, automation, and a query DSL that doesn't litter your Org files. |
+
+---
+
+## Ontology Policy
+
+Each deployed Action is governed by one fail-closed Policy covering
+`interactive-user`, `automation`, `llm`, and `external`. Decisions are
+`allow`, `deny`, `confirm`, or `propose-only`. Use `M-x supertag-action-run`
+from an Org heading or Node View; LLM-facing code should call
+`supertag-ontology-action-propose` when its Policy grants proposal only. See
+[`ONTOLOGY-POLICY-V11.md`](ONTOLOGY-POLICY-V11.md).
+
+## Ontology LLM Tools
+
+A deployed Function or Action is exposed to an LLM only when its Ontology
+source declares `:llm-tool t`. Function tools remain read-only. Action tools
+are filtered through the `llm` Policy rule: `allow` executes, `confirm` needs an
+out-of-band one-use capability, `propose-only` returns a transient proposal,
+and `deny` is omitted. Inspect the current provider-neutral catalog with
+`M-x supertag-ui-tool-list` or copy its JSON with
+`M-x supertag-ui-tool-copy-catalog-json`. See
+[`ONTOLOGY-LLM-TOOL-V12.md`](ONTOLOGY-LLM-TOOL-V12.md).
 
 ---
 

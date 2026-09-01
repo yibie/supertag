@@ -411,7 +411,84 @@ writes through those primitives is automatically covered."
         (should (null (plist-get (plist-get (supertag-node-get node-id) :properties)
                                  :auto-marker)))))))
 
-;;; --- 6. Obsolete alias: old macro name still works ---
+;;; --- 6. Unified operation event delivery ---
+
+(ert-deftest tx-test-ops-commit-no-op-skips-deep-copy-and-keeps-hook-event ()
+  "A no-op delivers its compatibility hook event without deep-copying it."
+  (tx-test--with-temp-env
+    (let* ((same '(:id "same" :type :node :title "Same"))
+           (original-copy-tree (symbol-function 'copy-tree))
+           (copy-count 0)
+           delivered)
+      (let ((supertag-after-operation-hook
+             (list (lambda (event) (setq delivered event)))))
+        (cl-letf (((symbol-function 'copy-tree)
+                   (lambda (tree &optional vectors-and-records)
+                     (cl-incf copy-count)
+                     (funcall original-copy-tree tree vectors-and-records))))
+          (should
+           (equal same
+                  (supertag-ops-commit
+                   :operation :update
+                   :collection :nodes
+                   :id "same"
+                   :previous same
+                   :new same)))))
+      (should (= 0 copy-count))
+      (should (eq :update (plist-get delivered :operation)))
+      (should (equal '(:nodes "same") (plist-get delivered :path)))
+      (should (equal same (plist-get delivered :previous)))
+      (should (equal same (plist-get delivered :current)))
+      (should-not (plist-get delivered :changed)))))
+
+(ert-deftest tx-test-ops-commit-keeps-event-content-and-delivery-order ()
+  "Changed commits still publish committed, changed, then compatibility hook."
+  (tx-test--with-temp-env
+    (let* ((previous '(:id "n" :type :node :title "Before"))
+           (current '(:id "n" :type :node :title "After"))
+           (expected-event
+            (list :operation :update
+                  :collection :nodes
+                  :id "n"
+                  :path '(:nodes "n")
+                  :context '(:source test)
+                  :previous previous
+                  :current current
+                  :changed t))
+           trace
+           committed-payload
+           changed-args
+           after-event
+           (supertag-after-operation-hook
+            (list (lambda (event)
+                    (setq after-event event)
+                    (push :after trace)))))
+      (cl-letf (((symbol-function 'supertag-emit-event)
+                 (lambda (topic &rest args)
+                   (pcase topic
+                     (:store-committed
+                      (setq committed-payload (car args)))
+                     (:store-changed
+                      (setq changed-args args)))
+                   (push topic trace))))
+        (should
+         (equal current
+                (supertag-ops-commit
+                 :operation :update
+                 :collection :nodes
+                 :id "n"
+                 :context '(:source test)
+                 :previous previous
+                 :new current))))
+      (should (equal '(:store-committed :store-changed :after)
+                     (nreverse trace)))
+      (should (equal (append expected-event (list :result nil))
+                     committed-payload))
+      (should (equal (list '(:nodes "n") previous current)
+                     changed-args))
+      (should (equal expected-event after-event)))))
+
+;;; --- 7. Obsolete alias: old macro name still works ---
 
 (ert-deftest tx-test-obsolete-alias-still-rolls-back ()
   "`supertag--with-transaction' (now an obsolete alias for

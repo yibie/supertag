@@ -791,16 +791,13 @@ Returns the updated entity when available, otherwise falls back to :result or :p
           (supertag-mark-dirty))
         (let ((bundle
                (list :event event
-                     :event-payload (plist-put
-                                     (copy-tree event)
-                                     :result result)
+                     :event-payload
+                     (when changed
+                       (plist-put (copy-tree event) :result result))
                      :path path :previous previous :current current)))
           (if supertag-ops-defer-events
               (push bundle supertag-ops-deferred-events)
-            (when changed
-              (supertag-ops--deliver-event-bundle bundle))
-            (unless changed
-              (run-hook-with-args 'supertag-after-operation-hook event))))
+            (supertag-ops--deliver-event-bundle bundle)))
         (cond
          ((plist-member spec :return) (plist-get spec :return))
          (current current)

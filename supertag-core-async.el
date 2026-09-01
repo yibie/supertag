@@ -122,15 +122,13 @@ fix the cause and retry explicitly without waiting for another scan."
       ;; file failed or discard the rest of this batch.
       (while (and supertag-async--queue
                   (< count supertag-async-batch-size))
-        (let ((item (car supertag-async--queue)))
+        ;; Pop before invoking user code.  The processor may enqueue work
+        ;; synchronously; removing the old head afterward would then operate
+        ;; on that newer queue and could discard an unrelated pending item.
+        (let ((item (pop supertag-async--queue)))
           (condition-case err
-              (progn
-                (funcall supertag-async--processor-fn item)
-                (setq supertag-async--queue
-                      (cdr supertag-async--queue)))
+              (funcall supertag-async--processor-fn item)
             (error
-             (setq supertag-async--queue
-                   (cdr supertag-async--queue))
              (cl-pushnew item supertag-async--failed-items :test #'equal)
              (message
               (concat "Supertag sync failed for %s: %s. "

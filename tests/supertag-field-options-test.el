@@ -46,8 +46,8 @@
 (ert-deftest supertag-field-options-convert-keeps-scalar-string ()
   (should (equal "done" (supertag--convert-type "done" :options))))
 
-(ert-deftest supertag-field-options-convert-splits-comma-separated-string ()
-  (should (equal '("active" "blocked")
+(ert-deftest supertag-field-options-convert-keeps-comma-inside-scalar-string ()
+  (should (equal "active,blocked"
                  (supertag--convert-type "active,blocked" :options))))
 
 (ert-deftest supertag-field-options-convert-preserves-list ()
@@ -106,13 +106,30 @@
       (should (equal '("active" "done") normalized))
       (should (supertag-field-validate "project" "status" normalized)))))
 
-(ert-deftest supertag-field-options-normalize-then-validate-comma-string ()
+(ert-deftest supertag-field-options-comma-inside-declared-option-round-trips ()
+  "A comma in one programmatic option is data, not a multi-select delimiter."
+  (supertag-field-options-test--isolated
+    (supertag-field-options-test--install)
+    (supertag-store-put-field-definition
+     "status"
+     '(:id "status" :name "Status" :type :options
+       :options ("Washington, D.C." "New York") :required nil))
+    (supertag-field-set
+     "project-1" "project" "status" "Washington, D.C.")
+    (should (equal "Washington, D.C."
+                   (supertag-field-get
+                    "project-1" "project" "status")))
+    (should (equal "Washington, D.C."
+                   (supertag-store-get-field-value
+                    "project-1" "status")))))
+
+(ert-deftest supertag-field-options-normalize-does-not-infer-list-from-comma ()
   (supertag-field-options-test--isolated
     (supertag-field-options-test--install)
     (let ((normalized (supertag-field-normalize "project" "status"
                                                 "active,done")))
-      (should (equal '("active" "done") normalized))
-      (should (supertag-field-validate "project" "status" normalized)))))
+      (should (equal "active,done" normalized))
+      (should-not (supertag-field-validate "project" "status" normalized)))))
 
 (ert-deftest supertag-field-options-normalize-then-validate-rejects-non-member ()
   (supertag-field-options-test--isolated
@@ -132,11 +149,12 @@
       (should (equal "done"
                      (supertag-store-get-field-value "project-1" "status"))))))
 
-(ert-deftest supertag-field-set-normalizes-before-storing ()
-  "Every writer gets the same normalize step from `supertag-field-set'."
+(ert-deftest supertag-field-set-preserves-explicit-multi-select-list ()
+  "Every writer stores an explicit multi-select list without reshaping it."
   (supertag-field-options-test--isolated
     (supertag-field-options-test--install)
-    (supertag-field-set "project-1" "project" "status" "active,done")
+    (supertag-field-set
+     "project-1" "project" "status" '("active" "done"))
     (should (equal '("active" "done")
                    (supertag-field-get "project-1" "project" "status")))))
 

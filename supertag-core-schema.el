@@ -381,15 +381,12 @@ Keys are keyword symbols, values are plists with:
     (:date (supertag--convert-to-date value))
     (:timestamp (supertag--convert-to-timestamp value))
     ;; Options values are stored as a scalar string (single select) or a
-    ;; list of strings (multi select).  A plain string stays scalar so that
-    ;; normalize -> validate -> store keeps the shape the rest of the
-    ;; system (query, views, kanban, Org export) expects; only a
-    ;; comma-separated string denotes multiple selections.
+    ;; list of strings (multi select).  Strings stay scalar even when they
+    ;; contain commas: commas are valid option data and therefore cannot also
+    ;; serve as an unescaped serialization delimiter.  Callers represent
+    ;; multiple selections explicitly as a list.
     (:options (cond ((listp value) value)
-                    ((stringp value)
-                     (if (string-match-p "," value)
-                         (split-string value "," t)
-                       value))
+                    ((stringp value) value)
                     (t (list value))))
     (:url (if (stringp value) value (format "%s" value)))
     (:email (if (stringp value) value (format "%s" value)))

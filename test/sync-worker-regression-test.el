@@ -397,6 +397,25 @@ the old mtime until destructive cleanup is allowed."
             (should (null supertag-async--failed-items))))
       (ignore-errors (delete-file file)))))
 
+(ert-deftest supertag-async-worker-preserves-queue-when-item-reenqueues-mid-processing ()
+  "Re-enqueuing the active item must not discard the next queued item."
+  (let* ((supertag-async--queue '(first second))
+         (supertag-async--failed-items nil)
+         (supertag-async--timer nil)
+         (supertag-async-batch-size 1)
+         processed
+         (supertag-async--processor-fn
+          (lambda (item)
+            (push item processed)
+            (when (eq item 'first)
+              (supertag-async-enqueue item)))))
+    (cl-letf (((symbol-function 'supertag-async--ensure-timer)
+               (lambda () nil)))
+      (supertag-async--worker))
+    (should (equal '(first) processed))
+    (should (equal '(second first) supertag-async--queue))
+    (should-not supertag-async--failed-items)))
+
 (ert-deftest supertag-sync-validate-nodes-keeps-legacy-file-nodes ()
   "Validate legacy file nodes without identity metadata by file existence.
 Such nodes predate `:link-type', so a live file is the only safe evidence.

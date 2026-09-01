@@ -56,31 +56,316 @@ format if it was never resaved since upgrading this package.")
 FILENAME is relative to `supertag-data-directory`."
   (expand-file-name filename supertag-data-directory))
 
-(defun supertag-persistence-check-legacy-data-directory ()
-  "Refuse ambiguous default data roots left by the breaking rename.
-The check applies only when `supertag-data-directory' is the new default.
-It never moves or deletes data.  Return t when initialization may continue."
+(defconst supertag-persistence--legacy-data-directory-name "org-supertag"
+  "Retired name of the default Supertag data directory.")
+
+(defconst supertag-persistence--current-data-directory-name "supertag"
+  "Current name of the default Supertag data directory.")
+
+(defconst supertag-persistence--data-directory-recovery-buffer
+  "*Supertag Data Directory Recovery*"
+  "Buffer used by `supertag-resolve-data-directories`.")
+
+(defun supertag-persistence-data-directory-state ()
+  "Return the state of the retired and current default data directories.
+The returned plist contains `:configured`, `:current`, `:legacy`, their
+existence flags, and `:issue`.  `:issue` is `:both` when both default roots
+exist, `:legacy-only` when only the retired root exists, and nil otherwise.
+An explicit non-default `supertag-data-directory` makes `:applicable` nil and
+never produces an issue."
   (let* ((configured (file-name-as-directory
                       (expand-file-name supertag-data-directory)))
          (current (file-name-as-directory
-                   (expand-file-name "supertag" user-emacs-directory)))
+                   (expand-file-name
+                    supertag-persistence--current-data-directory-name
+                    user-emacs-directory)))
          (legacy (file-name-as-directory
-                  (expand-file-name "org-supertag" user-emacs-directory)))
+                  (expand-file-name
+                   supertag-persistence--legacy-data-directory-name
+                   user-emacs-directory)))
+         (applicable (string= configured current))
          (current-exists (file-exists-p current))
          (legacy-exists (file-exists-p legacy)))
-    (when (string= configured current)
-      (cond
-       ((and current-exists legacy-exists)
-        (user-error
-         "Supertag found both %s and %s; refusing to choose a data directory. Consolidate them or set `supertag-data-directory' explicitly"
-         (abbreviate-file-name legacy)
-         (abbreviate-file-name current)))
-       (legacy-exists
-        (user-error
-         "Supertag found the retired data directory %s. Quit other Emacs instances, back it up, and rename it to %s before starting Supertag"
-         (abbreviate-file-name legacy)
-         (abbreviate-file-name current)))))
+    (list :configured configured
+          :current current
+          :legacy legacy
+          :applicable applicable
+          :current-exists current-exists
+          :legacy-exists legacy-exists
+          :issue (and applicable legacy-exists
+                      (if current-exists :both :legacy-only)))))
+
+(defun supertag-persistence-data-directory-recovery-needed-p ()
+  "Return non-nil when default data directories require user resolution.
+The return value is the issue symbol from
+`supertag-persistence-data-directory-state`."
+  (plist-get (supertag-persistence-data-directory-state) :issue))
+
+(defun supertag-persistence--database-in-directory (directory)
+  "Return the main database candidate to summarize under DIRECTORY.
+Prefer an existing configured-name database, then the current `.el` name, then
+the older `.db` name.  When none exists, return the current `.el` path so the
+comparison can identify the missing candidate precisely."
+  (let* ((configured-name
+          (and (boundp 'supertag-db-file)
+               (stringp supertag-db-file)
+               (file-name-nondirectory supertag-db-file)))
+         (names (cl-delete-duplicates
+                 (delq nil (list configured-name
+                                 "supertag-db.el"
+                                 "supertag-db.db"))
+                 :test #'string=))
+         (candidates
+          (mapcar (lambda (name) (expand-file-name name directory)) names)))
+    (or (cl-find-if #'file-exists-p candidates)
+        (expand-file-name "supertag-db.el" directory))))
+
+(defun supertag-persistence--data-directory-db-summary (directory)
+  "Return a best-effort database summary for DIRECTORY.
+Reading or parsing failures are captured in the returned plist instead of
+being signaled, because this summary is diagnostic and must remain usable for
+damaged databases."
+  (let* ((database (supertag-persistence--database-in-directory directory))
+         (attributes (ignore-errors (file-attributes database 'string)))
+         (modified (and attributes
+                        (file-attribute-modification-time attributes)))
+         (size (and attributes (file-attribute-size attributes)))
+         (status (if attributes :ok :missing))
+         node-count
+         read-error)
+    (when attributes
+      (condition-case err
+          (let* ((store (supertag--persistence--try-read-store database))
+                 (nodes (and (hash-table-p store)
+                             (or (gethash :nodes store)
+                                 (gethash 'nodes store)
+                                 (gethash "nodes" store)))))
+            (unless (hash-table-p store)
+              (error "database root is not a hash table"))
+            (setq node-count (if (hash-table-p nodes)
+                                 (hash-table-count nodes)
+                               0)))
+        (error
+         (setq status :unreadable
+               read-error (error-message-string err)))))
+    (list :directory directory
+          :database database
+          :status status
+          :modified modified
+          :size size
+          :node-count node-count
+          :read-error read-error)))
+
+(defun supertag-persistence--format-data-directory-summary (label summary)
+  "Format LABEL and database SUMMARY for a recovery comparison."
+  (let ((status (plist-get summary :status)))
+    (format "%s: %s\n  DB: %s\n  Modified: %s\n  Size: %s\n  Nodes: %s%s"
+            label
+            (abbreviate-file-name (plist-get summary :directory))
+            (abbreviate-file-name (plist-get summary :database))
+            (if-let* ((modified (plist-get summary :modified)))
+                (format-time-string "%Y-%m-%d %H:%M:%S %z" modified)
+              "missing")
+            (if-let* ((size (plist-get summary :size)))
+                (format "%d bytes" size)
+              "missing")
+            (pcase status
+              (:missing "missing")
+              (:unreadable "unreadable")
+              (_ (number-to-string (or (plist-get summary :node-count) 0))))
+            (if (eq status :unreadable)
+                (format " (%s)" (plist-get summary :read-error))
+              ""))))
+
+(defun supertag-persistence-format-data-directory-comparison (&optional state)
+  "Return a human-readable comparison of default data directories.
+STATE defaults to `supertag-persistence-data-directory-state`.  Database
+metadata and node counts are best effort; an unreadable database is reported
+as such rather than aborting the comparison."
+  (let* ((state (or state (supertag-persistence-data-directory-state)))
+         (legacy (supertag-persistence--data-directory-db-summary
+                  (plist-get state :legacy)))
+         (current (supertag-persistence--data-directory-db-summary
+                   (plist-get state :current))))
+    (concat
+     (supertag-persistence--format-data-directory-summary
+      "Legacy (retired name)" legacy)
+     "\n\n"
+     (supertag-persistence--format-data-directory-summary
+      "Current" current))))
+
+(defun supertag-persistence-check-legacy-data-directory ()
+  "Pause startup when retired and current default data roots need resolution.
+The error compares both database candidates, states that nothing was changed,
+and points to `supertag-resolve-data-directories`.  This check never creates,
+moves, or deletes data.  Return t when initialization may continue."
+  (let* ((state (supertag-persistence-data-directory-state))
+         (issue (plist-get state :issue)))
+    (when issue
+      (user-error
+       (concat
+        "Supertag paused startup because %s.\n\n%s\n\n"
+        "Data safety: both directories and all database files are unchanged; all data remain safe.\n"
+        "Next step: run M-x supertag-resolve-data-directories to choose which directory to keep active; the other directory will only be renamed, never deleted")
+       (if (eq issue :both)
+           "the retired and current data directories both exist"
+         "the retired data directory exists but the current directory does not")
+       (supertag-persistence-format-data-directory-comparison state)))
     t))
+
+(defun supertag-persistence--retired-data-directory (directory)
+  "Return an unused dated retirement path for DIRECTORY.
+The first candidate is NAME-retired-YYYYMMDD.  Existing candidates are never
+overwritten; suffixes starting with -2 are tried until an unused path exists."
+  (let* ((directory (directory-file-name (expand-file-name directory)))
+         (parent (file-name-directory directory))
+         (name (file-name-nondirectory directory))
+         (base (expand-file-name
+                (format "%s-retired-%s" name (format-time-string "%Y%m%d"))
+                parent))
+         (candidate base)
+         (suffix 2))
+    (while (file-exists-p candidate)
+      (setq candidate (format "%s-%d" base suffix)
+            suffix (1+ suffix)))
+    candidate))
+
+(defun supertag-persistence--format-rename-preview (operations)
+  "Format directory rename OPERATIONS for confirmation."
+  (mapconcat
+   (lambda (operation)
+     (format "  %s\n    -> %s"
+             (abbreviate-file-name (car operation))
+             (abbreviate-file-name (cdr operation))))
+   operations "\n"))
+
+(defun supertag-persistence--run-directory-renames (operations)
+  "Run directory rename OPERATIONS, rolling back completed steps on error.
+Each operation is a cons cell (SOURCE . TARGET).  No target is overwritten and
+no data is deleted."
+  (let (completed)
+    (condition-case err
+        (progn
+          (dolist (operation operations)
+            (rename-file (car operation) (cdr operation) nil)
+            (push operation completed))
+          t)
+      (error
+       (let (rollback-errors)
+         (dolist (operation completed)
+           (condition-case rollback-error
+               (when (file-exists-p (cdr operation))
+                 (rename-file (cdr operation) (car operation) nil))
+             (error
+              (push (error-message-string rollback-error) rollback-errors))))
+         (if rollback-errors
+             (error
+              "Data-directory rename failed: %s; rollback was incomplete: %s. No data was deleted; inspect the paths shown in the recovery buffer"
+              (error-message-string err)
+              (mapconcat #'identity (nreverse rollback-errors) "; "))
+           (signal (car err) (cdr err))))))))
+
+(defun supertag-persistence--display-data-directory-recovery (state)
+  "Display the recovery comparison and choices described by STATE."
+  (let ((buffer
+         (get-buffer-create
+          supertag-persistence--data-directory-recovery-buffer)))
+    (with-current-buffer buffer
+      (let ((inhibit-read-only t))
+        (erase-buffer)
+        (insert "Supertag data directory recovery\n"
+                "================================\n\n"
+                "Startup found a retired data directory that needs an explicit choice.\n"
+                "Compare modification time, byte size, and best-effort node count below.\n\n"
+                (supertag-persistence-format-data-directory-comparison state)
+                "\n\nNo directory will be deleted. The unselected directory will be renamed "
+                "to a dated -retired- archive.\n")
+        (goto-char (point-min))
+        (special-mode)))
+    (display-buffer buffer)))
+
+;;;###autoload
+(defun supertag-resolve-data-directories ()
+  "Resolve retired/current default data directories without deleting data.
+Show a comparison, let the user keep the current or legacy directory, and
+require confirmation of the exact rename operations.  The unselected root is
+renamed to a dated `-retired-` archive; name collisions gain a numeric suffix.
+When the legacy root is selected it is moved into the current default path.
+Afterward, offer to load the selected database immediately."
+  (interactive)
+  (let* ((state (supertag-persistence-data-directory-state))
+         (issue (plist-get state :issue))
+         (legacy (directory-file-name (plist-get state :legacy)))
+         (current (directory-file-name (plist-get state :current))))
+    (unless issue
+      (user-error
+       "No default data-directory conflict needs recovery; %s"
+       (if (plist-get state :applicable)
+           "the retired directory is absent"
+         "supertag-data-directory is explicitly set to a non-default path")))
+    (when (called-interactively-p 'interactive)
+      (supertag-persistence--display-data-directory-recovery state))
+    (let* ((keep-current "Keep current data directory")
+           (keep-legacy "Keep legacy data directory")
+           (cancel "Cancel")
+           (choices (append (when (plist-get state :current-exists)
+                              (list keep-current))
+                            (list keep-legacy cancel)))
+           (choice (completing-read
+                    "Data directory recovery choice: " choices nil t nil nil
+                    (car choices))))
+      (if (string= choice cancel)
+          (progn
+            (message "Supertag data-directory recovery cancelled; no files were changed")
+            (list :status :cancelled :reason :user-cancelled))
+        (let* ((kept (if (string= choice keep-current) :current :legacy))
+               (operations
+                (if (eq kept :current)
+                    (list (cons legacy
+                                (supertag-persistence--retired-data-directory
+                                 legacy)))
+                  (append
+                   (when (file-exists-p current)
+                     (list
+                      (cons current
+                            (supertag-persistence--retired-data-directory
+                             current))))
+                   (list (cons legacy current)))))
+               (preview (supertag-persistence--format-rename-preview
+                         operations)))
+          (if (not
+               (y-or-n-p
+                (format
+                 "Perform these renames? No data will be deleted.\n%s\nProceed? "
+                 preview)))
+              (progn
+                (message "Supertag data-directory recovery declined; no files were changed")
+                (list :status :cancelled :reason :confirmation-declined))
+            (supertag-persistence--run-directory-renames operations)
+            (let* ((database (expand-file-name "supertag-db.el" current))
+                   (load-now
+                    (y-or-n-p
+                     "Directories resolved. Load the selected database now (otherwise restart Emacs)? "))
+                   load-error)
+              (when load-now
+                (condition-case err
+                    (supertag-load-store database)
+                  (error
+                   (setq load-now nil
+                         load-error (error-message-string err)))))
+              (if load-now
+                  (message
+                   "Supertag data directories resolved; no data was deleted. Selected database loaded from %s"
+                   (abbreviate-file-name database))
+                (message
+                 "Supertag data directories resolved; no data was deleted.%s Restart Emacs, or run M-x supertag-load-store to load %s"
+                 (if load-error (format " Direct load failed: %s." load-error) "")
+                 (abbreviate-file-name database)))
+              (list :status :resolved
+                    :kept kept
+                    :renamed operations
+                    :loaded load-now
+                    :load-error load-error))))))))
 
 (defcustom supertag-db-file
   (supertag-data-file "supertag-db.el")
@@ -525,9 +810,23 @@ Returns t if backup was created, nil if not needed."
         (message "Daily backup created: %s" backup-file)
         t))))
 
+(defun supertag--persistence-recovery-pending-p ()
+  "Return non-nil while the store is blocked awaiting recovery.
+True when the last load left the origin `:failed' (unreadable database)
+or `:missing-with-backups' (database gone, snapshots survive).  While
+this holds, nothing may rotate, delete, or commit over the surviving
+on-disk evidence."
+  (memq (plist-get supertag--store-origin :status)
+        '(:failed :missing-with-backups)))
+
 (defun supertag-cleanup-old-backups ()
-  "Remove backup files older than `supertag-db-backup-keep-days` days."
-  (when (file-exists-p supertag-db-backup-directory)
+  "Remove backup files older than `supertag-db-backup-keep-days` days.
+Does nothing while recovery is pending: when the live database is
+missing or unreadable, the old snapshots ARE the data, and rotation
+must not shrink the recovery window."
+  (if (supertag--persistence-recovery-pending-p)
+      (message "Supertag: backup rotation skipped while the database awaits recovery.")
+    (when (file-exists-p supertag-db-backup-directory)
     (let* ((cutoff-time (time-subtract (current-time)
                                       (days-to-time supertag-db-backup-keep-days)))
            (backup-files (directory-files supertag-db-backup-directory t
@@ -540,7 +839,7 @@ Returns t if backup was created, nil if not needed."
             (cl-incf removed-count)
             (message "Removed old backup: %s" backup-file))))
       (when (> removed-count 0)
-        (message "Cleaned up %d old backup files" removed-count)))))
+        (message "Cleaned up %d old backup files" removed-count))))))
 
 (defun supertag-backup-database-now ()
   "Force create a backup immediately and clean up old backups.
@@ -1184,11 +1483,21 @@ Signals an error if the file cannot be read or parsed."
     (dolist (spec '((:nodes nodes "nodes")
                     (:tags tags "tags")
                     (:relations relations "relations")
+                    (:link-definitions link-definitions "link-definitions")
+                    (:ontology-bindings ontology-bindings "ontology-bindings")
+                    (:ontology-modules ontology-modules "ontology-modules")
+                    (:ontology-migrations ontology-migrations "ontology-migrations")
+                    (:ontology-functions ontology-functions "ontology-functions")
+                    (:ontology-actions ontology-actions "ontology-actions")
+                    (:ontology-policies ontology-policies "ontology-policies")
+                    (:ontology-action-executions ontology-action-executions
+                     "ontology-action-executions")
                     (:embeds embeds "embeds")
                     (:fields fields "fields")
                     (:field-definitions field-definitions "field-definitions")
                     (:tag-field-associations tag-field-associations "tag-field-associations")
                     (:field-values field-values "field-values")
+                    (:field-provenance field-provenance "field-provenance")
                     (:boards boards "boards")
                     (:automations automations "automations")
                     (:sync-conflicts sync-conflicts "sync-conflicts")
@@ -1255,7 +1564,7 @@ Signals an error if the file cannot be read or parsed."
         (push "sync-state not loaded for current vault" reasons))
        ((and source-now source-loaded (not (string= source-now source-loaded)))
         (push "sync-state not loaded for current vault" reasons))))
-    (when (memq origin-status '(:failed :empty-file))
+    (when (memq origin-status '(:failed :empty-file :missing-with-backups))
       (push (format "last load status %s" origin-status) reasons))
     (when (and (numberp origin-field-count)
                (> origin-field-count 0)
@@ -1278,10 +1587,20 @@ Signals an error if the file cannot be read or parsed."
     (nreverse reasons)))
 
 (defun supertag--persistence-refuse-save (reasons)
-  "Refuse saving and explain the correct flow."
-  (let ((msg (format "Supertag refused to save: %s. Proper flow: use M-x supertag-vault-activate to switch vaults and reload state/store before saving."
-                     (mapconcat #'identity reasons "; "))))
-    (user-error "%s" msg)))
+  "Refuse saving and explain the recovery flow for the current situation.
+The guidance depends on why the store is untrusted: a missing database
+with surviving backups needs restore-or-accept, a parse failure needs
+doctor-driven recovery, and everything else is a vault switch problem."
+  (let ((flow
+         (pcase (plist-get supertag--store-origin :status)
+           (:missing-with-backups
+            "Your database file is missing but backup snapshots survive. Your notes are safe on disk. Run M-x supertag-restore to recover the newest snapshot, or M-x supertag-accept-fresh-store to intentionally start over empty.")
+           (:failed
+            "The database file exists but could not be read; it has NOT been modified. Run M-x supertag-doctor for details, then M-x supertag-restore to recover from a snapshot.")
+           (_
+            "Proper flow: use M-x supertag-vault-activate to switch vaults and reload state/store before saving."))))
+    (user-error "Supertag refused to save: %s. %s"
+                (mapconcat #'identity reasons "; ") flow)))
 
 (defun supertag-persistence-ensure-data-directory ()
   "Ensure database and backup directories exist."
@@ -1757,18 +2076,23 @@ lock already held for it; this is reserved for the restore critical section."
                            (ignore-errors (expand-file-name candidate)))))
         (when (and expanded
                    (file-exists-p expanded)
-                   (not (file-directory-p expanded))
-                   (file-readable-p expanded)
-                   (null file-to-load))
-          (condition-case err
-              (let* ((loaded-data (supertag--persistence--try-read-store expanded))
-                     (coerced (supertag--coerce-store-table loaded-data)))
-                (setq file-to-load expanded)
-                (setq supertag--store (supertag--persistence--canonicalize-store-root coerced))
-                (supertag--ensure-store)
-                (setq load-status :ok))
-            (error
-             (push (cons expanded (error-message-string err)) failures))))))
+                   (not (file-directory-p expanded)))
+          (cond
+           ((not (file-readable-p expanded))
+            ;; An existing but unreadable database is a broken database,
+            ;; not a fresh vault: record the failure so the load degrades
+            ;; to :failed (which blocks saving) instead of :new.
+            (push (cons expanded "file exists but is not readable") failures))
+           ((null file-to-load)
+            (condition-case err
+                (let* ((loaded-data (supertag--persistence--try-read-store expanded))
+                       (coerced (supertag--coerce-store-table loaded-data)))
+                  (setq file-to-load expanded)
+                  (setq supertag--store (supertag--persistence--canonicalize-store-root coerced))
+                  (supertag--ensure-store)
+                  (setq load-status :ok))
+              (error
+               (push (cons expanded (error-message-string err)) failures))))))))
 
     (if (and file-to-load (eq load-status :ok))
         (progn
@@ -1835,19 +2159,45 @@ lock already held for it; this is reserved for the restore critical section."
       ;; message already points at. The on-disk file (still containing the
       ;; real, conflict-marked or otherwise corrupt data) is therefore never
       ;; at risk of being silently overwritten by this fresh empty store.
-      (setq load-status (if failures :failed :new))
-      (supertag-clear-dirty)
-      (supertag--record-store-origin load-status (list :loaded-from nil
-                                                       :load-candidates candidates
-                                                       :load-failures failures))
-      (if failures
+      ;; No candidate file loaded. Distinguish three very different
+      ;; situations before touching the origin record:
+      ;;   :failed               -- a file existed but could not be parsed;
+      ;;   :missing-with-backups -- no file exists, yet snapshots in the
+      ;;                            backup directory prove a database used
+      ;;                            to live here (deleted or lost file);
+      ;;   :new                  -- a genuinely fresh vault.
+      ;; The first two BLOCK saving (see
+      ;; `supertag--persistence-guard-violations'): a deleted database must
+      ;; never be silently replaced by this empty in-memory store, because
+      ;; the next save would rotate real data out of the backups within
+      ;; `supertag-db-backup-keep-days'.
+      (let ((snapshots (and (null failures)
+                            (supertag--restore-snapshot-list))))
+        (setq load-status (cond (failures :failed)
+                                (snapshots :missing-with-backups)
+                                (t :new)))
+        (supertag-clear-dirty)
+        (supertag--record-store-origin
+         load-status
+         (list :loaded-from nil
+               :load-candidates candidates
+               :load-failures failures
+               :backup-snapshots (length snapshots)))
+        (cond
+         (failures
           (message "Supertag: FAILED to load the database -- %d candidate(s) existed but could not be parsed (%s). Initialized an EMPTY in-memory store as a placeholder; saving is BLOCKED (see M-x supertag-doctor / M-x supertag-git-setup) until this is resolved and the store is reloaded -- your on-disk data has NOT been modified. candidates=%S"
                    (length failures)
                    (mapconcat (lambda (f) (format "%s: %s" (abbreviate-file-name (car f)) (cdr f)))
                               failures "; ")
-                   (mapcar #'abbreviate-file-name candidates))
-        (message "Initialized empty Supertag store (no readable DB found; candidates=%S)."
-                 (mapcar #'abbreviate-file-name candidates))))
+                   (mapcar #'abbreviate-file-name candidates)))
+         (snapshots
+          (message "Supertag: database file is MISSING but %d backup snapshot(s) exist (newest: %s). Saving is BLOCKED so the backups stay safe. Run M-x supertag-restore to recover, or M-x supertag-accept-fresh-store to intentionally start empty."
+                   (length snapshots)
+                   (format-time-string "%Y-%m-%d %H:%M"
+                                       (plist-get (car snapshots) :mtime))))
+         (t
+          (message "Initialized empty Supertag store (no readable DB found; candidates=%S)."
+                   (mapcar #'abbreviate-file-name candidates))))))
         (supertag-index-rebuild-all)))
 
 (defun supertag-schedule-save ()
@@ -2407,6 +2757,63 @@ downgrade."
                    (if downgrade-p
                        " Quit Emacs now and reopen with the older build"
                      "")))))))
+
+;;;###autoload
+(defun supertag-accept-fresh-store ()
+  "Explicitly start over with an empty store despite surviving backups.
+
+When the database file is missing but backup snapshots exist,
+`supertag-load-store' blocks saving so a deleted database cannot be
+silently replaced by an empty one.  This command lifts that block after
+showing what would be left behind and asking for confirmation.  It never
+touches the backup snapshots themselves.
+
+A store whose on-disk file exists but failed to parse (`:failed') cannot
+be accepted this way: the unreadable file would be overwritten on the
+next save.  Recover it with `supertag-restore', or move the file away
+manually first."
+  (interactive)
+  (let ((status (plist-get supertag--store-origin :status)))
+    (unless (eq status :missing-with-backups)
+      (user-error
+       (if (eq status :failed)
+           "The database file still exists but could not be read; accepting an empty store would overwrite it. Use M-x supertag-restore, or move the file away manually first"
+         "Saving is not blocked by a missing-database guard (store status: %s)")
+       status))
+    ;; The database may have reappeared since the blocked load -- a file
+    ;; sync or git checkout can restore it at any time.  Accepting a
+    ;; fresh store then would overwrite it on the next save.
+    (let ((reappeared
+           (cl-find-if (lambda (candidate)
+                         (and (stringp candidate)
+                              (file-exists-p candidate)
+                              (not (file-directory-p candidate))))
+                       (supertag--persistence--db-file-candidates))))
+      (when reappeared
+        (user-error "A database file has appeared at %s since the blocked load. Run M-x supertag-load-store to load it instead"
+                    (abbreviate-file-name reappeared))))
+    (let* ((snapshots (supertag--restore-snapshot-list))
+           (newest (car snapshots))
+           (summary (and newest
+                         (condition-case nil
+                             (supertag--restore-snapshot-summary
+                              (plist-get newest :file))
+                           (error nil)))))
+      (if (not (yes-or-no-p
+                (format "Start over with an EMPTY store? %d backup snapshot(s) survive for now%s, but routine rotation deletes daily snapshots after %d day(s) -- copy them elsewhere for a permanent archive. Proceed? "
+                        (length snapshots)
+                        (if summary
+                            (format " (newest holds %s nodes, from %s)"
+                                    (plist-get summary :nodes)
+                                    (format-time-string
+                                     "%Y-%m-%d %H:%M"
+                                     (plist-get newest :mtime)))
+                          "")
+                        supertag-db-backup-keep-days)))
+          (message "Kept the recovery guard; run M-x supertag-restore to recover instead.")
+        (supertag--record-store-origin :new '(:accepted-fresh t))
+        (message "Fresh empty store accepted; saving is unblocked. Snapshots remain in %s until routine rotation; copy them elsewhere to keep them permanently."
+                 (abbreviate-file-name supertag-db-backup-directory))))))
 
 (provide 'supertag-core-persistence)
 

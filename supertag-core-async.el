@@ -34,6 +34,11 @@ Keep this low (1-3) to maintain responsiveness."
   "List of items (usually file paths) waiting to be processed.
 Ordered from oldest to newest.")
 
+(defvar supertag-async--failed-items '()
+  "Items whose most recent processing attempt failed.
+They are kept outside the active queue to avoid a tight automatic retry
+loop.  Use `supertag-async-retry-failed' after fixing the reported cause.")
+
 (defvar supertag-async--timer nil
   "The active idle timer, or nil if not running.")
 
@@ -48,6 +53,7 @@ Must accept a single argument (the item).")
 PROCESSOR-FN is a function that takes one argument (the item to process)."
   (setq supertag-async--processor-fn processor-fn)
   (setq supertag-async--queue '())
+  (setq supertag-async--failed-items '())
   (supertag-async--ensure-timer))
 
 (defun supertag-async-enqueue (item)
@@ -56,6 +62,9 @@ If ITEM is already in the queue, it is moved to the end (re-prioritized).
 Returns the new queue length."
   ;; Remove if exists (deduplicate)
   (setq supertag-async--queue (delete item supertag-async--queue))
+  ;; A fresh enqueue supersedes an earlier failed attempt for this item.
+  (setq supertag-async--failed-items
+        (delete item supertag-async--failed-items))
   ;; Add to end
   (setq supertag-async--queue (append supertag-async--queue (list item)))
   ;; Ensure timer is running
@@ -68,7 +77,28 @@ Returns the new queue length."
 
 (defun supertag-async-clear ()
   "Clear all pending jobs."
-  (setq supertag-async--queue '()))
+  (setq supertag-async--queue '())
+  (setq supertag-async--failed-items '()))
+
+(defun supertag-async-failed-count ()
+  "Return the number of items retained after processing failures."
+  (length supertag-async--failed-items))
+
+;;;###autoload
+(defun supertag-async-retry-failed ()
+  "Move all retained failed items back to the active queue.
+The original item (normally an Org filename) is preserved so the user can
+fix the cause and retry explicitly without waiting for another scan."
+  (interactive)
+  (let ((items (copy-sequence supertag-async--failed-items)))
+    (setq supertag-async--failed-items nil)
+    (dolist (item items)
+      (supertag-async-enqueue item))
+    (if items
+        (message "Supertag sync: queued %d failed file(s) for retry; processing resumes when Emacs is idle."
+                 (length items))
+      (message "Supertag sync: no failed files are waiting to retry."))
+    (length items)))
 
 ;;; Internal Timer Logic
 
@@ -87,19 +117,27 @@ Returns the new queue length."
   (setq supertag-async--timer nil) ;; Timer has fired, so it's gone
 
   (when (and supertag-async--queue supertag-async--processor-fn)
-    (condition-case err
-        (let ((count 0))
-          ;; Process batch
-          (while (and supertag-async--queue
-                      (< count supertag-async-batch-size))
-            (let ((item (pop supertag-async--queue)))
-              (when item
+    (let ((count 0))
+      ;; Process each item independently so one failure does not hide which
+      ;; file failed or discard the rest of this batch.
+      (while (and supertag-async--queue
+                  (< count supertag-async-batch-size))
+        (let ((item (car supertag-async--queue)))
+          (condition-case err
+              (progn
                 (funcall supertag-async--processor-fn item)
-                (cl-incf count))))
-
-          )
-      (error
-       (message "Error in supertag async worker: %s" (error-message-string err))))
+                (setq supertag-async--queue
+                      (cdr supertag-async--queue)))
+            (error
+             (setq supertag-async--queue
+                   (cdr supertag-async--queue))
+             (cl-pushnew item supertag-async--failed-items :test #'equal)
+             (message
+              (concat "Supertag sync failed for %s: %s. "
+                      "Data safety: the Org source file was not modified, and its filename is retained for retry. "
+                      "Next: fix the cause, then run M-x supertag-async-retry-failed.")
+              item (error-message-string err))))
+          (cl-incf count))))
 
     ;; If work remains, re-schedule
     (when supertag-async--queue

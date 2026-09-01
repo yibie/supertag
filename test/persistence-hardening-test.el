@@ -96,10 +96,28 @@ and internal state variables, so tests never touch the real
   `(let* ((tmp (file-name-as-directory
                 (make-temp-file "supertag-rename-test" t)))
           (user-emacs-directory tmp)
-          (supertag-data-directory (expand-file-name "supertag" tmp)))
+          (supertag-data-directory (expand-file-name "supertag" tmp))
+          (supertag-db-file
+           (expand-file-name "supertag-db.el" supertag-data-directory))
+          (supertag-db-backup-directory
+           (expand-file-name "backups" supertag-data-directory)))
      (unwind-protect
          (progn ,@body)
        (ignore-errors (delete-directory tmp t)))))
+
+(defun supertag-hardening-test--write-root-store (directory ids)
+  "Write a test database containing IDS under DIRECTORY."
+  (let ((file (expand-file-name "supertag-db.el" directory)))
+    (supertag-hardening-test--write-store-file
+     file (supertag-hardening-test--make-store ids supertag-data-version))
+    file))
+
+(defun supertag-hardening-test--retired-directories (name)
+  "Return retired directories for NAME under `user-emacs-directory'."
+  (directory-files
+   user-emacs-directory t
+   (format "\\`%s-retired-[0-9]\\{8\\}\\(?:-[0-9]+\\)?\\'"
+           (regexp-quote name))))
 
 ;;; --- Breaking rename data-root guard ---
 
@@ -120,6 +138,289 @@ and internal state variables, so tests never touch the real
     (make-directory (expand-file-name "supertag" user-emacs-directory) t)
     (should-error (supertag-persistence-check-legacy-data-directory)
                   :type 'user-error)))
+
+(ert-deftest supertag-hardening-test-data-root-guard-explains-comparison-and-recovery ()
+  "The startup guard answers what happened, data safety, and next action."
+  (supertag-hardening-test--with-temp-user-directory
+    (let* ((legacy (expand-file-name "org-supertag" user-emacs-directory))
+           (current (expand-file-name "supertag" user-emacs-directory))
+           (legacy-db (supertag-hardening-test--write-root-store
+                       legacy '("OLD")))
+           (current-db (supertag-hardening-test--write-root-store
+                        current '("NEW-1" "NEW-2")))
+           message)
+      (set-file-times legacy-db (encode-time 0 0 12 1 8 2026))
+      (set-file-times current-db (encode-time 0 0 12 2 8 2026))
+      (setq message
+            (condition-case err
+                (progn
+                  (supertag-persistence-check-legacy-data-directory)
+                  nil)
+              (user-error (error-message-string err))))
+      (should message)
+      (should (string-match-p (regexp-quote legacy) message))
+      (should (string-match-p (regexp-quote current) message))
+      (should (string-match-p "Modified:" message))
+      (should (string-match-p "Size: [0-9]+ bytes" message))
+      (should (string-match-p "Nodes: 1" message))
+      (should (string-match-p "Nodes: 2" message))
+      (should (string-match-p "data.*safe" message))
+      (should (string-match-p "M-x supertag-resolve-data-directories"
+                              message)))))
+
+(ert-deftest supertag-hardening-test-data-root-summary-marks-unreadable-db ()
+  "A corrupt candidate is described as unreadable without hiding its metadata."
+  (supertag-hardening-test--with-temp-user-directory
+    (let ((legacy (expand-file-name "org-supertag" user-emacs-directory))
+          (current (expand-file-name "supertag" user-emacs-directory)))
+      (make-directory legacy t)
+      (with-temp-file (expand-file-name "supertag-db.el" legacy)
+        (insert "<<<<<<< unresolved\n"))
+      (supertag-hardening-test--write-root-store current '("NEW"))
+      (let ((summary
+             (supertag-persistence-format-data-directory-comparison)))
+        (should (string-match-p "Nodes: unreadable" summary))
+        (should (string-match-p "Size: [0-9]+ bytes" summary))))))
+
+(ert-deftest supertag-hardening-test-data-root-summary-reads-legacy-db-name ()
+  "The comparison recognizes the older supertag-db.db filename."
+  (supertag-hardening-test--with-temp-user-directory
+    (let ((legacy (expand-file-name "org-supertag" user-emacs-directory))
+          (current (expand-file-name "supertag" user-emacs-directory)))
+      (supertag-hardening-test--write-store-file
+       (expand-file-name "supertag-db.db" legacy)
+       (supertag-hardening-test--make-store '("OLD-1" "OLD-2" "OLD-3")
+                                             supertag-data-version))
+      (supertag-hardening-test--write-root-store current '("NEW"))
+      (let ((summary
+             (supertag-persistence-format-data-directory-comparison)))
+        (should (string-match-p
+                 (regexp-quote (expand-file-name "supertag-db.db" legacy))
+                 summary))
+        (should (string-match-p "Nodes: 3" summary))))))
+
+(ert-deftest supertag-hardening-test-doctor-reports-data-directory-recovery ()
+  "Doctor reports the dual-root guard and names its guided recovery command."
+  (supertag-hardening-test--with-temp-user-directory
+    (let ((legacy (expand-file-name "org-supertag" user-emacs-directory))
+          (current (expand-file-name "supertag" user-emacs-directory))
+          (supertag--store-origin nil))
+      (supertag-hardening-test--write-root-store legacy '("OLD"))
+      (supertag-hardening-test--write-root-store current '("NEW"))
+      (let* ((buffer (supertag-doctor t))
+             (text (with-current-buffer buffer (buffer-string))))
+        (should (string-match-p "2b\\. Recovery needed" text))
+        (should (string-match-p "Data directory" text))
+        (should (string-match-p (regexp-quote legacy) text))
+        (should (string-match-p (regexp-quote current) text))
+        (should (string-match-p "supertag-resolve-data-directories" text))))))
+
+(ert-deftest supertag-hardening-test-resolve-data-roots-keeps-current-and-retires-legacy ()
+  "Keeping current archives the legacy directory without deleting either DB."
+  (supertag-hardening-test--with-temp-user-directory
+    (let* ((legacy (expand-file-name "org-supertag" user-emacs-directory))
+           (current (expand-file-name "supertag" user-emacs-directory))
+           (legacy-db (supertag-hardening-test--write-root-store legacy '("OLD")))
+           (current-db (supertag-hardening-test--write-root-store current '("NEW")))
+           (answers '(t nil))
+           result)
+      (cl-letf (((symbol-function 'completing-read)
+                 (lambda (&rest _) "Keep current data directory"))
+                ((symbol-function 'y-or-n-p)
+                 (lambda (&rest _)
+                   (prog1 (car answers) (setq answers (cdr answers))))))
+        (setq result (supertag-resolve-data-directories)))
+      (should (eq :resolved (plist-get result :status)))
+      (should (eq :current (plist-get result :kept)))
+      (should (file-exists-p current-db))
+      (should-not (file-exists-p legacy))
+      (let ((retired (supertag-hardening-test--retired-directories
+                      "org-supertag")))
+        (should (= 1 (length retired)))
+        (should (file-exists-p
+                 (expand-file-name "supertag-db.el" (car retired))))
+        (should-not (file-exists-p legacy-db))))))
+
+(ert-deftest supertag-hardening-test-resolve-data-roots-keeps-legacy-and-retires-current ()
+  "Keeping legacy archives current, then moves legacy into the current slot."
+  (supertag-hardening-test--with-temp-user-directory
+    (let* ((legacy (expand-file-name "org-supertag" user-emacs-directory))
+           (current (expand-file-name "supertag" user-emacs-directory))
+           (legacy-db (supertag-hardening-test--write-root-store legacy '("OLD")))
+           (current-db (supertag-hardening-test--write-root-store current '("NEW")))
+           (answers '(t nil))
+           result)
+      (cl-letf (((symbol-function 'completing-read)
+                 (lambda (&rest _) "Keep legacy data directory"))
+                ((symbol-function 'y-or-n-p)
+                 (lambda (&rest _)
+                   (prog1 (car answers) (setq answers (cdr answers))))))
+        (setq result (supertag-resolve-data-directories)))
+      (should (eq :legacy (plist-get result :kept)))
+      (should-not (file-exists-p legacy))
+      (should (file-exists-p current-db))
+      (let* ((loaded (supertag--persistence--try-read-store
+                      current-db))
+             (nodes (gethash :nodes loaded))
+             (retired (supertag-hardening-test--retired-directories
+                       "supertag"))
+             retired-loaded
+             retired-nodes)
+        (should (gethash "OLD" nodes))
+        (should-not (gethash "NEW" nodes))
+        (should (= 1 (length retired)))
+        (should (file-exists-p
+                 (expand-file-name "supertag-db.el" (car retired))))
+        (setq retired-loaded
+              (supertag--persistence--try-read-store
+               (expand-file-name "supertag-db.el" (car retired)))
+              retired-nodes (gethash :nodes retired-loaded))
+        (should (gethash "NEW" retired-nodes))
+        (should-not (gethash "OLD" retired-nodes)))
+      (should-not (file-exists-p legacy-db)))))
+
+(ert-deftest supertag-hardening-test-resolve-legacy-only-moves-it-into-current-slot ()
+  "A legacy-only upgrade moves that root into the current default path."
+  (supertag-hardening-test--with-temp-user-directory
+    (let* ((legacy (expand-file-name "org-supertag" user-emacs-directory))
+           (current (expand-file-name "supertag" user-emacs-directory))
+           (answers '(t nil))
+           result)
+      (supertag-hardening-test--write-root-store legacy '("OLD"))
+      (cl-letf (((symbol-function 'completing-read)
+                 (lambda (&rest _) "Keep legacy data directory"))
+                ((symbol-function 'y-or-n-p)
+                 (lambda (&rest _)
+                   (prog1 (car answers) (setq answers (cdr answers))))))
+        (setq result (supertag-resolve-data-directories)))
+      (should (eq :resolved (plist-get result :status)))
+      (should (eq :legacy (plist-get result :kept)))
+      (should-not (file-exists-p legacy))
+      (let* ((loaded (supertag--persistence--try-read-store
+                      (expand-file-name "supertag-db.el" current)))
+             (nodes (gethash :nodes loaded)))
+        (should (gethash "OLD" nodes)))
+      (should-not (supertag-hardening-test--retired-directories
+                   "supertag")))))
+
+(ert-deftest supertag-hardening-test-resolve-data-roots-cancel-changes-nothing ()
+  "Choosing Cancel performs no rename and asks for no confirmation."
+  (supertag-hardening-test--with-temp-user-directory
+    (let* ((legacy (expand-file-name "org-supertag" user-emacs-directory))
+           (current (expand-file-name "supertag" user-emacs-directory)))
+      (supertag-hardening-test--write-root-store legacy '("OLD"))
+      (supertag-hardening-test--write-root-store current '("NEW"))
+      (cl-letf (((symbol-function 'completing-read)
+                 (lambda (&rest _) "Cancel"))
+                ((symbol-function 'y-or-n-p)
+                 (lambda (&rest _) (ert-fail "Cancel must not confirm"))))
+        (let ((result (supertag-resolve-data-directories)))
+          (should (eq :cancelled (plist-get result :status)))))
+      (should (file-directory-p legacy))
+      (should (file-directory-p current))
+      (should-not (supertag-hardening-test--retired-directories
+                   "org-supertag"))
+      (should-not (supertag-hardening-test--retired-directories
+                   "supertag")))))
+
+(ert-deftest supertag-hardening-test-resolve-data-roots-declined-preview-is-safe ()
+  "Declining the rename preview leaves both original directories untouched."
+  (supertag-hardening-test--with-temp-user-directory
+    (let ((legacy (expand-file-name "org-supertag" user-emacs-directory))
+          (current (expand-file-name "supertag" user-emacs-directory))
+          confirmation-prompt)
+      (supertag-hardening-test--write-root-store legacy '("OLD"))
+      (supertag-hardening-test--write-root-store current '("NEW"))
+      (cl-letf (((symbol-function 'completing-read)
+                 (lambda (&rest _) "Keep current data directory"))
+                ((symbol-function 'y-or-n-p)
+                 (lambda (prompt)
+                   (setq confirmation-prompt prompt)
+                   nil)))
+        (let ((result (supertag-resolve-data-directories)))
+          (should (eq :cancelled (plist-get result :status)))
+          (should (eq :confirmation-declined
+                      (plist-get result :reason)))))
+      (should (string-match-p (regexp-quote legacy) confirmation-prompt))
+      (should (string-match-p
+               (regexp-quote
+                (expand-file-name
+                 (format "org-supertag-retired-%s"
+                         (format-time-string "%Y%m%d"))
+                 user-emacs-directory))
+               confirmation-prompt))
+      (should (file-directory-p legacy))
+      (should (file-directory-p current)))))
+
+(ert-deftest supertag-hardening-test-resolve-data-roots-avoids-retired-name-collision ()
+  "An existing dated archive causes the next safe archive name to gain a suffix."
+  (supertag-hardening-test--with-temp-user-directory
+    (let* ((legacy (expand-file-name "org-supertag" user-emacs-directory))
+           (current (expand-file-name "supertag" user-emacs-directory))
+           (base (expand-file-name
+                  (format "org-supertag-retired-%s"
+                          (format-time-string "%Y%m%d"))
+                  user-emacs-directory))
+           (answers '(t nil)))
+      (supertag-hardening-test--write-root-store legacy '("OLD"))
+      (supertag-hardening-test--write-root-store current '("NEW"))
+      (make-directory base t)
+      (cl-letf (((symbol-function 'completing-read)
+                 (lambda (&rest _) "Keep current data directory"))
+                ((symbol-function 'y-or-n-p)
+                 (lambda (&rest _)
+                   (prog1 (car answers) (setq answers (cdr answers))))))
+        (supertag-resolve-data-directories))
+      (should (file-directory-p base))
+      (should (file-directory-p (concat base "-2"))))))
+
+(ert-deftest supertag-hardening-test-resolve-data-roots-rolls-back-partial-rename ()
+  "A failed second rename restores the first one and preserves both stores."
+  (supertag-hardening-test--with-temp-user-directory
+    (let* ((legacy (expand-file-name "org-supertag" user-emacs-directory))
+           (current (expand-file-name "supertag" user-emacs-directory))
+           (legacy-db (supertag-hardening-test--write-root-store legacy '("OLD")))
+           (current-db (supertag-hardening-test--write-root-store current '("NEW")))
+           (real-rename (symbol-function 'rename-file))
+           (rename-count 0))
+      (cl-letf (((symbol-function 'completing-read)
+                 (lambda (&rest _) "Keep legacy data directory"))
+                ((symbol-function 'y-or-n-p) (lambda (&rest _) t))
+                ((symbol-function 'rename-file)
+                 (lambda (source target &optional ok-if-already-exists)
+                   (cl-incf rename-count)
+                   (if (= rename-count 2)
+                       (signal 'file-error '("simulated second rename failure"))
+                     (funcall real-rename source target
+                              ok-if-already-exists)))))
+        (should-error (supertag-resolve-data-directories)
+                      :type 'file-error))
+      (should (file-exists-p legacy-db))
+      (should (file-exists-p current-db))
+      (should-not (supertag-hardening-test--retired-directories
+                   "supertag")))))
+
+(ert-deftest supertag-hardening-test-resolve-data-roots-can-load-selected-db ()
+  "After renaming, the wizard can trigger a direct load of the selected DB."
+  (supertag-hardening-test--with-temp-user-directory
+    (let* ((legacy (expand-file-name "org-supertag" user-emacs-directory))
+           (current (expand-file-name "supertag" user-emacs-directory))
+           (answers '(t t))
+           loaded-file)
+      (supertag-hardening-test--write-root-store legacy '("OLD"))
+      (supertag-hardening-test--write-root-store current '("NEW"))
+      (cl-letf (((symbol-function 'completing-read)
+                 (lambda (&rest _) "Keep legacy data directory"))
+                ((symbol-function 'y-or-n-p)
+                 (lambda (&rest _)
+                   (prog1 (car answers) (setq answers (cdr answers)))))
+                ((symbol-function 'supertag-load-store)
+                 (lambda (&optional file &rest _)
+                   (setq loaded-file file))))
+        (let ((result (supertag-resolve-data-directories)))
+          (should (plist-get result :loaded))))
+      (should (equal (expand-file-name "supertag-db.el" current)
+                     loaded-file)))))
 
 (ert-deftest supertag-hardening-test-custom-data-root-skips-default-root-guard ()
   "An explicit custom data root is not coupled to either default root."
@@ -458,6 +759,131 @@ timestamp under test. Returns the presence file path."
     (supertag--presence-write)
     (should (null (supertag-hardening-test--tmp-residues
                    (file-name-directory (supertag--presence-file)))))))
+
+;;; --- Missing database with surviving backups ---
+
+(defvar supertag-sync--state-source)
+(defvar supertag-sync-state-file)
+
+(defun supertag-hardening-test--seed-backup-snapshot ()
+  "Write one valid daily snapshot into the backup directory.
+Returns the snapshot's file name."
+  (let ((snapshot (expand-file-name "supertag-db-2026-08-30.el"
+                                    supertag-db-backup-directory)))
+    (supertag-hardening-test--write-store-file
+     snapshot (supertag-hardening-test--make-store '("REAL")))
+    snapshot))
+
+(ert-deftest supertag-hardening-test-missing-db-with-backups-blocks-save ()
+  "A missing DB with surviving backups must not run as a fresh vault."
+  (supertag-hardening-test--with-temp-env
+    (supertag-hardening-test--seed-backup-snapshot)
+    (supertag-load-store)
+    (should (eq (plist-get supertag--store-origin :status)
+                :missing-with-backups))
+    ;; Even after the user creates new content, saving stays blocked so
+    ;; the deleted database cannot be replaced by this empty store.
+    ;; Interactive saves refuse loudly; timer-driven saves skip silently.
+    (setq supertag--store (supertag-hardening-test--make-store '("NEW")))
+    (should-error (call-interactively #'supertag-save-store)
+                  :type 'user-error)
+    (supertag-save-store)
+    (should-not (file-exists-p supertag-db-file))))
+
+(ert-deftest supertag-hardening-test-accept-fresh-store-unblocks-save ()
+  "Explicitly accepting a fresh store lifts the missing-DB guard."
+  (supertag-hardening-test--with-temp-env
+    ;; The sync-state guard is out of scope here; satisfy it the way a
+    ;; fully initialized session would.  Bind the sync vars around the
+    ;; WHOLE flow so the origin recorded at accept time matches the
+    ;; values seen at save time, whether or not the sync module happens
+    ;; to be loaded by other test files in the same batch.
+    (let* ((state (supertag--persistence--expected-sync-state-file))
+           (supertag-sync-state-file state)
+           (supertag-sync--state-source state)
+           (snapshot (supertag-hardening-test--seed-backup-snapshot)))
+      (supertag-load-store)
+      (cl-letf (((symbol-function 'yes-or-no-p) (lambda (&rest _) t)))
+        (supertag-accept-fresh-store))
+      (should (eq (plist-get supertag--store-origin :status) :new))
+      (setq supertag--store (supertag-hardening-test--make-store '("NEW")))
+      (supertag-mark-dirty)
+      (supertag-save-store)
+      (should (file-exists-p supertag-db-file))
+      ;; Accepting a fresh start never touches the snapshots themselves.
+      (should (file-exists-p snapshot)))))
+
+(ert-deftest supertag-hardening-test-accept-fresh-store-requires-guard ()
+  "The accept command refuses to run when nothing is blocked."
+  (supertag-hardening-test--with-temp-env
+    (supertag-load-store)
+    (should (eq (plist-get supertag--store-origin :status) :new))
+    (should-error (supertag-accept-fresh-store) :type 'user-error)))
+
+(ert-deftest supertag-hardening-test-fresh-vault-without-backups-stays-new ()
+  "A genuinely fresh vault still loads and saves without friction."
+  (supertag-hardening-test--with-temp-env
+    (supertag-load-store)
+    (should (eq (plist-get supertag--store-origin :status) :new))
+    (should-not (cl-find-if (lambda (reason)
+                              (string-match-p "last load status" reason))
+                            (supertag--persistence-guard-violations)))))
+
+(ert-deftest supertag-hardening-test-recovery-state-blocks-backup-rotation ()
+  "Backup rotation must not shrink the recovery window while blocked."
+  (supertag-hardening-test--with-temp-env
+    (let ((snapshot (supertag-hardening-test--seed-backup-snapshot))
+          (supertag-db-backup-keep-days 1)
+          (old-time (time-subtract (current-time) (days-to-time 30))))
+      ;; Make the only snapshot old enough that rotation would delete it.
+      (set-file-times snapshot old-time)
+      (supertag-load-store)
+      (should (eq (plist-get supertag--store-origin :status)
+                  :missing-with-backups))
+      (supertag-cleanup-old-backups)
+      (should (file-exists-p snapshot))
+      ;; After explicitly accepting a fresh store, rotation resumes.
+      (cl-letf (((symbol-function 'yes-or-no-p) (lambda (&rest _) t)))
+        (supertag-accept-fresh-store))
+      (supertag-cleanup-old-backups)
+      (should-not (file-exists-p snapshot)))))
+
+(ert-deftest supertag-hardening-test-accept-fresh-refuses-reappeared-db ()
+  "A database restored behind our back must be loaded, not overwritten."
+  (supertag-hardening-test--with-temp-env
+    (supertag-hardening-test--seed-backup-snapshot)
+    (supertag-load-store)
+    (should (eq (plist-get supertag--store-origin :status)
+                :missing-with-backups))
+    ;; A file sync or git checkout brings the database back.
+    (supertag-hardening-test--write-store-file
+     supertag-db-file (supertag-hardening-test--make-store '("RESTORED")))
+    (should-error (supertag-accept-fresh-store) :type 'user-error)))
+
+(ert-deftest supertag-hardening-test-unreadable-db-degrades-to-failed ()
+  "An existing but unreadable database is broken, not a fresh vault."
+  (skip-unless (not (zerop (user-uid)))) ; root ignores file modes
+  (supertag-hardening-test--with-temp-env
+    (supertag-hardening-test--write-store-file
+     supertag-db-file (supertag-hardening-test--make-store '("REAL")))
+    (set-file-modes supertag-db-file 0)
+    (unwind-protect
+        (progn
+          (supertag-load-store)
+          (should (eq (plist-get supertag--store-origin :status) :failed)))
+      (set-file-modes supertag-db-file #o600))))
+
+(ert-deftest supertag-hardening-test-doctor-reports-recovery-section ()
+  "The doctor report explains recovery when the database is missing."
+  (supertag-hardening-test--with-temp-env
+    (supertag-hardening-test--seed-backup-snapshot)
+    (supertag-load-store)
+    (let ((buf (supertag-doctor t)))
+      (with-current-buffer buf
+        (should (string-match-p "Recovery needed" (buffer-string)))
+        (should (string-match-p "supertag-restore" (buffer-string)))
+        (should (string-match-p "supertag-accept-fresh-store"
+                                (buffer-string)))))))
 
 (provide 'persistence-hardening-test)
 

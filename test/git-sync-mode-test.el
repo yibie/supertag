@@ -1308,15 +1308,31 @@ After the user unstages it, the next cycle commits only the Org edit."
 ;;; above `supertag-git-sync--rev-count' in supertag-git.el.
 ;;; ----------------------------------------------------------------
 
-(supertag-git-sync-test--deftest supertag-git-sync-test-offline-message-is-brief
-    "The first failed operation reports only the operation and retry policy."
+(supertag-git-sync-test--deftest supertag-git-sync-test-offline-message-explains-local-safety
+    "The first failed operation reports save/commit/pending state and retry."
   (let ((supertag-git-sync--offline-warned nil)
+        (supertag-git-sync--pending-push-count 0)
         shown)
     (cl-letf (((symbol-function 'message)
                (lambda (format-string &rest args)
-                 (setq shown (apply #'format format-string args)))))
-      (supertag-git-sync--note-offline "fetch"))
-    (should (equal shown "supertag-git-sync: fetch failed; will retry."))))
+                 (setq shown (apply #'format format-string args))))
+              ((symbol-function 'supertag-dirty-p) (lambda () nil))
+              ((symbol-function 'supertag-git-sync--owned-changes-p)
+               (lambda (_root) nil))
+              ((symbol-function 'supertag-git-sync--rev-count)
+               (lambda (_root range)
+                 (and (equal range "@{upstream}..HEAD") 2))))
+      (supertag-git-sync--note-offline "fetch" "/tmp/test-vault/"))
+    (should
+     (equal
+      shown
+      (concat
+       "supertag-git-sync: fetch failed. "
+       "Local safety: Store data is saved locally; "
+       "Supertag-owned files are committed locally; 2 local commit(s) await push. "
+       "No local data was discarded. Automatic retry remains enabled; "
+       "run M-x supertag-git-sync-now to retry now.")))
+    (should (= 2 supertag-git-sync--pending-push-count))))
 
 (supertag-git-sync-test--deftest supertag-git-sync-test-pull-catches-up-after-offline-episode
     "A's remote becomes temporarily unreachable (origin URL pointed at a

@@ -1278,12 +1278,47 @@ sentinel, after the process has fully exited."
 
 ;;; --- Offline degradation messaging (one message per state change) ---
 
-(defun supertag-git-sync--note-offline (op)
+(defun supertag-git-sync--local-safety-summary (&optional root)
+  "Describe local save, commit, and pending-push state for ROOT.
+All Git checks are local-only; no additional network operation is attempted."
+  (let* ((root (or root supertag-git-sync--vault-root))
+         (store-dirty
+          (and (fboundp 'supertag-dirty-p)
+               (condition-case nil (supertag-dirty-p) (error t))))
+         (owned-changes
+          (and root
+               (condition-case nil
+                   (supertag-git-sync--owned-changes-p root)
+                 (error t))))
+         (ahead
+          (and root
+               (condition-case nil
+                   (supertag-git-sync--rev-count
+                    root "@{upstream}..HEAD")
+                 (error nil))))
+         (pending (or ahead supertag-git-sync--pending-push-count 0)))
+    (when (numberp ahead)
+      (setq supertag-git-sync--pending-push-count ahead))
+    (format
+     "Local safety: Store data %s; Supertag-owned files %s; %d local commit(s) await push"
+     (if store-dirty
+         "is still held in Emacs and awaits a local save"
+       "is saved locally")
+     (cond
+      ((null root) "have unknown commit status")
+      (owned-changes "still await a local commit")
+      (t "are committed locally"))
+     pending)))
+
+(defun supertag-git-sync--note-offline (op &optional root)
   "Report an OP (\"fetch\" or \"push\") failure exactly once per offline
-episode, not once per retry."
+episode, not once per retry.  ROOT is used only for local safety status."
   (unless supertag-git-sync--offline-warned
     (setq supertag-git-sync--offline-warned t)
-    (message "supertag-git-sync: %s failed; will retry." op)))
+    (message
+     (concat "supertag-git-sync: %s failed. %s. No local data was discarded. "
+             "Automatic retry remains enabled; run M-x supertag-git-sync-now to retry now.")
+     op (supertag-git-sync--local-safety-summary root))))
 
 (defun supertag-git-sync--clear-offline-warning ()
   "Report recovery exactly once, the first time an operation succeeds
@@ -1296,7 +1331,11 @@ again after `supertag-git-sync--note-offline' fired."
   "Report a non-offline-looking git failure (e.g. `git add'/`git commit'
 themselves failing, which is unusual and worth a message every time,
 unlike the expected/common fetch-push offline case)."
-  (message "supertag-git-sync: %s failed: %s" op (string-trim (cdr result))))
+  (message
+   (concat "supertag-git-sync: %s failed: %s. %s. No local data was discarded. "
+           "Fix the reported Git error, then run M-x supertag-git-sync-now.")
+   op (string-trim (cdr result))
+   (supertag-git-sync--local-safety-summary)))
 
 ;;; --- Conflict detection (shared: commit-time refusal, doctor, post-merge) ---
 ;;
@@ -1528,6 +1567,13 @@ committed. All refusals are reported at most once per episode (see
                   (lambda (path) (supertag-git-sync--auto-commit-path-p root path))
                   staged-paths))))
       (cond
+       ;; While the store awaits recovery (database missing or
+       ;; unreadable), committing would record -- and push -- the
+       ;; deletion or corruption itself. Nothing may enter history until
+       ;; the user restores or explicitly accepts a fresh store.
+       ((supertag--persistence-recovery-pending-p)
+        (supertag-git-sync--note-commit-refused
+         "the Supertag database awaits recovery (missing or unreadable); committing now would record its loss. Run M-x supertag-doctor first."))
        (unmerged
           (supertag-git-sync--note-commit-refused
            (format "%d path(s) still unresolved from a merge conflict: %s. Resolve manually (magit / `git checkout --merge'), then the next debounce cycle will commit normally."
@@ -1648,7 +1694,8 @@ treat as offline degradation. Always clears
         root (list "fetch")
         (lambda (fetch-result)
           (if (not (supertag-git--ok-p fetch-result))
-              (progn (supertag-git-sync--note-offline "push (fetch during retry)")
+              (progn (supertag-git-sync--note-offline
+                      "push (fetch during retry)" root)
                      (setq supertag-git-sync--in-flight nil))
             (supertag-git-sync--run-git
              root (list "merge" "--no-edit" "@{upstream}")
@@ -1662,10 +1709,10 @@ treat as offline degradation. Always clears
                     (if (supertag-git--ok-p retry-result)
                         (progn (setq supertag-git-sync--pending-push-count 0)
                                (supertag-git-sync--clear-offline-warning))
-                      nil) ; give up silently for this cycle; pending count stays
+                      (supertag-git-sync--note-offline "push retry" root))
                     (setq supertag-git-sync--in-flight nil))))))))))
       (t
-       (supertag-git-sync--note-offline "push")
+       (supertag-git-sync--note-offline "push" root)
        (setq supertag-git-sync--in-flight nil))))))
 
 ;;; --- Ahead/behind (derived fresh from git every cycle -- P1-7) ---
@@ -1750,7 +1797,7 @@ that piled up, whether or not anything was behind to merge first."
        root (list "fetch")
        (lambda (fetch-result)
          (if (not (supertag-git--ok-p fetch-result))
-             (progn (supertag-git-sync--note-offline "fetch")
+             (progn (supertag-git-sync--note-offline "fetch" root)
                     (setq supertag-git-sync--in-flight nil))
            (supertag-git-sync--clear-offline-warning)
            (if (supertag-git-sync--behind-p root)

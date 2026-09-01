@@ -285,6 +285,13 @@ emits `:store-changed' itself for `:fields', mirroring
          (if remove-p
              (supertag-store-remove-field-value entity-id field-id)
            (supertag-store-put-field-value entity-id field-id thawed t))))
+      (:field-provenance
+       (unless (= (length key-path) 1)
+         (error "supertag-conflicts: unexpected :field-provenance key-path %S" key-path))
+       (let ((field-id (nth 0 key-path)))
+         (if remove-p
+             (supertag-store-remove-field-provenance entity-id field-id)
+           (supertag-store-put-field-provenance entity-id field-id thawed))))
       (_
        (error "supertag-conflicts: nested key-path conflict on unsupported collection %S"
               collection)))))
@@ -497,10 +504,20 @@ raising `user-error')."
 
 (defun supertag-conflicts--label (conflict)
   "Return one `completing-read' candidate label for CONFLICT."
-  (format "%s: ours=%s theirs=%s"
+  (format "%s: LOCAL (ours)=%s | INCOMING (theirs)=%s"
           (plist-get conflict :id)
           (supertag-conflicts--describe-value (plist-get conflict :ours))
           (supertag-conflicts--describe-value (plist-get conflict :theirs))))
+
+(defconst supertag-conflicts--action-choices
+  '(("Keep LOCAL (ours) -- discard the incoming value for this key"
+     . :use-ours)
+    ("Take INCOMING (theirs) -- replace the local value for this key"
+     . :use-theirs)
+    ("Enter REPLACEMENT -- replace both recorded sides for this key"
+     . :edit)
+    ("Skip -- keep the conflict recorded; change no data" . :skip))
+  "User-facing conflict actions and their resolver keywords.")
 
 (defun supertag-conflicts--read-edit-value (conflict)
   "Prompt for a replacement value for CONFLICT, choosing the reader by the
@@ -512,9 +529,20 @@ anything else -- plists, association plists, order lists, etc."
                      (plist-get conflict :theirs)
                    sample)))
     (cond
-     ((stringp sample) (read-string "New value (string): " sample))
-     ((numberp sample) (read-number "New value (number): " sample))
-     (t (read (read-string "New value (sexp): " (format "%S" sample)))))))
+     ((stringp sample)
+      (read-string
+       "Replacement string (replaces both local and incoming values): "
+       sample))
+     ((numberp sample)
+      (read-number
+       "Replacement number (replaces both local and incoming values): "
+       sample))
+     (t
+      (read
+       (read-string
+        (concat "Replacement as Emacs Lisp data (sexp, e.g. (:key \"value\")); "
+                "this replaces both recorded sides: ")
+        (format "%S" sample)))))))
 
 ;;; --- Interactive commands ---
 
@@ -522,17 +550,21 @@ anything else -- plists, association plists, order lists, etc."
 (defun supertag-conflicts-resolve ()
   "Interactively resolve one recorded sync conflict.
 Prompts (via `completing-read') for which conflict to resolve, annotated
-with both sides' (truncated) values, then offers use-ours / use-theirs /
-edit-value / skip -- or, when that conflict's target entity no longer
-exists, only the option to drop the stale conflict record. See this
-file's Commentary, and supertag-merge.el's \"Conflict representation\",
-for the record shape."
+with both sides' (truncated) values, then offers clearly sourced LOCAL /
+INCOMING / replacement / skip actions -- or, when that conflict's target
+entity no longer exists, only the option to drop the stale conflict record.
+See this file's Commentary, and supertag-merge.el's \"Conflict
+representation\", for the record shape."
   (interactive)
   (let ((conflicts (supertag-conflicts-list)))
     (if (null conflicts)
         (message "Supertag: no sync conflicts.")
       (let* ((labels (mapcar #'supertag-conflicts--label conflicts))
-             (choice (completing-read "Resolve sync conflict: " labels nil t))
+             (choice
+              (completing-read
+               (concat "Resolve sync conflict "
+                       "(LOCAL=this checkout's pre-merge value; INCOMING=synced copy): ")
+               labels nil t))
              (idx (cl-position choice labels :test #'string=))
              (conflict (nth idx conflicts))
              (id (plist-get conflict :id))
@@ -546,19 +578,26 @@ for the record shape."
                   (message "Supertag: dropped stale conflict record %s." id))
               (message "Supertag: left conflict %s unresolved." id))
           (let* ((action-label
-                  (completing-read (format "Conflict %s -- action: " id)
-                                    '("use-ours" "use-theirs" "edit-value" "skip") nil t))
-                 (action (pcase action-label
-                           ("use-ours" :use-ours)
-                           ("use-theirs" :use-theirs)
-                           ("edit-value" :edit)
-                           (_ :skip))))
+                  (completing-read
+                   (format "Conflict %s -- choose result (resolution removes its conflict record): " id)
+                   (mapcar #'car supertag-conflicts--action-choices)
+                   nil t))
+                 (action
+                  (cdr (assoc action-label
+                              supertag-conflicts--action-choices))))
             (if (eq action :skip)
-                (message "Supertag: skipped conflict %s." id)
+                (message
+                 "Supertag: conflict %s remains recorded; no value changed. Run M-x supertag-conflicts-resolve when ready."
+                 id)
               (let ((value (and (eq action :edit) (supertag-conflicts--read-edit-value conflict))))
                 (supertag-conflicts--resolve-one id action value)
                 (supertag-conflicts--save-and-report)
-                (message "Supertag: resolved conflict %s (%s)." id action-label)))))))))
+                (message
+                 "Supertag: resolved conflict %s with '%s'; the chosen value is now local and this conflict record was removed.%s"
+                 id action-label
+                 (if (> (supertag-conflicts-count) 0)
+                     " Run M-x supertag-conflicts-resolve for the remaining conflicts."
+                   " No sync conflicts remain."))))))))))
 
 (defun supertag-conflicts--resolve-all (action label)
   "Shared driver for the bulk use-ours-all/use-theirs-all commands.
@@ -570,8 +609,13 @@ once and reports."
   (let ((conflicts (supertag-conflicts-list)))
     (if (null conflicts)
         (message "Supertag: no sync conflicts.")
-      (when (y-or-n-p (format "Resolve all %d sync conflict(s) with `%s'? "
-                               (length conflicts) label))
+      (when
+          (y-or-n-p
+           (format
+            (concat "Resolve all %d sync conflict(s) with %s? "
+                    "Each chosen value will replace the other side and its conflict record will be removed; "
+                    "failed items remain recorded. ")
+            (length conflicts) label))
         (let ((applied 0) (dropped 0) (failed 0))
           (dolist (c conflicts)
             (condition-case err
@@ -580,8 +624,11 @@ once and reports."
                   (:dropped (cl-incf dropped)))
               (error
                (cl-incf failed)
-               (message "Supertag: failed to resolve conflict %s: %s"
-                        (plist-get c :id) (error-message-string err)))))
+               (message
+                (concat "Supertag: conflict %s failed to resolve: %s. "
+                        "Its conflict record remains, so neither side was discarded; "
+                        "run M-x supertag-conflicts-resolve to retry it.")
+                (plist-get c :id) (error-message-string err)))))
           (supertag-conflicts--save-and-report)
           (message "Supertag: resolved %d of %d conflict(s) (%d applied, %d dropped)%s."
                    (+ applied dropped) (length conflicts) applied dropped
@@ -593,7 +640,8 @@ once and reports."
 Any conflict whose target entity no longer exists is resolved by dropping
 its stale record instead (there is nothing to apply `ours' to)."
   (interactive)
-  (supertag-conflicts--resolve-all :use-ours "use-ours"))
+  (supertag-conflicts--resolve-all
+   :use-ours "LOCAL (ours: keep this checkout's value)"))
 
 ;;;###autoload
 (defun supertag-conflicts-use-theirs-all ()
@@ -601,7 +649,8 @@ its stale record instead (there is nothing to apply `ours' to)."
 Any conflict whose target entity no longer exists is resolved by dropping
 its stale record instead (there is nothing to apply `theirs' to)."
   (interactive)
-  (supertag-conflicts--resolve-all :use-theirs "use-theirs"))
+  (supertag-conflicts--resolve-all
+   :use-theirs "INCOMING (theirs: replace local with the synced value)"))
 
 ;;; --- Load-time visibility ---
 
@@ -614,8 +663,11 @@ registers itself here instead of supertag-core-persistence.el knowing
 about this file."
   (let ((count (supertag-conflicts-count)))
     (when (> count 0)
-      (message "Supertag: %d sync conflict(s) need attention -- run M-x supertag-conflicts-resolve to review them."
-               count))))
+      (message
+       (concat "Supertag: %d sync conflict(s) were recorded during merge; "
+               "no conflicting value was discarded. "
+               "Run M-x supertag-conflicts-resolve to choose LOCAL (ours), INCOMING (theirs), or a replacement.")
+       count))))
 
 (add-hook 'supertag-persistence-after-load-hook #'supertag-conflicts--notify-after-load)
 

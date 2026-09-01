@@ -716,6 +716,45 @@ the bulk-resolution layer."
         (should (= 20 (plist-get f0 :order))))
       (should-not (supertag-dirty-p)))))
 
+;;; --- 7b. Conflict review wording ---
+
+(ert-deftest conflicts-test-label-identifies-local-and-incoming-sources ()
+  "Conflict candidates expand ours/theirs into their actual sources."
+  (conflicts-test--with-temp-env
+    (conflicts-test--seed-title-conflict)
+    (let ((label
+           (supertag-conflicts--label
+            (car (supertag-conflicts-list)))))
+      (should (string-match-p "LOCAL (ours)=\\\"Ours Title\\\"" label))
+      (should
+       (string-match-p "INCOMING (theirs)=\\\"Theirs Title\\\"" label)))))
+
+(ert-deftest conflicts-test-action-labels-state-resolution-consequences ()
+  "Each action tells the user which side wins or that data stays unchanged."
+  (let ((labels (mapcar #'car supertag-conflicts--action-choices)))
+    (should (string-match-p "Keep LOCAL.*discard the incoming"
+                            (nth 0 labels)))
+    (should (string-match-p "Take INCOMING.*replace the local"
+                            (nth 1 labels)))
+    (should (string-match-p "REPLACEMENT.*replace both"
+                            (nth 2 labels)))
+    (should (string-match-p "Skip.*change no data"
+                            (nth 3 labels)))))
+
+(ert-deftest conflicts-test-sexp-prompt-explains-syntax-and-consequence ()
+  "Structured replacement input explains sexp syntax and overwrite scope."
+  (let (prompt)
+    (cl-letf (((symbol-function 'read-string)
+               (lambda (text &rest _)
+                 (setq prompt text)
+                 "(:chosen t)")))
+      (should
+       (equal '(:chosen t)
+              (supertag-conflicts--read-edit-value
+               '(:ours (:old t) :theirs (:new t))))))
+    (should (string-match-p "Emacs Lisp data (sexp" prompt))
+    (should (string-match-p "replaces both recorded sides" prompt))))
+
 ;;; --- 8. Doctor rendering ---
 
 (ert-deftest conflicts-test-doctor-renders-conflicts-section-with-conflicts ()
@@ -796,6 +835,7 @@ Commentary, \"Load-time visibility\")."
         (write-region (point-min) (point-max) supertag-db-file nil 'silent))
       (let ((log (conflicts-test--capture-messages (supertag-load-store))))
         (should (string-match-p "1 sync conflict" log))
+        (should (string-match-p "no conflicting value was discarded" log))
         (should (string-match-p "supertag-conflicts-resolve" log))))))
 
 (ert-deftest conflicts-test-load-time-message-silent-when-no-conflicts ()

@@ -30,6 +30,7 @@
 ;; Sync-layer repair helper. Not hard-required so this file keeps a
 ;; minimal dependency footprint; guarded with `fboundp' at call time.
 (declare-function supertag-sync-cleanup-database "supertag-services-sync")
+(declare-function supertag-reindex-org "supertag-services-sync")
 
 ;; Git-sync diagnostics are loaded lazily when that report section runs, so
 ;; a cold doctor invocation can inspect conflicts left by an earlier session.
@@ -132,6 +133,47 @@
                   (cond ((fboundp 'supertag-dirty-p) (if (supertag-dirty-p) "dirty" "clean"))
                         ((boundp 'supertag-db--dirty) (if supertag-db--dirty "dirty" "clean"))
                         (t (supertag-doctor--na))))))
+
+(defun supertag-doctor--section-recovery ()
+  "Insert the \"Recovery\" section when the store or data roots need help.
+Silent when the last load succeeded normally and the default roots are clear."
+  (let ((status (and (boundp 'supertag--store-origin)
+                     (plist-get supertag--store-origin :status)))
+        (directory-issue
+         (and (fboundp 'supertag-persistence-data-directory-recovery-needed-p)
+              (supertag-persistence-data-directory-recovery-needed-p))))
+    (when (or directory-issue
+              (memq status '(:failed :missing-with-backups)))
+      (supertag-doctor--insert-header "2b. Recovery needed")
+      (when directory-issue
+        (insert "Data directory recovery is required: a retired default root is still present.\n\n")
+        (insert (supertag-persistence-format-data-directory-comparison) "\n\n")
+        (insert "All directories and database files remain safe and unchanged.\n")
+        (insert "  - M-x supertag-resolve-data-directories choose the active root and safely retire the other\n")
+        (when (memq status '(:failed :missing-with-backups))
+          (insert "\n")))
+      (when (memq status '(:failed :missing-with-backups))
+        (pcase status
+          (:missing-with-backups
+           (insert "The database file is MISSING, but backup snapshots survive.\n")
+           (insert "Your notes are safe; saving is blocked so the backups stay intact.\n")
+           (insert "  - M-x supertag-restore            recover from a snapshot\n")
+           (insert "  - M-x supertag-accept-fresh-store intentionally start over empty\n"))
+          (:failed
+           (insert "The database file exists but could NOT be read.\n")
+           (insert "It has not been modified; saving is blocked to protect it.\n")
+           (insert "  - M-x supertag-restore            recover from a snapshot\n")
+           (insert "  - M-x supertag-reindex-org        rebuild projections from Org files after restoring\n")))
+        (let ((snapshots (when (fboundp 'supertag--restore-snapshot-list)
+                           (supertag--restore-snapshot-list))))
+          (insert (format "Snapshots available: %s\n"
+                          (if snapshots
+                              (format "%d (newest: %s)"
+                                      (length snapshots)
+                                      (format-time-string
+                                       "%Y-%m-%d %H:%M"
+                                       (plist-get (car snapshots) :mtime)))
+                            "none found"))))))))
 
 (defun supertag-doctor--section-lock ()
   "Insert the \"Lock\" section into the current buffer."
@@ -449,6 +491,7 @@ visibility\")."
   (insert (make-string 72 ?-) "\n")
   (supertag-doctor--section-database-files)
   (supertag-doctor--section-guards)
+  (supertag-doctor--section-recovery)
   (supertag-doctor--section-lock)
   (supertag-doctor--section-version)
   (supertag-doctor--section-integrity)
@@ -468,12 +511,60 @@ visibility\")."
     (supertag-db-purge-duplicate-tags
      . "Purge duplicate tags (supertag-db-purge-duplicate-tags)")
     (supertag-sync-cleanup-database
-     . "Validate nodes and garbage-collect orphans (supertag-sync-cleanup-database)"))
+     . "Validate nodes and garbage-collect orphans (supertag-sync-cleanup-database)")
+    (supertag-reindex-org
+     . "Rebuild document projections from Org files (supertag-reindex-org)"))
   "Repair commands offered by `supertag-doctor', in run order.")
+
+(defun supertag-doctor--offer-recovery ()
+  "Offer data-root and store recovery actions before generic repairs."
+  (let ((status (and (boundp 'supertag--store-origin)
+                     (plist-get supertag--store-origin :status)))
+        (directory-issue
+         (and (fboundp 'supertag-persistence-data-directory-recovery-needed-p)
+              (supertag-persistence-data-directory-recovery-needed-p))))
+    (when directory-issue
+      (let ((desc "Resolve retired/current data directories (supertag-resolve-data-directories)"))
+        (cond
+         ((not (fboundp 'supertag-resolve-data-directories))
+          (insert (format "- SKIPPED (unavailable): %s\n" desc)))
+         ((y-or-n-p (format "Recovery: %s? " desc))
+          (insert (format "- RUNNING: %s\n" desc))
+          (condition-case err
+              (progn
+                (call-interactively #'supertag-resolve-data-directories)
+                (insert "  -> done\n"))
+            (error
+             (insert (format "  -> ERROR: %s\n" (error-message-string err))))))
+         (t
+          (insert (format "- SKIPPED (declined): %s\n" desc))))))
+    (when (memq status '(:failed :missing-with-backups))
+      (dolist (entry
+               (append
+                (list (cons 'supertag-restore
+                            "Restore the database from a backup snapshot (supertag-restore)"))
+                (when (eq status :missing-with-backups)
+                  (list (cons 'supertag-accept-fresh-store
+                              "Accept starting over with an EMPTY store (supertag-accept-fresh-store)")))))
+        (let ((fn (car entry))
+              (desc (cdr entry)))
+          (cond
+           ((not (fboundp fn))
+            (insert (format "- SKIPPED (unavailable): %s\n" desc)))
+           ((y-or-n-p (format "Recovery: %s? " desc))
+            (insert (format "- RUNNING: %s\n" desc))
+            (condition-case err
+                (progn (call-interactively fn)
+                       (insert "  -> done\n"))
+              (error
+               (insert (format "  -> ERROR: %s\n" (error-message-string err))))))
+           (t
+            (insert (format "- SKIPPED (declined): %s\n" desc)))))))))
 
 (defun supertag-doctor--run-repairs ()
   "Offer to run each available repair command, appending results to the buffer."
   (supertag-doctor--insert-header "Repairs")
+  (supertag-doctor--offer-recovery)
   (dolist (entry supertag-doctor--repair-commands)
     (let ((fn (car entry))
           (desc (cdr entry)))

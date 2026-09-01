@@ -344,19 +344,22 @@ the old mtime until destructive cleanup is allowed."
         (kill-buffer source-buffer))
       (ignore-errors (delete-directory tmp t)))))
 
-(ert-deftest supertag-sync-deferred-file-requeues-after-worker-error ()
-  "A failed worker does not leave a deferred file permanently queued."
+(ert-deftest supertag-sync-deferred-file-is-retained-for-explicit-retry ()
+  "A failed worker retains its filename and exposes an explicit retry."
   (let* ((file (make-temp-file "supertag-deferred-worker-" nil ".org" "* Keep\n"))
          (directory (file-name-directory file))
          (supertag-sync--state
           (list :sync-state (make-hash-table :test 'equal)))
          (supertag-sync--deferred-files (make-hash-table :test 'equal))
          (supertag-async--queue nil)
+         (supertag-async--failed-items nil)
          (supertag-async--timer nil)
          (supertag-async--processor-fn
           (lambda (_file) (error "deliberate worker failure")))
          (supertag-async-batch-size 1)
-         (supertag-sync-quiet-when-idle t))
+         (supertag-sync-quiet-when-idle t)
+         (messages-start
+          (with-current-buffer (messages-buffer) (point-max))))
     (unwind-protect
         (progn
           (puthash file :pending supertag-sync--deferred-files)
@@ -380,8 +383,18 @@ the old mtime until destructive cleanup is allowed."
             (should (equal supertag-async--queue (list file)))
             (supertag-async--worker)
             (should (null supertag-async--queue))
-            (supertag-sync--check-and-sync-guarded)
-            (should (equal supertag-async--queue (list file)))))
+            (should (equal supertag-async--failed-items (list file)))
+            (should (= 1 (supertag-async-failed-count)))
+            (let ((log
+                   (with-current-buffer (messages-buffer)
+                     (buffer-substring-no-properties
+                      messages-start (point-max)))))
+              (should (string-match-p (regexp-quote file) log))
+              (should (string-match-p "Org source file was not modified" log))
+              (should (string-match-p "supertag-async-retry-failed" log)))
+            (should (= 1 (supertag-async-retry-failed)))
+            (should (equal supertag-async--queue (list file)))
+            (should (null supertag-async--failed-items))))
       (ignore-errors (delete-file file)))))
 
 (ert-deftest supertag-sync-validate-nodes-keeps-legacy-file-nodes ()

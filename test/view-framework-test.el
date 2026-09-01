@@ -193,12 +193,16 @@
             (link-start (point))
             (label-start (progn (search-forward "label")
                                 (- (point) (length "label")))))
-        (should (eq (get-text-property tag-start 'face)
-                    'supertag-inline-face))
-        (should-not (eq (get-text-property link-start 'face)
-                        'supertag-inline-face))
-        (should-not (eq (get-text-property label-start 'face)
-                        'supertag-inline-face))))))
+        ;; An unregistered token renders with the unresolved face; this
+        ;; test only cares that styling stops at the Org link boundary.
+        (should (memq (get-text-property tag-start 'face)
+                      '(supertag-inline-face supertag-unresolved-tag-face)))
+        (should-not (memq (get-text-property link-start 'face)
+                          '(supertag-inline-face
+                            supertag-unresolved-tag-face)))
+        (should-not (memq (get-text-property label-start 'face)
+                          '(supertag-inline-face
+                            supertag-unresolved-tag-face)))))))
 
 (ert-deftest test-view-style-svg-stops-before-adjacent-org-link ()
   "SVG font-lock must not replace the Org link following a Tag token."

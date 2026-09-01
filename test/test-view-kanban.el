@@ -95,7 +95,7 @@
                   ((symbol-function 'supertag-field-set)
                    (lambda (&rest args)
                      (setq field-set-args args
-                           field-value (car (last args)))))
+                           field-value (nth 3 args))))
                   ((symbol-function 'supertag-tag-get-all-fields)
                    (lambda (_tag)
                      '((:name "status" :type :options
@@ -106,7 +106,8 @@
               (search-forward "┌")
               (supertag-view-kanban-move-card-right))
             (should (equal field-set-args
-                           '("kanban-1" "task" "status" "Done")))))
+                           '("kanban-1" "task" "status" "Done"
+                             (:origin :human))))))
       (when-let* ((buffer (get-buffer buffer-name)))
         (kill-buffer buffer)))))
 
@@ -139,7 +140,8 @@
               (search-forward "Left card")
               (supertag-view-kanban-move-card-right))
             (should (equal field-set-args
-                           '("kanban-1" "task" "status" "Done")))))
+                           '("kanban-1" "task" "status" "Done"
+                             (:origin :human))))))
       (when-let* ((buffer (get-buffer buffer-name)))
         (kill-buffer buffer)))))
 

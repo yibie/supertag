@@ -65,7 +65,8 @@ TEST_FILES=(
     "test/reciprocal-migration-test.el"
     "test/tag-membership-org-first-test.el"
     "test/tag-path-test.el"
-    "test/test-smart-key.el"
+    "test/test-ui-act.el"
+    "test/test-back-to-heading.el"
     "test/test-concept-mention.el"
     "test/embed-cache-test.el"
     "test/ownership-separation-test.el"
@@ -105,7 +106,7 @@ if [ $# -gt 0 ]; then
             git)       FILTER="$FILTER test/git-integration-test.el test/git-sync-mode-test.el" ;;
             conflicts) FILTER="$FILTER test/conflicts-test.el" ;;
             cl-block|sync-worker) FILTER="$FILTER test/sync-worker-regression-test.el" ;;
-            smart-key) FILTER="$FILTER test/test-smart-key.el" ;;
+            act|smart-key) FILTER="$FILTER test/test-ui-act.el test/test-back-to-heading.el" ;;
             concept)   FILTER="$FILTER test/test-concept-mention.el" ;;
             tag-merge) FILTER="$FILTER test/tag-merge-test.el" ;;
             reference-migration) FILTER="$FILTER test/reciprocal-migration-test.el" ;;

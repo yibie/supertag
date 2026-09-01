@@ -16,6 +16,7 @@
 (require 'supertag-ops-tag)
 (require 'supertag-ops-field)
 (require 'supertag-services-formula)
+(require 'supertag-query-operator)
 
 ;;; --- Query System ---
 
@@ -446,7 +447,13 @@ This function is compatible with the old query syntax."
         `(:type between
                 :start-date ,(format "%04d-01-01" arg)
                 :end-date ,(format "%04d-01-01" (1+ arg)))))
-     (t (error "Invalid query operator: %S" op)))))
+     (t
+      (let ((extension
+             (supertag-query-operator-parse
+              op args #'supertag-query--parse-sexp)))
+        (if (eq extension supertag-query-operator-unhandled)
+            (error "Invalid query operator: %S" op)
+          extension))))))
 
 (defun supertag-query--execute-ast (ast)
   "Execute a query AST and return a list of matching node IDs.
@@ -540,7 +547,13 @@ This uses indexes for O(1) lookups instead of O(n) table scans."
      ((eq ast-type 'sort-by)
       (supertag-query--get-all-node-ids))
 
-     (t '()))))
+     (t
+      (let ((extension
+             (supertag-query-operator-execute
+              ast #'supertag-query--execute-ast)))
+        (if (eq extension supertag-query-operator-unhandled)
+            '()
+          extension))))))
 
 (defun supertag-query--get-all-node-ids ()
   "Get all node IDs in the system."
@@ -774,7 +787,9 @@ Used for generating table headers in Org Babel output."
                      ((eq type 'not)
                       (dolist (child (plist-get sub-ast :children)) (walk child)))
                      ((eq type 'field)
-                      (push (plist-get sub-ast :key) fields))))))
+                      (push (plist-get sub-ast :key) fields))
+                     ((plist-get sub-ast :child)
+                      (walk (plist-get sub-ast :child)))))))
       (walk ast))
     (cl-delete-duplicates fields :test #'string=)))
 
@@ -1135,5 +1150,8 @@ This is a low-level function for services like knowledge sync."
                  (push props all-items))
                relations-table))
     (nreverse all-items)))
+
+;; Register optional typed-Link operators when this service is loaded directly.
+(require 'supertag-query-link nil t)
 
 (provide 'supertag-services-query)

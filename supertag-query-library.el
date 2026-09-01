@@ -28,6 +28,7 @@
 (require 'supertag-services-query)
 (require 'supertag-services-ui)
 (require 'supertag-ops-node)
+(require 'supertag-ops-link-definition)
 
 (defgroup supertag-query-library nil
   "Saved queries, guided builder, and syntax reference for Supertag queries."
@@ -299,7 +300,11 @@ parameters (:sort/:order/:limit/:columns and friends)."
     ("between" . "(between START END) -- nodes dated between START and END")
     ("recent-days" . "(recent-days N) -- nodes created in the last N days")
     ("in-month" . "(in-month \"YYYY-MM\") -- nodes created in that month")
-    ("in-year"  . "(in-year \"YYYY\") -- nodes created in that year"))
+    ("in-year"  . "(in-year \"YYYY\") -- nodes created in that year")
+    ("link" . "(link REF QUERY) -- source nodes linked to matching targets")
+    ("reverse-link" . "(reverse-link REF QUERY) -- target nodes linked from matching sources")
+    ("has-link" . "(has-link REF) -- source nodes with any outgoing Link")
+    ("has-reverse-link" . "(has-reverse-link REF) -- target nodes with any incoming Link"))
   "Leaf query operators offered by `supertag-query-build', with descriptions.")
 
 (defun supertag-query-library--completing-read-operator (prompt)
@@ -343,6 +348,22 @@ parameters (:sort/:order/:limit/:columns and friends)."
     (if fields
         (completing-read "Field: " fields nil nil)
       (read-string "Field: "))))
+
+(defun supertag-query-library--read-link-reference ()
+  "Read one unambiguous typed-Link reference from the live schema."
+  (let ((candidates
+         (mapcar
+          (lambda (definition)
+            (let ((reference (supertag-link-definition-reference definition)))
+              (cons (format "%s  (%s)"
+                            (supertag-link-definition-format definition)
+                            reference)
+                    reference)))
+          (supertag-link-definition-list))))
+    (unless candidates
+      (user-error "No Link Definitions exist; create one in `supertag-view-schema'"))
+    (let ((choice (completing-read "Link Definition: " candidates nil t)))
+      (cdr (assoc choice candidates)))))
 
 (defun supertag-query-library--read-date (prompt)
   "Read a date string for PROMPT, validated with the engine's own parser.
@@ -399,6 +420,14 @@ COMBINATOR is \"and\"/\"or\" (a string) or the symbol `and'/`or'."
       ("in-year" (supertag-query-library--make-condition
                   op (read-string "Year (YYYY): "
                                   (format-time-string "%Y"))))
+      ((or "link" "reverse-link")
+       (let ((reference (supertag-query-library--read-link-reference)))
+         (message "Build the nested endpoint condition for %s" reference)
+         (supertag-query-library--make-condition
+          op reference (supertag-query-library--build-condition))))
+      ((or "has-link" "has-reverse-link")
+       (supertag-query-library--make-condition
+        op (supertag-query-library--read-link-reference)))
       (_ (user-error "Unknown operator `%s'" op)))))
 
 (defun supertag-query-library--present-built-query (expr)
@@ -424,7 +453,7 @@ COMBINATOR is \"and\"/\"or\" (a string) or the symbol `and'/`or'."
 ;;;###autoload
 (defun supertag-query-build ()
   "Interactively assemble an Supertag query S-expression.
-Prompts for a leaf condition (tag/field/term/after/before/between),
+Prompts for a leaf condition, including typed-Link traversal,
 then repeatedly offers to combine it with another condition using AND
 or OR, and finally offers to wrap the whole thing in NOT.  Tag and
 field names are completed from live data when possible.  When done,
@@ -466,6 +495,17 @@ Leaf conditions
   (in-month \"YYYY-MM\")   nodes created in that calendar month
   (in-year \"YYYY\")       nodes created in that calendar year
 
+Typed Link conditions
+  (link REF QUERY)         source nodes linked to targets matching QUERY
+  (exists-link REF QUERY)  alias of `link'
+  (reverse-link REF QUERY) target nodes linked from sources matching QUERY
+  (has-link REF)           source nodes with any Link instance
+  (has-reverse-link REF)   target nodes with any incoming Link instance
+
+REF may be a runtime Link Definition ID, a unique display name/key, or the
+stable `module/key' form shown in Schema View.  Use `module/key' whenever a
+short key or label is ambiguous.
+
 Date formats (DATE / START / END above)
   \"now\"                 the current moment
   \"YYYY-MM-DD\"          an absolute date
@@ -489,6 +529,12 @@ Examples (simple to complex)
   (and (or (tag \"work\") (tag \"project\"))
        (not (field \"status\" \"completed\"))
        (after \"2025-01-01\"))
+
+  (link work/tasks (field \"status\" \"blocked\"))
+  (reverse-link work/tasks (tag \"project\"))
+  (and (tag \"project\")
+       (link work/tasks
+             (and (tag \"task\") (field \"status\" \"blocked\"))))
 
 See doc/QUERY.md for the full reference, composition examples, where
 queries can be used (babel blocks, dynamic blocks, saved queries, the

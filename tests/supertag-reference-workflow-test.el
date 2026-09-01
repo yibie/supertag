@@ -245,6 +245,7 @@
 (ert-deftest supertag-v6-default-concept-target-is-non-interactive ()
   (let* ((supertag-active-sync-directory nil)
          (supertag-sync-directories '("/tmp/supertag-vault"))
+         (supertag-sync-directories-mode 'unified)
          (supertag-concept-default-file nil)
          (supertag-concept-default-level 1)
          (target (supertag-concept-default-create-target "Ontology")))
@@ -254,12 +255,35 @@
     (should-not (plist-get target :position))))
 
 (ert-deftest supertag-v6-active-vault-wins-default-concept-target ()
-  (let* ((supertag-active-sync-directory "/tmp/active-vault")
-         (supertag-sync-directories '("/tmp/first-vault"))
+  (let* ((resolved-vault "/tmp/active-vault")
+         (supertag-active-sync-directory "/tmp/stale-outside-vault")
+         (supertag-sync-directories (list resolved-vault))
+         (supertag-sync-directories-mode 'vaults)
          (supertag-concept-default-file nil)
-         (target (supertag-concept-default-create-target "Ontology")))
+         target)
+    (cl-letf (((symbol-function 'supertag--effective-sync-directories)
+               (lambda () (list resolved-vault))))
+      (setq target (supertag-concept-default-create-target "Ontology")))
     (should (equal "/tmp/active-vault/concepts.org"
                    (plist-get target :file)))))
+
+(ert-deftest supertag-v6-concept-target-falls-back-without-vault-config ()
+  (let ((supertag-active-sync-directory nil)
+        (supertag-sync-directories nil)
+        (supertag-sync-directories-mode 'unified)
+        (supertag-concept-default-file nil)
+        (org-directory "/tmp/org-home"))
+    (with-temp-buffer
+      (setq buffer-file-name "/tmp/current-note/note.org")
+      (should
+       (equal "/tmp/org-home/concepts.org"
+              (plist-get (supertag-concept-default-create-target "Ontology")
+                         :file)))
+      (let ((org-directory nil))
+        (should
+         (equal "/tmp/current-note/concepts.org"
+                (plist-get (supertag-concept-default-create-target "Ontology")
+                           :file)))))))
 
 (ert-deftest supertag-v6-contextual-view-carries-source-navigation-properties ()
   (supertag-v6-test--isolated

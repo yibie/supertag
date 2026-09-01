@@ -25,12 +25,6 @@
   "Concept mention support for Supertag."
   :group 'supertag)
 
-(defvar supertag-sync-directories nil
-  "Configured Supertag sync roots, declared by the sync service.")
-
-(defvar supertag-active-sync-directory nil
-  "Active Supertag vault root, declared by the package entry point.")
-
 (defcustom supertag-concept-min-term-length 2
   "Minimum character length for a concept title or alias mention."
   :type 'integer
@@ -44,8 +38,8 @@
 (defcustom supertag-concept-default-file nil
   "Default Org file used for newly created concept nodes.
 
-When nil, Supertag uses `concepts.org' under the first configured sync
-directory, then `org-directory', then the current Org file's directory."
+When nil, Supertag uses `concepts.org' under the effective sync directory,
+then `org-directory', then the current Org file's directory."
   :type '(choice (const :tag "Automatic" nil) file)
   :group 'supertag-concept)
 
@@ -337,27 +331,10 @@ Each entry is (TERM . NODE-ID).")
 
 (defun supertag-concept--automatic-base-directory ()
   "Return the best default directory for new concept nodes."
-  (let* ((sync-directories
-          (and (boundp 'supertag-sync-directories)
-               (listp supertag-sync-directories)
-               supertag-sync-directories))
-         (matching-root
-          (and buffer-file-name
-               (cl-find-if
-                (lambda (directory)
-                  (ignore-errors
-                    (file-in-directory-p
-                     (expand-file-name buffer-file-name)
-                     (file-name-as-directory (expand-file-name directory)))))
-                sync-directories))))
+  (let ((sync-directory (car (supertag-sync--effective-directories))))
     (file-name-as-directory
      (expand-file-name
-      (or (and (boundp 'supertag-active-sync-directory)
-               (stringp supertag-active-sync-directory)
-               (not (string-empty-p supertag-active-sync-directory))
-               supertag-active-sync-directory)
-          matching-root
-          (car sync-directories)
+      (or sync-directory
           (and (boundp 'org-directory)
                (stringp org-directory)
                org-directory)

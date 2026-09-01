@@ -72,7 +72,9 @@ Dispatches on the shape of PATH:
   `supertag-store-put-entity'/`supertag--normalize-entity', which would
   flatten a hash-table OLD-VALUE into a plist.
 - (:field-values NODE-ID FIELD-ID) — a single field value.
-- (COLLECTION ID) — a canonical entity, excluding the two nested field roots.
+- (:field-provenance NODE-ID) / (:field-provenance NODE-ID FIELD-ID) — the
+  provenance sidecar, nested exactly like `:field-values'.
+- (COLLECTION ID) — a canonical entity, excluding the nested field roots.
 - (COLLECTION) — a whole-collection replace/clear."
   (let ((path (nth 0 entry))
         (existed-p (nth 1 entry))
@@ -94,13 +96,19 @@ Dispatches on the shape of PATH:
           (if existed-p
               (puthash tag-id old-value node-table)
             (remhash tag-id node-table)))))
-     ((and (memq (nth 0 path) '(:fields :field-values))
+     ((and (memq (nth 0 path) '(:fields :field-values :field-provenance))
            (= (length path) 2))
       (let ((node-id (nth 1 path))
             (fields-root (supertag-store-get-collection (nth 0 path))))
         (if existed-p
             (puthash node-id old-value fields-root)
           (remhash node-id fields-root))))
+     ((and (eq (nth 0 path) :field-provenance) (= (length path) 3))
+      (let ((node-id (nth 1 path))
+            (field-id (nth 2 path)))
+        (if existed-p
+            (supertag-store-put-field-provenance node-id field-id old-value)
+          (supertag-store-remove-field-provenance node-id field-id))))
      ((= (length path) 3)
       (let ((node-id (nth 1 path))
             (field-id (nth 2 path)))
@@ -173,6 +181,9 @@ inner call; only the outermost transaction commits or rolls back.
 Notifications are suppressed until the (outermost) transaction commits, at
 which point exactly one batch notification flush happens."
   (declare (indent 0))
+  ;; Use an uninterned symbol so BODY may freely use a variable named
+  ;; `result' without it being captured by this expansion.
+  (let ((result (make-symbol "result")))
   `(if supertag--transaction-active
        ;; Already inside a transaction: just run BODY so it joins the
        ;; enclosing transaction's log instead of starting/ending its own.
@@ -182,16 +193,16 @@ which point exactly one batch notification flush happens."
            (supertag--transaction-seen nil) ; Dedup set: first-touch only
            (supertag--tx-success nil)
            (supertag--rollback-error nil)
-           result) ; Variable to capture the result
+           ,result) ; Variable to capture the result
        (unwind-protect
            (progn
-             (setq result (supertag-core-state-with-suppressed-notifications
+             (setq ,result (supertag-core-state-with-suppressed-notifications
                            (progn ,@body)))
              (setq supertag--tx-success t)
              ;; Commit transaction: notify all pending changes
              (when (fboundp 'supertag--notify-batch-changes)
                (supertag--notify-batch-changes))
-             result) ; Return the result
+             ,result) ; Return the result
          ;; Cleanup: roll back on error, then always reset transaction state.
          (unless supertag--tx-success
            (supertag--transaction-rollback supertag--transaction-log)
@@ -202,7 +213,7 @@ which point exactly one batch notification flush happens."
          (setq supertag--transaction-seen nil)
          (when supertag--rollback-error
            (signal (car supertag--rollback-error)
-                   (cdr supertag--rollback-error)))))))
+                   (cdr supertag--rollback-error))))))))
 
 ;;; --- Path Pattern Matching ---
 
@@ -255,10 +266,33 @@ MATCHES is the list to collect matching paths."
              (supertag--traverse-store-matches
               value rest-pattern (cons key current-path) matches))))))))
 
+(defconst supertag-inline-tag-terminator-chars
+  "＃　，。；：！？、（）【】《》“”‘’"
+  "Characters that terminate an inline tag name.
+CJK prose uses full-width punctuation where ASCII text uses whitespace,
+so these characters must end a tag name the same way whitespace does.
+The full-width hash and ideographic space can never be part of a name.")
+
+(defconst supertag-inline-tag-boundary-char-regexp
+  "\\(?:[[:space:]]\\|\\cc\\|\\cj\\|\\ck\\|\\ch\\)"
+  "Regexp matching one character that may precede an inline tag marker.
+CJK prose puts no space between words, so a CJK character is as valid a
+boundary as whitespace; ASCII word characters are not, which keeps URL
+fragments and identifiers like word#part unmatched.")
+
+(defconst supertag-inline-tag-boundary-regexp
+  (concat "\\(?:\\`\\|\\([[:space:]]\\)\\|\\cc\\|\\cj\\|\\ck\\|\\ch\\)")
+  "Regexp matching the boundary before an inline tag marker.
+Matches string start, whitespace (captured as group 1), or a CJK
+character (see `supertag-inline-tag-boundary-char-regexp').")
+
 (defconst supertag-inline-tag-regexp
-  "\\(?:\\`\\|\\([[:space:]]\\)\\)#\\([^[:space:]#]+\\)"
-  "Regexp for an inline tag at string start or after whitespace.
-Group 1 is the optional whitespace boundary; group 2 is the tag name.")
+  (concat supertag-inline-tag-boundary-regexp
+          "[#＃]\\([^[:space:]#" supertag-inline-tag-terminator-chars "]+\\)")
+  "Regexp for an inline tag at string start, after whitespace, or after CJK.
+Group 1 is the optional whitespace boundary; group 2 is the tag name.
+Both the ASCII and full-width hash mark a tag; full-width punctuation
+terminates the name (see `supertag-inline-tag-terminator-chars').")
 
 (defun supertag-transform-inline-tag-name-p (name)
   "Return non-nil when NAME can be an inline tag.
@@ -331,7 +365,10 @@ region is parsed as secondary Org text using RESTRICTION."
   (save-excursion
     (goto-char
      (if (and (> begin (point-min))
-              (eq (char-syntax (char-before begin)) ?\s))
+              (let ((preceding (char-before begin)))
+                (or (eq (char-syntax preceding) ?\s)
+                    (string-match-p supertag-inline-tag-boundary-char-regexp
+                                    (char-to-string preceding)))))
          (1- begin)
        begin))
     (let ((object-ranges

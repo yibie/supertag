@@ -33,7 +33,16 @@
        ("[[id:node][#linked]] #outside" ("#outside"))
        ("* T #outer[[id:n][label]] #ai_suggestions[[id:n][x]]"
         ("#outer" "#ai_suggestions"))
-       ("word#tag 中文#标签 copyright &#169; &#xA9; \\#escaped (#wrapped)" nil)
+       ("word#tag copyright &#169; &#xA9; \\#escaped (#wrapped)" nil)
+       ;; CJK prose puts no space between words: a CJK character is a
+       ;; valid boundary before the marker.
+       ("中文#标签 工作#想法" ("#标签" "#想法"))
+       ;; Full-width hash triggers like the ASCII one.
+       ("＃全角 空格后 ＃再来" ("＃全角" "＃再来"))
+       ;; Full-width punctuation terminates a tag name the way ASCII
+       ;; whitespace does, and acts as a boundary for the next tag.
+       ("#想法，然后。#好" ("#想法" "#好"))
+       ("句子里#计划：接着（#括号）结束" ("#计划" "#括号"))
        ("~#code~ =#verbatim= {{{hash(#macro)}}} <<#target>> <<<#radio>>>" nil)
        ("#+TITLE: #title\n# comment #comment\n:PROPERTIES:\n:URL: file#property\n:END:\n:DRAWER:\nvalue #drawer\n:END:\n| #table |\n: fixed #fixed"
         nil)

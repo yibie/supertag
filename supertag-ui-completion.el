@@ -43,6 +43,7 @@
 (require 'supertag-services-query)
 (require 'supertag-service-org)
 (require 'supertag-service-node-identity)
+(require 'supertag-ui-reference)
 
 (declare-function supertag-ui-read-tag "supertag-services-ui"
                   (prompt &optional tag-ids allow-new allow-empty allow-namespace))
@@ -66,6 +67,11 @@ When non-nil, `global-supertag-ui-completion-mode' will be enabled by default."
 ;;; Helper Functions
 ;;;----------------------------------------------------------------------
 
+(defvar-local supertag-completion--last-unregistered-hint nil
+  "Last unregistered tag token already hinted about in this buffer.
+Prevents repeating the \"not registered\" echo message on every
+boundary character typed after the same token.")
+
 (defun supertag-completion--get-all-tags ()
   "Get all available tag names from the supertag store."
   (condition-case err
@@ -87,10 +93,13 @@ When non-nil, `global-supertag-ui-completion-mode' will be enabled by default."
 
 (defun supertag-completion--valid-tag-char-p (char)
   "Return non-nil if CHAR should be considered part of a tag name.
-Anything except whitespace/control characters and # counts as valid.
-This keeps completion flexible enough for emoji and other symbols."
+Anything except whitespace/control characters, the (full-width) hash,
+and full-width punctuation counts as valid.  This keeps completion
+flexible enough for emoji while letting CJK punctuation end a tag the
+way ASCII whitespace does."
   (and char
-       (not (memq char '(?\s ?\t ?\n ?\r ?#)))))
+       (not (memq char '(?\s ?\t ?\n ?\r ?#)))
+       (not (seq-position supertag-inline-tag-terminator-chars char))))
 
 (defun supertag-completion--get-prefix-bounds ()
   "Find the bounds of a tag prefix at point, if any.
@@ -106,9 +115,9 @@ Handles edge cases: cursor right after # (empty prefix), mid-word, etc."
                    (char-before (point))))
         (backward-char))
 
-      ;; Check if we're right after a # character
+      ;; Check if we're right after a (full-width) # character
       (when (and (> (point) (point-min))
-                 (eq (char-before (point)) ?#))
+                 (memq (char-before (point)) '(?# ?＃)))
         ;; start = right after # (where tag name begins or would begin)
         (setq start (point)))
 
@@ -287,6 +296,11 @@ Display aliases are replaced with their canonical Org token before writing."
             (when-let* ((bounds (supertag-completion--get-prefix-bounds)))
               (delete-region (car bounds) (cdr bounds))
               (goto-char (car bounds))
+              ;; A full-width trigger commits as the canonical half-width
+              ;; token; scanners treat `#' as the canonical marker.
+              (when (eq (char-before) ?＃)
+                (delete-char -1)
+                (insert "#"))
               (insert occurrence-token))
             (setq normalized-token-p t)
             (insert " ")
@@ -459,17 +473,30 @@ CAPF `[New]' candidate."
       (when-let* ((bounds (supertag-completion--get-prefix-bounds))
                   (prefix (buffer-substring-no-properties
                            (car bounds) (cdr bounds)))
-                  (_ (supertag-tag-path-valid-p prefix))
-                  (tag-id (supertag-tag-resolve-occurrence prefix)))
-        (condition-case err
-            (let ((node-id (supertag-node-identity-ensure-at-point)))
-              (when node-id
-                (let ((node-tags (supertag-completion--get-node-tags node-id)))
-                  (unless (member tag-id node-tags)
-                    (supertag-service-org-save-and-project-current-node
-                     node-id)))))
-          (error
-           (message "supertag-completion: auto-record failed: %S" err)))))))
+                  (_ (supertag-tag-path-valid-p prefix)))
+        (let ((tag-id (ignore-errors
+                        (supertag-tag-resolve-occurrence prefix))))
+          (if (null tag-id)
+              ;; The token looks like a tag but is not registered.  Say so
+              ;; once per token: silently leaving it unstyled and unrecorded
+              ;; reads as success to the user.
+              (unless (equal prefix
+                             supertag-completion--last-unregistered-hint)
+                (setq supertag-completion--last-unregistered-hint prefix)
+                (message
+                 "Tag '%s' is not registered — select [New] in completion or M-x supertag-tag-insert to create it"
+                 prefix))
+            (condition-case err
+                (let ((node-id (supertag-node-identity-ensure-at-point)))
+                  (when node-id
+                    (let ((node-tags
+                           (supertag-completion--get-node-tags node-id)))
+                      (unless (member tag-id node-tags)
+                        (supertag-service-org-save-and-project-current-node
+                         node-id)))))
+              (error
+               (message "supertag-completion: auto-record failed: %S"
+                        err)))))))))
 
 ;;;----------------------------------------------------------------------
 ;;; Setup
@@ -477,9 +504,13 @@ CAPF `[New]' candidate."
 
 ;;;###autoload
 (defun supertag-completion-setup ()
-  "Setup completion for supertag."
+  "Set up tag and create-or-link completion for Supertag."
   (add-hook 'completion-at-point-functions
             #'supertag-completion-at-point nil t)
+  ;; Added after the Tag CAPF so this reference CAPF is checked first.  Each
+  ;; function is exclusive only inside its own explicit syntax (# or [[).
+  (add-hook 'completion-at-point-functions
+            #'supertag-reference-completion-at-point nil t)
   (add-hook 'post-self-insert-hook
             #'supertag-completion--auto-record-on-boundary nil t))
 
@@ -491,6 +522,8 @@ CAPF `[New]' candidate."
       (supertag-completion-setup)
     (remove-hook 'completion-at-point-functions
                  #'supertag-completion-at-point t)
+    (remove-hook 'completion-at-point-functions
+                 #'supertag-reference-completion-at-point t)
     (remove-hook 'post-self-insert-hook
                  #'supertag-completion--auto-record-on-boundary t)))
 
@@ -540,7 +573,7 @@ RET creates and records the tag immediately."
              (token (if tag
                         (supertag-sanitize-tag-name (plist-get tag :name))
                       input)))
-        (when (looking-back "[^#]" 1)
+        (when (looking-back "[^#＃]" 1)
           (insert "#"))
         (insert token " ")
         (when is-new

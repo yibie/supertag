@@ -27,7 +27,10 @@ Anything except whitespace-like characters and another # counts as part of the t
 allowing hierarchies (/) and arbitrary unicode/emoji symbols.")
 
 ;; Always refresh the value so reloading this file picks up updates.
-(setq supertag-view-helper--valid-tag-chars "^[:space:]#")
+;; Full-width hash and CJK punctuation terminate a tag name, matching
+;; `supertag-inline-tag-regexp'.
+(setq supertag-view-helper--valid-tag-chars
+      (concat "^[:space:]#" supertag-inline-tag-terminator-chars))
 
 ;; Legacy alias for backward compatibility
 (defvaralias 'supertag-view-style--valid-tag-chars
@@ -163,9 +166,35 @@ Prefers SVG keywords when `supertag-svg-tag-enable' is non-nil."
   "Face for supertag inline tags."
   :group 'supertag-view-style)
 
+(defcustom supertag-view-style-unresolved-tag-face-properties
+  '(:inherit shadow :underline t)
+  "Face properties for inline tag tokens with no registered tag.
+This should be a plist of face attributes."
+  :type '(plist :key-type symbol :value-type sexp)
+  :group 'supertag-view-style)
+
+(defface supertag-unresolved-tag-face
+  `((t ,supertag-view-style-unresolved-tag-face-properties))
+  "Face for inline tag tokens that resolve to no registered tag.
+A token that merely looks like a tag must not render like a live one;
+this face makes an unregistered or ambiguous token visibly different."
+  :group 'supertag-view-style)
+
+(defun supertag-view-helper--matched-tag-face ()
+  "Return the face for the inline tag just matched by the matcher.
+The match data covers the marker and the name.  A token owned by a
+registered Semantic Tag gets `supertag-inline-face'; an unregistered or
+ambiguous token gets `supertag-unresolved-tag-face'."
+  (let ((name (buffer-substring-no-properties
+               (1+ (match-beginning 0)) (match-end 0))))
+    (if (and (fboundp 'supertag-tag-resolve-occurrence)
+             (ignore-errors (supertag-tag-resolve-occurrence name)))
+        'supertag-inline-face
+      'supertag-unresolved-tag-face)))
+
 (defvar supertag-view-helper--font-lock-keywords
   '((supertag-view-helper--font-lock-matcher
-     (0 'supertag-inline-face t)))
+     (0 (supertag-view-helper--matched-tag-face) t)))
   "Font-lock keywords for highlighting inline tags.")
 
 (supertag-view-helper--enable-existing-org-buffers)
@@ -362,8 +391,9 @@ TEXT can be any value convertible to string."
                       'face `(:weight bold :foreground ,(supertag-view-helper-get-emphasis-color))))
   (insert "\n"))
 
-(defun supertag-view-helper-insert-field-line (field-name value field-def &optional interactive-props)
-  "Insert a simple field line with FIELD-NAME, VALUE, FIELD-DEF and optional INTERACTIVE-PROPS."
+(defun supertag-view-helper-insert-field-line (field-name value field-def &optional interactive-props badge)
+  "Insert a simple field line with FIELD-NAME, VALUE, FIELD-DEF and optional INTERACTIVE-PROPS.
+BADGE, when non-nil, is a propertized string shown after the value."
   (let* ((formatted-value (supertag-view-helper-format-field-value field-def value))
          (field-type (plist-get field-def :type))
          (type-icon (pcase field-type
@@ -389,6 +419,8 @@ TEXT can be any value convertible to string."
       (insert formatted-value)
       ;; Mark value column for precise cursor placement in views
       (add-text-properties value-start (point) '(supertag-value-column t)))
+    (when badge
+      (insert " " badge))
     (insert "\n")
     ;; Add text properties for interactivity
     (when interactive-props

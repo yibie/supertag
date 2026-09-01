@@ -416,17 +416,7 @@ Key Bindings:
   "Return a badge for an agent-written FIELD-NAME value of NODE-ID, or nil.
 Values a person confirmed or wrote carry no badge; an agent value whose
 source text changed since is marked outdated."
-  (let ((provenance (supertag-field-provenance node-id tag-id field-name)))
-    (when (eq (plist-get provenance :origin) :agent)
-      (if (supertag-field-stale-p node-id tag-id field-name)
-          (propertize "⟨AI · outdated⟩"
-                      'face `(:foreground ,(supertag-view-helper-get-warning-color))
-                      'help-echo "Written by an agent before the node text changed. c confirms, x rejects, C reviews all.")
-        (propertize "⟨AI⟩"
-                    'face `(:foreground ,(supertag-view-helper-get-muted-color))
-                    'help-echo (format "Written by %s at %s. c confirms, x rejects, C reviews all."
-                                       (or (plist-get provenance :model) "an agent")
-                                       (or (plist-get provenance :at) "an unknown time")))))))
+  (supertag-view-helper-field-provenance-badge node-id tag-id field-name))
 
 ;;; --- Modern Rendering Functions ---
 

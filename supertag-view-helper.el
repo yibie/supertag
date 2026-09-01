@@ -14,6 +14,8 @@
 ;; Forward declare functions to avoid circular dependencies
 (declare-function supertag-field-get-with-default "supertag-ops-field")
 (declare-function supertag-field-normalize-node-reference-list "supertag-ops-field")
+(declare-function supertag-field-provenance "supertag-ops-field")
+(declare-function supertag-field-stale-p "supertag-ops-field")
 (declare-function supertag-svg-tag--refresh-all-buffers "supertag-view-svg-tag")
 
 ;;;----------------------------------------------------------------------
@@ -390,6 +392,31 @@ TEXT can be any value convertible to string."
   (insert (propertize (if icon (format "%s %s" icon title) title)
                       'face `(:weight bold :foreground ,(supertag-view-helper-get-emphasis-color))))
   (insert "\n"))
+
+(defun supertag-view-helper-field-provenance-badge
+    (node-id tag-id field-name)
+  "Return the shared provenance badge for FIELD-NAME of NODE-ID, or nil.
+Human-written or confirmed values have no badge.  Agent-written values show
+who wrote them and when that information is available; stale values say
+that the node text changed after the write."
+  (when (and node-id tag-id (stringp field-name))
+    (let ((provenance
+           (supertag-field-provenance node-id tag-id field-name)))
+      (when (eq (plist-get provenance :origin) :agent)
+        (if (supertag-field-stale-p node-id tag-id field-name)
+            (propertize
+             "⟨AI · outdated⟩"
+             'face `(:foreground ,(supertag-view-helper-get-warning-color))
+             'help-echo
+             "Written by an agent before the node text changed. c confirms, x rejects, C reviews all.")
+          (propertize
+           "⟨AI⟩"
+           'face `(:foreground ,(supertag-view-helper-get-muted-color))
+           'help-echo
+           (format
+            "Written by %s at %s. c confirms, x rejects, C reviews all."
+            (or (plist-get provenance :model) "an agent")
+            (or (plist-get provenance :at) "an unknown time"))))))))
 
 (defun supertag-view-helper-insert-field-line (field-name value field-def &optional interactive-props badge)
   "Insert a simple field line with FIELD-NAME, VALUE, FIELD-DEF and optional INTERACTIVE-PROPS.

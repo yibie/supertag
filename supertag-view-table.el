@@ -1177,19 +1177,14 @@ Uses improved styling from old version."
 
 (defun supertag-view-table--mark-provenance (text node-id tag-id field-name)
   "Return TEXT with a marker when FIELD-NAME of NODE-ID is an agent-written value.
-An outdated agent value (the node text changed since) is marked ⟨AI?⟩,
+An outdated agent value (the node text changed since) is marked ⟨AI · outdated⟩,
 a current one ⟨AI⟩; confirmed or human-written values are left alone."
-  (if (not (and node-id tag-id (stringp field-name)
-                (eq (plist-get (supertag-field-provenance node-id tag-id field-name)
-                               :origin)
-                    :agent)))
-      text
-    (concat text " "
-            (if (supertag-field-stale-p node-id tag-id field-name)
-                (propertize "⟨AI?⟩" 'face 'warning
-                            'help-echo "Agent-written value; the node text changed since")
-              (propertize "⟨AI⟩" 'face 'shadow
-                          'help-echo "Agent-written value, not yet confirmed")))))
+  (let ((badge
+         (supertag-view-helper-field-provenance-badge
+          node-id tag-id field-name)))
+    (if badge
+        (concat text " " badge)
+      text)))
 
 (defun supertag-view-table--format-cell-value (value type)
   "Format VALUE according to TYPE for display in table cells."

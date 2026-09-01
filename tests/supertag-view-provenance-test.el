@@ -310,6 +310,28 @@
 
 ;;; --- Table View marker ---
 
+(ert-deftest supertag-view-provenance-node-and-table-share-the-same-badge ()
+  "Node and Table render identical provenance badges, including tooltips."
+  (supertag-view-provenance-test--isolated
+    (supertag-view-provenance-test--install)
+    (supertag-field-set
+     "project-1" "project" "Summary" "agent text"
+     '(:origin :agent :model "review-model" :at "2026-08-31"
+       :source-hash "hash-v1"))
+    (dolist (hash '("hash-v1" "hash-v2"))
+      (supertag-store-put-entity
+       :nodes "project-1"
+       `(:id "project-1" :type :node :title "Alpha" :tags ("project")
+         :hash ,hash))
+      (let* ((node-badge
+              (supertag-view-node--provenance-badge
+               "project-1" "project" "Summary"))
+             (table-cell
+              (supertag-view-table--mark-provenance
+               "agent text" "project-1" "project" "Summary"))
+             (table-badge (substring table-cell (length "agent text "))))
+        (should (equal-including-properties node-badge table-badge))))))
+
 (ert-deftest supertag-view-provenance-table-marks-agent-cells ()
   (supertag-view-provenance-test--isolated
     (supertag-view-provenance-test--install)
@@ -326,7 +348,7 @@
      :nodes "project-1"
      '(:id "project-1" :type :node :title "Alpha" :tags ("project")
        :hash "hash-v2"))
-    (should (string-match-p "⟨AI\\?⟩"
+    (should (string-match-p "⟨AI · outdated⟩"
                             (supertag-view-table--mark-provenance
                              "agent text" "project-1" "project" "Summary")))
     ;; Non-field columns and missing context are left alone.

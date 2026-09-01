@@ -271,7 +271,8 @@ Returns plist with :node-id, :current-value, and other card info."
              (target-idx (when current-idx (+ current-idx (if (eq direction :left) -1 1)))))
         (if (and current-idx (>= target-idx 0) (< target-idx (length column-values)))
             (let ((new-value (nth target-idx column-values)))
-              (supertag-field-set node-id base-tag group-field new-value)
+              (supertag-field-set node-id base-tag group-field new-value
+                                  '(:origin :human))
               (supertag-view-kanban-refresh node-id)
               (message "Moved card to '%s'" new-value))
           (message "Cannot move further in that direction."))))))

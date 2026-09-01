@@ -24,6 +24,7 @@
 (require 'supertag-ops-tag)
 (require 'supertag-ops-field)
 (require 'supertag-ops-relation)
+(require 'supertag-ops-link-definition)
 (require 'supertag-services-query)
 
 ;; --- Query & Entity Fetch ---
@@ -48,7 +49,7 @@ This function is UI-agnostic and read-only."
          (supertag-query-node-ids-by-tag
           tag
           (plist-get query-spec :include-descendants))))
-      ((or :nodes :tags :relations :embeds
+      ((or :nodes :tags :relations :link-definition :link-definitions :embeds
            ;; Some query specs use singular names in UI layers; accept them here.
            :automation :automations
            :behavior :behaviors
@@ -57,12 +58,16 @@ This function is UI-agnostic and read-only."
                      (:automation :automations)
                      (:behavior :behaviors)
                      (:database :databases)
+                     (:link-definition :link-definitions)
                      (_ type))))
          (pcase type
            (:nodes (mapcar #'car (supertag-query-nodes)))
            (:tags (supertag-view-api-list-tag-ids))
            (:relations (mapcar (lambda (relation) (plist-get relation :id))
                                (supertag-query-relations)))
+           (:link-definitions
+            (mapcar (lambda (definition) (plist-get definition :id))
+                    (supertag-link-definition-list)))
            (:automations (mapcar (lambda (automation) (plist-get automation :id))
                                  (supertag-query-automations)))
            ;; :embeds/:behaviors/:databases are legacy/non-canonical
@@ -80,6 +85,7 @@ This function is UI-agnostic and read-only."
            (:node :nodes)
            (:tag :tags)
            (:relation :relations)
+           (:link-definition :link-definitions)
            (:embed :embeds)
            (:automation :automations)
            (:behavior :behaviors)
@@ -89,6 +95,7 @@ This function is UI-agnostic and read-only."
       (:nodes (supertag-query-node entity-id))
       (:tags (supertag-tag-get entity-id))
       (:relations (supertag-relation-get entity-id))
+      (:link-definitions (supertag-link-definition-get entity-id))
       (:automations
        (car (supertag-query-automations
              (lambda (automation)

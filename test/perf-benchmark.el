@@ -13,6 +13,13 @@
 ;;   emacs -batch -L . --eval "(package-initialize)" \
 ;;     -l test/perf-benchmark.el -f supertag-perf-benchmark-run
 ;;
+;; The focused 5,000-node navigation benchmark added for interactive hot paths
+;; is independently runnable (and prints only; it writes no report file):
+;;
+;;   emacs -batch -L . --eval "(package-initialize)" \
+;;     -l test/perf-benchmark.el \
+;;     -f supertag-perf-benchmark-navigation-hot-paths
+;;
 ;; What it measures (see `supertag-perf-benchmark-run'):
 ;;   1. `supertag-index-get-nodes-by-tag'  - indexed hot + rare tag lookup
 ;;   2. `supertag-index-get-nodes-by-word' - O(N) full :nodes scan, substring search
@@ -24,6 +31,8 @@
 ;;      plus, since it turned out to need no live window, the full
 ;;      `supertag-view-table--render-table' pass too (see the feasibility
 ;;      note above `supertag-perf-benchmark--view-refresh-data').
+;;   6. Focused navigation entry: warm mention discovery, three-keyword search,
+;;      and warm Table state rebuilding across exactly 5,000 synthetic nodes.
 ;;
 ;; The dataset (10,000 nodes / 50 tags / ~2,000 relations / fields on ~30%
 ;; of nodes) is generated purely arithmetically (no `random' calls), so
@@ -47,6 +56,8 @@
 (require 'supertag-core-persistence)
 (require 'supertag-view-api)
 (require 'supertag-view-table)
+(require 'supertag-services-mention)
+(require 'supertag-ui-search)
 
 ;;; --- Dataset configuration (deterministic; do not use `random') ---
 
@@ -476,6 +487,81 @@ operation is already at/above 100ms at N-NOW, or when timing is ~0."
           (insert report))
         (message "Report written to %s" supertag-perf-benchmark-report-file))))
   (message "supertag-perf-benchmark-run: done."))
+
+;;; --- Navigation hot paths (5,000-node interactive workload) ---
+
+(defconst supertag-perf-navigation-node-count 5000
+  "Node count for the mention/search/table comparison benchmark.")
+
+(defun supertag-perf-benchmark--build-navigation-fixture ()
+  "Build the deterministic 5,000-node navigation benchmark fixture."
+  (supertag--ensure-store)
+  (supertag-store-put-entity
+   :nodes "target"
+   '(:id "target" :type :node :title "Ontology" :content ""
+     :file "/tmp/target.org" :position 1 :tags ("concept")))
+  (dotimes (i (1- supertag-perf-navigation-node-count))
+    (let* ((id (format "source-%04d" i))
+           (mention (if (zerop (% i 1000)) " Ontology appears here." "")))
+      (supertag-store-put-entity
+       :nodes id
+       (list :id id :type :node
+             :title (format "Node %04d" i)
+             :content (concat "Shared body text for the benchmark." mention)
+             :file (format "/tmp/source-%04d.org" i)
+             :position (1+ i)
+             :tags '("notes" "active")
+             :properties '(:Owner "active" :State "open"))))))
+
+(defun supertag-perf-benchmark--navigation-measure (label thunk)
+  "Print timings for LABEL by invoking THUNK five times after one warm-up."
+  (funcall thunk)
+  (garbage-collect)
+  (let (times)
+    (dotimes (_ 5)
+      (push (car (benchmark-run 1 (funcall thunk))) times))
+    (setq times (nreverse times))
+    (princ (format "%s\tmin=%.3fms\tmean=%.3fms\n"
+                   label
+                   (* 1000.0 (apply #'min times))
+                   (* 1000.0 (/ (apply #'+ times) (float (length times))))))))
+
+;;;###autoload
+(defun supertag-perf-benchmark-navigation-hot-paths ()
+  "Benchmark mention, search, and Table state building on 5,000 nodes."
+  (interactive)
+  (let ((supertag--store (ht-create))
+        (supertag--index-source-revisions (make-hash-table :test #'eq))
+        (supertag-mention-max-results 300)
+        (case-fold-search t))
+    (supertag-perf-benchmark--build-navigation-fixture)
+    (princ (format "navigation fixture\tnodes=%d\n"
+                   (hash-table-count
+                    (supertag-store-get-collection :nodes))))
+    (supertag-perf-benchmark--navigation-measure
+     "mention find (warm repeat)"
+     (lambda () (supertag-mention-service-find "target")))
+    (supertag-perf-benchmark--navigation-measure
+     "search 3 keywords (all match)"
+     (lambda () (supertag-search-find-nodes '("Node" "Shared" "active"))))
+    (with-temp-buffer
+      (setq-local supertag-view-table--query-objs
+                  '((:type :nodes :value "all")))
+      (setq-local supertag-view-table--current-table-index 0)
+      (setq-local supertag-view-table--entity-ids
+                  (cl-loop for i below (1- supertag-perf-navigation-node-count)
+                           collect (format "source-%04d" i)))
+      (setq-local supertag-view-table--columns
+                  '((:name "Title" :key :title :width 20)
+                    (:name "Content" :key :content :width 30)
+                    (:name "File" :key :file :width 20)
+                    (:name "Tags" :key :tags :width 20)
+                    (:name "Properties" :key :properties :width 20)))
+      (setq-local supertag-view-table--view-config nil)
+      (setq-local supertag-view-table--current-view-name nil)
+      (supertag-perf-benchmark--navigation-measure
+       "table build-state (warm repeat)"
+       #'supertag-view-table--build-state))))
 
 (provide 'perf-benchmark)
 

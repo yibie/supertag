@@ -14,6 +14,7 @@
 
 (require 'cl-lib)
 (require 'subr-x)
+(require 'supertag-core-index)
 (require 'supertag-core-store)
 (require 'supertag-core-notify)
 (require 'supertag-ops-node)
@@ -89,6 +90,85 @@
 (defvar-local supertag-view-table--current-view-name nil
   "Name of the currently active view.")
 
+(defconst supertag-view-table--row-cache-collections
+  '(:nodes :databases :automations :behaviors :relations :fields
+    :field-values :field-provenance :tags :field-definitions
+    :tag-field-associations)
+  "Store collections that can affect a rendered Table row.")
+
+(defvar-local supertag-view-table--row-cache nil
+  "Entity ID to rendered row cache for the current Table buffer.")
+
+(defvar-local supertag-view-table--row-cache-token nil
+  "Store source token represented by `supertag-view-table--row-cache'.")
+
+(defvar-local supertag-view-table--row-cache-shape nil
+  "Query and semantic column shape represented by the row cache.")
+
+(defun supertag-view-table--semantic-column-shape (columns)
+  "Return COLUMNS without display widths, which do not affect cell values."
+  (mapcar
+   (lambda (column)
+     (cl-loop for (key value) on column by #'cddr
+              unless (eq key :width)
+              append (list key value)))
+   columns))
+
+(defun supertag-view-table--row-cache-source-token ()
+  "Return the Store token covering every Table row dependency."
+  (supertag-index-source-token supertag-view-table--row-cache-collections))
+
+(defun supertag-view-table--row-cache-targeted-change-p (collection token)
+  "Return non-nil when TOKEN differs only by COLLECTION's current event.
+
+The event may arrive after another callback has already advanced the cache to
+TOKEN, hence a zero or one revision delta is accepted.  Any unannounced change
+to another collection forces a full invalidation."
+  (and supertag-view-table--row-cache-token
+       (eq (car token) (car supertag-view-table--row-cache-token))
+       (cl-every
+        (lambda (name)
+          (let ((old (alist-get name
+                                (cdr supertag-view-table--row-cache-token)))
+                (new (alist-get name (cdr token))))
+            (if (eq name collection)
+                (or (= new old) (= new (1+ old)))
+              (= new old))))
+        supertag-view-table--row-cache-collections)))
+
+(defun supertag-view-table--clear-row-cache ()
+  "Clear the current buffer's disposable Table row cache."
+  (when (hash-table-p supertag-view-table--row-cache)
+    (clrhash supertag-view-table--row-cache))
+  (setq supertag-view-table--row-cache-token nil
+        supertag-view-table--row-cache-shape nil))
+
+(defun supertag-view-table--invalidate-row-cache (path)
+  "Invalidate cached rows affected by Store change PATH.
+
+Field value and provenance paths identify one row.  Broader changes clear the
+cache because they can alter membership, columns, formulas, or reference
+labels.  Recording the post-change token lets the following Runtime refresh
+reuse unaffected rows; an unannounced Store mutation is still detected by
+`supertag-view-table--build-state'."
+  (let* ((collection (car-safe path))
+         (token (supertag-view-table--row-cache-source-token))
+         (targeted-p
+          (supertag-view-table--row-cache-targeted-change-p
+           collection token)))
+    (when (hash-table-p supertag-view-table--row-cache)
+      (pcase collection
+        ((or :field-values :field-provenance)
+         (if (and targeted-p (nth 1 path))
+             (remhash (nth 1 path) supertag-view-table--row-cache)
+           (clrhash supertag-view-table--row-cache)))
+        ((or :databases :automations :behaviors)
+         (if (and targeted-p (nth 1 path))
+             (remhash (nth 1 path) supertag-view-table--row-cache)
+           (clrhash supertag-view-table--row-cache)))
+        (_ (clrhash supertag-view-table--row-cache))))
+    (setq supertag-view-table--row-cache-token token)))
+
 ;;; --- Layout Registry and Render Dispatcher ---
 
 (defvar supertag-view-table--layout-registry (make-hash-table :test 'equal)
@@ -127,16 +207,61 @@ Returns a plist with keys:
   :meta     - additional info (view config, options)"
   (let* ((columns supertag-view-table--columns)
          (entity-ids supertag-view-table--entity-ids)
-         (rows (cl-loop for eid in entity-ids
-                        for data = (supertag-view-table--get-entity-data eid)
-                        when data
-                        collect (list :id eid
-                                      :values (cl-loop for col in columns
-                                                       for key = (plist-get col :key)
-                                                       collect (cons key (supertag-view-table--get-cell-value data key col))))))
+         (query-obj (supertag-view-table--get-current-query-obj))
+         (cacheable
+          (not (cl-some
+                (lambda (column)
+                  (or (plist-get column :virtual-column)
+                      ;; A function-valued schema default can intentionally
+                      ;; change without any Store mutation.
+                      (functionp (plist-get column :default))))
+                columns)))
+         (token (supertag-view-table--row-cache-source-token))
+         (shape (list query-obj
+                      (supertag-view-table--semantic-column-shape columns)))
+         (_
+          (unless (hash-table-p supertag-view-table--row-cache)
+            (setq supertag-view-table--row-cache
+                  (make-hash-table :test #'equal))))
+         (_
+          (unless (and cacheable
+                       (supertag-index-source-current-p
+                        supertag-view-table--row-cache-token
+                        supertag-view-table--row-cache-collections)
+                       (equal shape supertag-view-table--row-cache-shape))
+            (clrhash supertag-view-table--row-cache)))
+         (_ (setq supertag-view-table--row-cache-token token
+                  supertag-view-table--row-cache-shape shape))
+         (missing (make-symbol "missing-row"))
+         (rows
+          (cl-loop
+           for eid in entity-ids
+           for row =
+           (let ((cached
+                  (and cacheable
+                       (gethash eid supertag-view-table--row-cache missing))))
+             (if (and cacheable (not (eq cached missing)))
+                 cached
+               (when-let* ((data
+                            (supertag-view-table--get-entity-data eid)))
+                 (let ((fresh
+                        (list
+                         :id eid
+                         :values
+                         (cl-loop
+                          for col in columns
+                          for key = (plist-get col :key)
+                          collect
+                          (cons key
+                                (supertag-view-table--get-cell-value
+                                 data key col))))))
+                   (when cacheable
+                     (puthash eid fresh supertag-view-table--row-cache))
+                   fresh))))
+           when row collect row))
          (meta (list :view-config supertag-view-table--view-config
                      :current-view-name supertag-view-table--current-view-name
-                     :query-obj (supertag-view-table--get-current-query-obj))))
+                     :query-obj query-obj)))
     (list :columns columns :rows rows :meta meta)))
 
 ;;; --- Expanded Rows (Inline Details) ---
@@ -269,6 +394,10 @@ Only strips keywords if `supertag-view-table-strip-todo-keywords' is non-nil."
          (view-config (plist-get input :view-config))
          (named-views (plist-get input :named-views)))
     (setq-local truncate-lines t)
+    (setq-local supertag-view-table--row-cache
+                (make-hash-table :test #'equal))
+    (setq-local supertag-view-table--row-cache-token nil)
+    (setq-local supertag-view-table--row-cache-shape nil)
     (setq-local supertag-view-table--query-objs query-objs)
     (setq-local supertag-view-table--entity-ids entity-ids)
     (setq-local supertag-view-table--columns columns)
@@ -318,15 +447,19 @@ Only strips keywords if `supertag-view-table-strip-todo-keywords' is non-nil."
 
 (defun supertag-view-table--subscribe-view (_input _state refresh)
   "Subscribe the Table Adapter and call REFRESH for relevant Store changes."
-  (supertag-view-api-subscribe
-   :store-changed
-   (lambda (path _old-value _new-value)
-     (when (and (listp path)
-                (memq (car path)
-                      '(:nodes :databases :automations :behaviors
-                        :field-values :tags :field-definitions
-                        :tag-field-associations)))
-       (funcall refresh)))))
+  (let ((buffer (current-buffer)))
+    (supertag-view-api-subscribe
+     :store-changed
+     (lambda (path _old-value _new-value)
+       (when (and (listp path)
+                  (memq (car path)
+                        '(:nodes :databases :automations :behaviors
+                          :field-values :field-provenance :tags
+                          :field-definitions :tag-field-associations)))
+         (when (buffer-live-p buffer)
+           (with-current-buffer buffer
+             (supertag-view-table--invalidate-row-cache path)))
+         (funcall refresh))))))
 
 (defun supertag-view-table--display-buffer (buffer _alist)
   "Display Table BUFFER using the existing main-window policy."
@@ -1032,8 +1165,31 @@ Uses improved styling from old version."
              (eq col-type :node-reference))
         (supertag-view-table--format-node-reference-values raw-value))
        (t
-        (let ((formatted (supertag-view-table--format-cell-value raw-value col-type)))
-          (supertag-view-helper-render-org-links formatted)))))))
+        (let* ((formatted (supertag-view-table--format-cell-value raw-value col-type))
+               (rendered (supertag-view-helper-render-org-links formatted)))
+          (if (eq (plist-get query-obj :type) :tag)
+              (supertag-view-table--mark-provenance
+               rendered
+               (plist-get entity-data :id)
+               (supertag-view-table--get-current-tag-id)
+               (supertag-view-table--field-name-for-column column key))
+            rendered)))))))
+
+(defun supertag-view-table--mark-provenance (text node-id tag-id field-name)
+  "Return TEXT with a marker when FIELD-NAME of NODE-ID is an agent-written value.
+An outdated agent value (the node text changed since) is marked ⟨AI?⟩,
+a current one ⟨AI⟩; confirmed or human-written values are left alone."
+  (if (not (and node-id tag-id (stringp field-name)
+                (eq (plist-get (supertag-field-provenance node-id tag-id field-name)
+                               :origin)
+                    :agent)))
+      text
+    (concat text " "
+            (if (supertag-field-stale-p node-id tag-id field-name)
+                (propertize "⟨AI?⟩" 'face 'warning
+                            'help-echo "Agent-written value; the node text changed since")
+              (propertize "⟨AI⟩" 'face 'shadow
+                          'help-echo "Agent-written value, not yet confirmed")))))
 
 (defun supertag-view-table--format-cell-value (value type)
   "Format VALUE according to TYPE for display in table cells."
@@ -1318,7 +1474,8 @@ Returns a list '(FILE-PATH TYPE)' on success, nil on failure."
              (supertag-field-set entity-id
                                 (supertag-view-table--get-current-tag-id)
                                 (symbol-name col-key)
-                                image-file))
+                                image-file
+                                '(:origin :human)))
             (_
              (let* ((entity-data (supertag-view-table--get-entity-data entity-id))
                     (current-value (plist-get entity-data col-key)))
@@ -1540,8 +1697,10 @@ COORDS is a plist with :entity-id and :col-index."
                                      base-value))
                     (new-value (supertag-ui-read-field-value col-def current-value)))
                (when new-value
-                 ;; Field service owns Field Reference reconciliation.
-                 (supertag-field-set entity-id tag-id field-name new-value)
+                 ;; Field service owns Field Reference reconciliation.  A
+                 ;; value typed here is a fact the person stands behind.
+                 (supertag-field-set entity-id tag-id field-name new-value
+                                     '(:origin :human))
                  (supertag-view-table-refresh)
                  (supertag-view-table--goto-cell coords)))))
           (_
@@ -1945,6 +2104,7 @@ Users can rebind keys in this map to avoid conflicts with modal editing.")
   ;; Clear virtual column cache
   (when (fboundp 'supertag-virtual-column-clear-cache)
     (supertag-virtual-column-clear-cache))
+  (supertag-view-table--clear-row-cache)
   ;; Then do normal refresh
   (supertag-view-table-refresh)
   (message "Table force-refreshed (virtual column cache cleared)."))

@@ -128,6 +128,124 @@
       (when-let* ((buffer (get-buffer buffer-name)))
         (kill-buffer buffer)))))
 
+(ert-deftest supertag-view-table-row-cache-invalidates-on-store-revision ()
+  "A direct Store mutation must invalidate cached rows before rebuilding."
+  (let ((supertag--store (make-hash-table :test 'equal))
+        (supertag--index-source-revisions (make-hash-table :test #'eq))
+        (cell-reads 0)
+        (original-cell-reader
+         (symbol-function 'supertag-view-table--get-cell-value)))
+    (supertag--ensure-store)
+    (supertag-store-put-entity :nodes "one" '(:id "one" :title "Before"))
+    (supertag-store-put-entity :nodes "two" '(:id "two" :title "Stable"))
+    (with-temp-buffer
+      (setq-local supertag-view-table--query-objs
+                  '((:type :nodes :value "all")))
+      (setq-local supertag-view-table--current-table-index 0)
+      (setq-local supertag-view-table--entity-ids '("one" "two"))
+      (setq-local supertag-view-table--columns
+                  '((:name "Title" :key :title :width 20)))
+      (cl-letf (((symbol-function 'supertag-view-table--get-cell-value)
+                 (lambda (data key column)
+                   (cl-incf cell-reads)
+                   (funcall original-cell-reader data key column))))
+        (supertag-view-table--build-state)
+        (supertag-view-table--build-state)
+        (should (= 2 cell-reads))
+        ;; No event is emitted here.  The Store revision token is the safety
+        ;; net for callers that build state outside a live Runtime view.
+        (supertag-store-put-entity
+         :nodes "one" '(:id "one" :title "After"))
+        (let* ((state (supertag-view-table--build-state))
+               (row (car (plist-get state :rows))))
+          (should (= 4 cell-reads))
+          (should (equal "After" (cdar (plist-get row :values)))))))))
+
+(ert-deftest supertag-view-table-row-cache-targets-field-change ()
+  "A field event evicts its row while retaining unaffected cached rows."
+  (let ((supertag--store (make-hash-table :test 'equal))
+        (supertag--index-source-revisions (make-hash-table :test #'eq))
+        (cell-reads 0)
+        (original-cell-reader
+         (symbol-function 'supertag-view-table--get-cell-value)))
+    (supertag--ensure-store)
+    (supertag-store-put-entity :nodes "one" '(:id "one" :title "One"))
+    (supertag-store-put-entity :nodes "two" '(:id "two" :title "Two"))
+    (with-temp-buffer
+      (setq-local supertag-view-table--query-objs
+                  '((:type :nodes :value "all")))
+      (setq-local supertag-view-table--current-table-index 0)
+      (setq-local supertag-view-table--entity-ids '("one" "two"))
+      (setq-local supertag-view-table--columns
+                  '((:name "Title" :key :title :width 20)))
+      (cl-letf (((symbol-function 'supertag-view-table--get-cell-value)
+                 (lambda (data key column)
+                   (cl-incf cell-reads)
+                   (funcall original-cell-reader data key column))))
+        (supertag-view-table--build-state)
+        (supertag-index-note-store-change :field-values)
+        (supertag-view-table--invalidate-row-cache
+         '(:field-values "one" "status"))
+        (supertag-view-table--build-state)
+        (should (= 3 cell-reads))))))
+
+(ert-deftest supertag-view-table-does-not-cache-dynamic-default-columns ()
+  "Function-valued defaults have no Store invalidation signal, so stay live."
+  (let ((supertag--store (make-hash-table :test 'equal))
+        (supertag--index-source-revisions (make-hash-table :test #'eq))
+        (cell-reads 0)
+        (original-cell-reader
+         (symbol-function 'supertag-view-table--get-cell-value)))
+    (supertag--ensure-store)
+    (supertag-store-put-entity :nodes "one" '(:id "one" :title "One"))
+    (with-temp-buffer
+      (setq-local supertag-view-table--query-objs
+                  '((:type :nodes :value "all")))
+      (setq-local supertag-view-table--current-table-index 0)
+      (setq-local supertag-view-table--entity-ids '("one"))
+      (setq-local supertag-view-table--columns
+                  (list (list :name "Dynamic" :key :title :width 20
+                              :default (lambda () (current-time-string)))))
+      (cl-letf (((symbol-function 'supertag-view-table--get-cell-value)
+                 (lambda (data key column)
+                   (cl-incf cell-reads)
+                   (funcall original-cell-reader data key column))))
+        (supertag-view-table--build-state)
+        (supertag-view-table--build-state)
+        (should (= 2 cell-reads))))))
+
+(ert-deftest supertag-view-table-event-does-not-hide-earlier-unannounced-change ()
+  "Targeted invalidation must fall back to full when another revision changed."
+  (let ((supertag--store (make-hash-table :test 'equal))
+        (supertag--index-source-revisions (make-hash-table :test #'eq))
+        (cell-reads 0)
+        (original-cell-reader
+         (symbol-function 'supertag-view-table--get-cell-value)))
+    (supertag--ensure-store)
+    (supertag-store-put-entity :nodes "one" '(:id "one" :title "Before"))
+    (supertag-store-put-entity :nodes "two" '(:id "two" :title "Stable"))
+    (with-temp-buffer
+      (setq-local supertag-view-table--query-objs
+                  '((:type :nodes :value "all")))
+      (setq-local supertag-view-table--current-table-index 0)
+      (setq-local supertag-view-table--entity-ids '("one" "two"))
+      (setq-local supertag-view-table--columns
+                  '((:name "Title" :key :title :width 20)))
+      (cl-letf (((symbol-function 'supertag-view-table--get-cell-value)
+                 (lambda (data key column)
+                   (cl-incf cell-reads)
+                   (funcall original-cell-reader data key column))))
+        (supertag-view-table--build-state)
+        (supertag-store-put-entity
+         :nodes "one" '(:id "one" :title "After"))
+        (supertag-index-note-store-change :field-values)
+        (supertag-view-table--invalidate-row-cache
+         '(:field-values "two" "status"))
+        (let* ((state (supertag-view-table--build-state))
+               (row (car (plist-get state :rows))))
+          (should (= 4 cell-reads))
+          (should (equal "After" (cdar (plist-get row :values)))))))))
+
 (provide 'test-view-table)
 
 ;;; test-view-table.el ends here

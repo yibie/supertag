@@ -16,6 +16,10 @@
 (require 'supertag-ops-node)
 (require 'supertag-view-framework)
 
+(declare-function supertag-reference-materialize-at-point
+                  "supertag-ui-reference"
+                  (target-id title))
+
 ;;; --- Search History Management ---
 
 (defcustom supertag-search-history-max-items 100
@@ -176,7 +180,8 @@ Handles both time stamps (list) and date strings."
 
 (defun supertag-search-find-nodes (keywords)
   "Find nodes matching KEYWORDS."
-  (let (results)
+  (let ((patterns (mapcar #'regexp-quote keywords))
+        results)
     (dolist (pair (supertag-query-nodes (lambda (_id data) data)))
       (let* ((node-data (cdr pair))
              (title (plist-get node-data :title))
@@ -185,30 +190,46 @@ Handles both time stamps (list) and date strings."
              (properties (plist-get node-data :properties))
              (match-context nil)
              (all-match t))
-        (dolist (keyword keywords)
-          (let* ((keyword-re (regexp-quote keyword))
-                 (title-match (and title (string-match-p keyword-re title)))
-                 (tag-match (and tags (cl-some (lambda (tag) (string-match-p keyword-re tag)) tags)))
-                 (content-match (and content (string-match keyword-re content)))
-                 (field-match (and properties
-                                    (cl-some (lambda (prop)
-                                               (and (stringp prop)
-                                                    (string-match-p keyword-re prop)))
-                                             (let (prop-values props)
-                                               (setq props properties)
-                                               (while props
-                                                 (push (cadr props) prop-values)
-                                                 (setq props (cddr props)))
-                                               prop-values)))))
-            (unless (or title-match tag-match content-match field-match)
-              (setq all-match nil))
-            (when (and content-match (not match-context))
-              (let* ((match-start (match-beginning 0))
-                     (context-start (max 0 (- match-start 40)))
-                     (context-end (min (length content) (+ (match-end 0) 40)))
-                     (prefix (if (> context-start 0) "..." ""))
-                     (suffix (if (< context-end (length content)) "..." "")))
-                (setq match-context (concat prefix (substring content context-start context-end) suffix))))))
+        (catch 'node-does-not-match
+          (dolist (keyword-re patterns)
+            (let ((content-searched-p nil)
+                  (content-match nil))
+              ;; Preserve the old "first matching content keyword" snippet,
+              ;; but once a snippet exists do not scan content when an earlier
+              ;; title/tag field already proves the keyword matches.
+              (when (and content (not match-context))
+                (setq content-searched-p t
+                      content-match (string-match keyword-re content))
+                (when content-match
+                  (let* ((match-start (match-beginning 0))
+                         (context-start (max 0 (- match-start 40)))
+                         (context-end
+                          (min (length content) (+ (match-end 0) 40)))
+                         (prefix (if (> context-start 0) "..." ""))
+                         (suffix
+                          (if (< context-end (length content)) "..." "")))
+                    (setq match-context
+                          (concat prefix
+                                  (substring content context-start context-end)
+                                  suffix)))))
+              (unless
+                  (or (and title (string-match-p keyword-re title))
+                      (and tags
+                           (cl-some
+                            (lambda (tag)
+                              (string-match-p keyword-re tag))
+                            tags))
+                      content-match
+                      (and content
+                           (not content-searched-p)
+                           (string-match-p keyword-re content))
+                      (and properties
+                           (cl-loop for (_key value) on properties by #'cddr
+                                    thereis
+                                    (and (stringp value)
+                                         (string-match-p keyword-re value)))))
+                (setq all-match nil)
+                (throw 'node-does-not-match nil)))))
         (when all-match
           (push (cons node-data match-context) results))))
     (nreverse results)))
@@ -499,6 +520,19 @@ Handles both time stamps (list) and date strings."
 
 ;;; --- Export Functions ---
 
+(defun supertag-search--insert-node-link-line (node-id title)
+  "Insert one bullet link to NODE-ID titled TITLE through the materializer."
+  (insert "- \n")
+  (backward-char 1)
+  (require 'supertag-ui-reference)
+  (let ((inhibit-message t))
+    (supertag-reference-materialize-at-point node-id title))
+  (forward-char 1))
+
+(defun supertag-search--insert-generated-node-link-line (node-id title)
+  "Insert a non-asserting generated bullet link to NODE-ID titled TITLE."
+  (insert "- " (supertag-node-format-link node-id title) "\n"))
+
 (defun supertag-search-get-selected-nodes ()
   "Get all marked node IDs from the search buffer."
   (with-current-buffer (get-buffer "*Supertag Search*")
@@ -518,25 +552,22 @@ Handles both time stamps (list) and date strings."
       (with-current-buffer orig-buf
         (save-excursion
           (goto-char orig-point)
-          (let ((content
-                 (with-temp-buffer
-                   (dolist (node-id selected-nodes)
-                     (when-let* ((node-data (supertag-node-get node-id))
-                                (title (plist-get node-data :title))
-                                (clean-title
-                                 (substring-no-properties
-                                  (if (stringp title)
-                                      title
-                                    (prin1-to-string title)))))
-                       (insert "- " (supertag-node-format-link node-id clean-title) "\n")))
-                   (buffer-string))))
-            (insert content)
-            (message "Inserted %d node links at original position"
-                     (length selected-nodes)))))
+          (dolist (node-id selected-nodes)
+            (when-let* ((node-data (supertag-node-get node-id))
+                        (title (plist-get node-data :title))
+                        (clean-title
+                         (substring-no-properties
+                          (if (stringp title)
+                              title
+                            (prin1-to-string title)))))
+              (supertag-search--insert-node-link-line node-id clean-title)))
+          (message "Inserted %d node links at original position"
+                   (length selected-nodes))))
       (kill-buffer))))
 
 (defun supertag-search-export-results-to-new-file ()
-  "Export selected search results as links to new file."
+  "Export selected search results as a generated Org view in a new file.
+The exported links are navigation output, not Document Link assertions."
   (interactive)
   (let ((selected-nodes (supertag-search-get-selected-nodes)))
     (if (not selected-nodes)
@@ -561,15 +592,18 @@ Handles both time stamps (list) and date strings."
           (let ((title (file-name-base file)))
             (insert (format "#+TITLE: %s\n" title)
                     "#+OPTIONS: ^:nil\n"
-            "#+STARTUP: showeverything\n\n"
-            "* Search Results\n\n"))
+                    "#+STARTUP: showeverything\n\n"
+                    "* Search Results\n\n"
+                    "#+BEGIN: supertag-search-export\n"))
           (dolist (node-id selected-nodes)
             (when-let* ((node-data (supertag-node-get node-id))
                        (title (plist-get node-data :title))
                        (clean-title (if (stringp title)
                                        (substring-no-properties title)
                                      (prin1-to-string title))))
-              (insert "- " (supertag-node-format-link node-id clean-title) "\n")))
+              (supertag-search--insert-generated-node-link-line
+               node-id clean-title)))
+          (insert "#+END:\n")
           (save-buffer)
           (find-file file)
           (message "Export of %d links completed successfully to %s"

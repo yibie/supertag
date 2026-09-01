@@ -27,6 +27,10 @@
           (supertag-db-backup-directory (expand-file-name "backups" tmp))
           (supertag--store nil)
           (supertag--store-origin nil)
+          (supertag-concept-default-file
+           (expand-file-name "concepts.org" tmp))
+          (supertag-active-sync-directory nil)
+          (supertag-sync-directories nil)
           (org-id-locations nil)
           (org-id-files nil)
           (org-id-locations-file (expand-file-name "org-id-locations" tmp)))
@@ -165,11 +169,7 @@
   (concept-test--with-env
     (let ((file (expand-file-name "concepts.org" supertag-data-directory)))
       (with-temp-file file)
-      (cl-letf (((symbol-function 'read-file-name)
-                 (lambda (&rest _) file))
-                ((symbol-function 'supertag-ui-select-insert-position)
-                 (lambda (_) '(:position 1 :level 1)))
-                ((symbol-function 'supertag-node-identity-new)
+      (cl-letf (((symbol-function 'supertag-node-identity-new)
                  (lambda () "concept-id"))
                 ((symbol-function 'org-id-find)
                  (lambda (&rest _)
@@ -187,8 +187,8 @@
        :position 1 :level 0 :properties nil))
     (should-not (supertag-concept--find-node-id-by-title "Topic"))))
 
-(ert-deftest promote-concept-keeps-text-and-creates-one-reference ()
-  "Promoting selected text leaves it plain and adds one current-node reference."
+(ert-deftest promote-concept-materializes-one-document-link ()
+  "Promoting selected text writes one link and derives one Document Link."
   (concept-test--with-env
     (let ((test-file (expand-file-name "notes.org" supertag-data-directory)))
       (with-temp-file test-file
@@ -209,18 +209,43 @@
           (goto-char beg)
           (set-mark end)
           (activate-mark)
-          (call-interactively #'supertag-promote-concept)
-          (goto-char (point-max))
-          (supertag-promote-concept beg end))
+          (call-interactively #'supertag-promote-concept))
         (goto-char (point-min))
         (org-back-to-heading t)
         (let ((source-end (save-excursion (org-end-of-subtree t t))))
-          (should (re-search-forward "这里讨论注意力机制。" source-end t))
-          (goto-char (point-min))
-          (org-back-to-heading t)
-          (should-not (re-search-forward "\\[\\[id:concept-id\\]" source-end t)))
-        (should (= 1 (length (supertag-relation-find-between
-                              "source-id" "concept-id" :reference))))))))
+          (should (re-search-forward
+                   (regexp-quote
+                    "这里讨论[[id:concept-id][注意力机制]]。")
+                   source-end t)))
+        (let ((relations (supertag-relation-find-between
+                          "source-id" "concept-id" :reference)))
+          (should (= 1 (length relations)))
+          (should (supertag-relation-document-link-p (car relations)))
+          (should (eq :org (plist-get (car relations) :origin))))))))
+
+(ert-deftest promote-concept-inside-itself-is-a-friendly-no-op ()
+  "Promoting a concept's own title marks it but never creates a self-link."
+  (concept-test--with-env
+    (let ((file (expand-file-name "self.org" supertag-data-directory))
+          materialized)
+      (with-temp-file file
+        (insert "* 注意力机制\n:PROPERTIES:\n:ID: concept-id\n:END:\n\n再次提到注意力机制。\n"))
+      (with-current-buffer (find-file-noselect file)
+        (org-mode)
+        (goto-char (point-min))
+        (should (supertag-node-sync-at-point))
+        (search-forward "注意力机制" nil nil 2)
+        (let ((beg (match-beginning 0))
+              (end (match-end 0)))
+          (cl-letf (((symbol-function 'supertag-reference-materialize)
+                     (lambda (&rest _)
+                       (setq materialized t))))
+            (should (equal "concept-id"
+                           (supertag-promote-concept beg end)))))
+        (should-not materialized)
+        (goto-char (point-min))
+        (should (equal "t" (org-entry-get nil "SUPERTAG_CONCEPT")))
+        (should-not (search-forward "[[id:concept-id]" nil t))))))
 
 (ert-deftest promote-empty-concept-does-not-create-source-id ()
   "Reject an empty concept before mutating the source heading."

@@ -23,6 +23,10 @@
 ;;    or `org-update-all-dblocks'. Insert one with
 ;;    `supertag-insert-query-dblock'.
 ;;
+;; Links rendered by either flavor are generated view content, not Document
+;; Link assertions.  The sync extractor therefore ignores dynamic-block bodies
+;; and persisted `#+RESULTS:' containers while continuing to display the links.
+;;
 ;; Both flavors accept the same optional result-control params, all of
 ;; which are no-ops when omitted (existing babel blocks keep behaving
 ;; exactly as before):

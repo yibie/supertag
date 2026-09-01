@@ -166,12 +166,9 @@
         (goto-char (point-min))
         (re-search-forward "Create me")
         (let ((beg (match-beginning 0))
-              (end (match-end 0)))
-          (cl-letf (((symbol-function 'read-file-name)
-                     (lambda (&rest _) target-file))
-                    ((symbol-function 'supertag-ui-select-insert-position)
-                     (lambda (_) '(:position 1 :level 1)))
-                    ((symbol-function 'org-id-new)
+              (end (match-end 0))
+              (supertag-concept-default-file target-file))
+          (cl-letf (((symbol-function 'org-id-new)
                      (lambda (&rest _) (pop generated-ids))))
             (supertag-add-reference-and-create beg end))))
       (with-temp-buffer
@@ -201,14 +198,11 @@
       (with-current-buffer (find-file-noselect source-file)
         (goto-char (point-min))
         (re-search-forward "Create me")
-        (cl-letf (((symbol-function 'read-file-name)
-                   (lambda (&rest _) target-file))
-                  ((symbol-function 'supertag-ui-select-insert-position)
-                   (lambda (_) '(:position 1 :level 1)))
-                  ((symbol-function 'org-id-new)
-                   (lambda (&rest _) "target-id")))
-          (supertag-add-reference-and-create
-           (match-beginning 0) (match-end 0))))
+        (let ((supertag-concept-default-file target-file))
+          (cl-letf (((symbol-function 'org-id-new)
+                     (lambda (&rest _) "target-id")))
+            (supertag-add-reference-and-create
+             (match-beginning 0) (match-end 0)))))
       (let ((relation (car (supertag-relation-find-between
                             "source-id" "target-id" :reference))))
         (should (supertag-relation-document-link-p relation))
@@ -219,8 +213,7 @@
   (add-reference-test--with-clean-env
     (let ((source-file (expand-file-name "source.org" tmp))
           (target-file (expand-file-name "target.org" tmp))
-          (supertag-file-id-source 'disabled)
-          (prompted nil))
+          (supertag-file-id-source 'disabled))
       (with-temp-file source-file
         (insert "Create me.\n"))
       (with-temp-file target-file)
@@ -228,15 +221,11 @@
         (org-mode)
         (goto-char (point-min))
         (re-search-forward "Create me")
-        (cl-letf (((symbol-function 'read-file-name)
-                   (lambda (&rest _)
-                     (setq prompted t)
-                     target-file)))
+        (let ((supertag-concept-default-file target-file))
           (should-error
            (supertag-add-reference-and-create
             (match-beginning 0) (match-end 0))
            :type 'user-error)))
-      (should-not prompted)
       (should (= 0 (file-attribute-size (file-attributes target-file)))))))
 
 (ert-deftest add-reference-and-create-does-not-report-unprojected-success ()
@@ -251,18 +240,15 @@
       (with-current-buffer (find-file-noselect source-file)
         (goto-char (point-min))
         (re-search-forward "Create me")
-        (cl-letf (((symbol-function 'read-file-name)
-                   (lambda (&rest _) target-file))
-                  ((symbol-function 'supertag-ui-select-insert-position)
-                   (lambda (_) '(:position 1 :level 1)))
-                  ((symbol-function 'org-id-new)
-                   (lambda (&rest _) "target-id"))
-                  ((symbol-function 'supertag-ui--reproject-containing-node)
-                   #'ignore))
-          (should-error
-           (supertag-add-reference-and-create
-            (match-beginning 0) (match-end 0))
-           :type 'user-error)))
+        (let ((supertag-concept-default-file target-file))
+          (cl-letf (((symbol-function 'org-id-new)
+                     (lambda (&rest _) "target-id"))
+                    ((symbol-function 'supertag-ui--reproject-containing-node)
+                     #'ignore))
+            (should-error
+             (supertag-add-reference-and-create
+              (match-beginning 0) (match-end 0))
+             :type 'user-error))))
       (should-not (supertag-relation-find-between
                    "source-id" "target-id" :reference)))))
 

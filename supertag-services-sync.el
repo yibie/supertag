@@ -1526,23 +1526,39 @@ Returns a plist of keyword-value pairs, excluding org-internal properties."
           (setq props (cddr props)))))
     user-props))
 
+(defun supertag--generated-reference-context-p (element)
+  "Return non-nil when ELEMENT belongs to generated Org output.
+Dynamic-block bodies and elements affiliated with `#+RESULTS:' are replaceable
+views, so links below either container do not assert Document Link facts."
+  (let ((current element)
+        generated)
+    (while (and current (not generated))
+      (setq generated
+            (or (eq (org-element-type current) 'dynamic-block)
+                (org-element-property :results current))
+            current (org-element-property :parent current)))
+    generated))
+
 (defun supertag--extract-refs (elements)
-  "Extract supported node reference links from a list of org elements."
+  "Extract source-authored node reference links from Org ELEMENTS.
+Links in dynamic blocks and Babel result containers are generated views and
+are intentionally excluded."
   (let ((refs '()))
     (when elements
       (org-element-map elements 'link
         (lambda (link)
-          (let* ((type (org-element-property :type link))
-                 (path (org-element-property :path link))
-                 (raw (org-element-property :raw-link link))
-                 (denote-id (cond
-                             ((equal type "denote") path)
-                             ((and raw (string-prefix-p "denote:" raw))
-                              (substring raw (length "denote:"))))))
-            (when (and (stringp path)
-                       (not (string-empty-p path))
-                       (or (equal type "id") denote-id))
-              (push (or denote-id path) refs))))))
+          (unless (supertag--generated-reference-context-p link)
+            (let* ((type (org-element-property :type link))
+                   (path (org-element-property :path link))
+                   (raw (org-element-property :raw-link link))
+                   (denote-id (cond
+                               ((equal type "denote") path)
+                               ((and raw (string-prefix-p "denote:" raw))
+                                (substring raw (length "denote:"))))))
+              (when (and (stringp path)
+                         (not (string-empty-p path))
+                         (or (equal type "id") denote-id))
+                (push (or denote-id path) refs)))))))
     (nreverse refs)))
 
 (defun supertag--strip-inline-tags (headline)
@@ -1980,8 +1996,8 @@ Returns: :content (string)."
                     "" raw-content))))
 
 (defun supertag-extractor--refs (headline _file _ctx)
-  "Extract id: link references from a headline's direct content.
-Only extracts from non-headline children.
+  "Extract source-authored link references from a headline's direct content.
+Only extracts from non-headline children and excludes generated Org views.
 Returns: :ref-to (list of UUID strings)."
   (let* ((contents-begin (org-element-property :contents-begin headline))
          (refs-to (supertag--extract-refs
@@ -2030,6 +2046,36 @@ MIGRATION-MODE is retained for caller compatibility; all modes require IDs."
           (when node (push node nodes)))))
     (nreverse nodes)))
 
+(defun supertag-sync--strip-embed-block-contents (file)
+  "Strip generated embed contents from the current buffer before parsing FILE.
+For an unclosed embed block, conservatively strip through the next Org heading
+or the end of the buffer.  Return the number of unclosed blocks found."
+  (goto-char (point-min))
+  (let ((unclosed-count 0))
+    (while (re-search-forward "^#\\+begin_embed:.*$" nil t)
+      (let* ((content-start (line-beginning-position 2))
+             (block-end (save-excursion
+                          (when (re-search-forward "^#\\+end_embed" nil t)
+                            (match-beginning 0))))
+             (unit-end (save-excursion
+                         (when (re-search-forward
+                                "^\\*+\\(?:[ \t]+\\|$\\)" nil t)
+                           (match-beginning 0)))))
+        (if (and block-end
+                 (or (null unit-end) (< block-end unit-end)))
+            (progn
+              (delete-region content-start block-end)
+              (goto-char content-start))
+          (cl-incf unclosed-count)
+          (delete-region content-start (or unit-end (point-max)))
+          (goto-char content-start))))
+    (when (> unclosed-count 0)
+      (message "Supertag: ignored %d unclosed embed block%s while parsing %s"
+               unclosed-count
+               (if (= unclosed-count 1) "" "s")
+               (abbreviate-file-name file)))
+    unclosed-count))
+
 (defun supertag--parse-org-nodes-from-current-buffer (file &optional migration-mode)
   "Parse org nodes from current buffer content.
 FILE is used for setting the :file property on nodes."
@@ -2043,11 +2089,7 @@ FILE is used for setting the :file property on nodes."
     ;; Ensure tab-width is 8 as required by org-current-text-column
     (setq-local tab-width 8)
     ;; Pre-process to remove content of embed blocks before parsing
-    (goto-char (point-min))
-    (while (re-search-forward "^#\\+begin_embed:.*$" nil t)
-      (let ((start (match-end 0)))
-        (when (re-search-forward "^#\\+end_embed" nil t)
-          (delete-region start (match-beginning 0)))))
+    (supertag-sync--strip-embed-block-contents file)
     (goto-char (point-min))
     ;; Parse without triggering org-mode initialization.
     (let* ((file-id (plist-get (supertag-sync--parse-file-header) :id))

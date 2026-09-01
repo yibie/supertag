@@ -20,6 +20,10 @@
 (require 'supertag-view-helper)
 (require 'supertag-core-scan)
 
+(declare-function supertag-reference-materialize-at-point
+                  "supertag-ui-reference"
+                  (target-id title))
+
 (defgroup supertag-org-link nil
   "Org link integration for Supertag."
   :group 'supertag)
@@ -107,8 +111,8 @@ This does not trust stored character positions. It locates the subtree via
 an in-buffer `:ID:` search, moves the full subtree text (including all child headings), and
 updates Supertag store location for all Org IDs found in that subtree.
 
-When LEAVE-LINK is non-nil, replace the original subtree with a single headline
-containing an `id:` link to the moved node.
+When LEAVE-LINK is non-nil, replace the original subtree with a stub headline
+whose body contains an `id:` link to the moved node.
 
 When TARGET-LEVEL is non-nil, adjust the subtree so the top headline becomes
 that outline level in TARGET-FILE.
@@ -213,8 +217,14 @@ preventing data loss from incorrect position calculations."
             (widen)
             (delete-region begin end)
             (when leave-link
-              (insert (make-string level ?*) " "
-                      (format "[[id:%s][%s]]\n" node-id (or title "MOVED"))))
+              ;; Keep the backlink in content: headline titles are labels, not
+              ;; source-owned Document Link assertions for the extractor.
+              (insert (make-string level ?*) " " (or title "MOVED") "\n\n")
+              (backward-char 1)
+              (require 'supertag-ui-reference)
+              (let ((inhibit-message t))
+                (supertag-reference-materialize-at-point
+                 node-id (or title "MOVED"))))
             (when (buffer-file-name)
               (supertag--mark-internal-modification (buffer-file-name)))
             (save-buffer))))
@@ -320,17 +330,37 @@ If NODE-ID is already a top-level heading, return nil."
                   (setq result (org-get-heading t t t t)))))))))
     result))
 
-(defun supertag-service-org--update-buffer-and-resync (node-id buffer-update-func)
-  "Edit NODE-ID with BUFFER-UPDATE-FUNC, save Org, then reproject it."
+(defun supertag-service-org--update-buffer-and-resync
+    (node-id buffer-update-func &optional repair-projection)
+  "Edit NODE-ID with BUFFER-UPDATE-FUNC, save Org, then reproject it.
+When REPAIR-PROJECTION is non-nil, reproject already-saved Org even when the
+buffer text does not change."
   (supertag-service-org--with-node-buffer
    node-id
    (lambda ()
      (let ((before-tick (buffer-chars-modified-tick)))
        (funcall buffer-update-func)
-       ;; Only sync/save when buffer actually changed, to avoid noisy no-op runs.
-       (unless (eq before-tick (buffer-chars-modified-tick))
-         ;; Mark internal modification BEFORE save so after-save hook can skip.
-         (supertag-service-org-save-and-project-current-node node-id))))))
+       (if (not (eq before-tick (buffer-chars-modified-tick)))
+           ;; Mark internal modification BEFORE save so after-save hook can skip.
+           (supertag-service-org-save-and-project-current-node node-id)
+         (when repair-projection
+           ;; The Org Fact is already durable; only its derived Store state is
+           ;; missing, so do not manufacture a text edit or noisy save.  Force
+           ;; reconciliation because a stale Projection can retain the source
+           ;; hash and would otherwise look unchanged to the sync service.
+           (condition-case cause
+               (let ((supertag-sync--is-full-rescan-p t))
+                 (supertag-service-org--project-current-node node-id))
+             (error
+              (supertag-service-org--signal-projection-error
+               node-id (buffer-file-name)
+               'supertag-service-org-retry-node-projection
+               (list node-id (buffer-file-name)) cause)))))))))
+
+(defun supertag-service-org--tag-membership-present-p (node-id tag-id)
+  "Return non-nil when TAG-ID is fully projected on NODE-ID."
+  (and (member tag-id (supertag-service-org--node-tags node-id))
+       (supertag-relation-find-between node-id tag-id :node-tag)))
 
 (defun supertag-service-org-create-node-at-point ()
   "Persist the heading at point, project it as a node, and return its ID.
@@ -498,7 +528,12 @@ save succeeds, Projection failure is reported without undoing durable text."
 (defun supertag-service-org-add-tag (node-id tag-name &optional position)
   "Add TAG-NAME to NODE-ID's Org source, save, then reproject.
 POSITION may be `beginning', `end', or a marker in the node buffer."
-  (let ((token (supertag-service-org--tag-token tag-name)))
+  (let* ((tag-id (or (supertag-service-org--semantic-tag-id tag-name)
+                     (user-error "Unknown Tag '%s'" tag-name)))
+         (token (supertag-service-org--tag-token tag-id))
+         (repair-projection
+          (not (supertag-service-org--tag-membership-present-p
+                node-id tag-id))))
     (supertag-service-org--update-buffer-and-resync
      node-id
      (lambda ()
@@ -518,7 +553,8 @@ POSITION may be `beginning', `end', or a marker in the node buffer."
                 (when (org-at-heading-p)
                   (end-of-line))))
              (_ (end-of-line)))
-           (supertag-view-helper-insert-tag-text token)))))))
+           (supertag-view-helper-insert-tag-text token))))
+     repair-projection)))
 
 (defun supertag-service-org-remove-tag (node-id tag-name)
   "Remove TAG-NAME from NODE-ID's Org source, save, then reproject."

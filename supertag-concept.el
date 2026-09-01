@@ -13,15 +13,23 @@
 (require 'subr-x)
 (require 'supertag-core-store)
 (require 'supertag-ops-node)
-(require 'supertag-ops-relation)
 (require 'supertag-service-node-identity)
 (require 'supertag-services-ui)
 (require 'supertag-ui-commands)
 (require 'supertag-view-helper)
 
+(declare-function supertag-reference-materialize "supertag-ui-reference"
+                  (beg-marker end-marker target-id title))
+
 (defgroup supertag-concept nil
   "Concept mention support for Supertag."
   :group 'supertag)
+
+(defvar supertag-sync-directories nil
+  "Configured Supertag sync roots, declared by the sync service.")
+
+(defvar supertag-active-sync-directory nil
+  "Active Supertag vault root, declared by the package entry point.")
 
 (defcustom supertag-concept-min-term-length 2
   "Minimum character length for a concept title or alias mention."
@@ -31,6 +39,30 @@
 (defcustom supertag-concept-alias-separator-regexp "[,，;；]"
   "Regexp used to split concept aliases stored in SUPERTAG_ALIASES."
   :type 'regexp
+  :group 'supertag-concept)
+
+(defcustom supertag-concept-default-file nil
+  "Default Org file used for newly created concept nodes.
+
+When nil, Supertag uses `concepts.org' under the first configured sync
+directory, then `org-directory', then the current Org file's directory."
+  :type '(choice (const :tag "Automatic" nil) file)
+  :group 'supertag-concept)
+
+(defcustom supertag-concept-default-level 1
+  "Heading level used by the default concept creation policy."
+  :type 'integer
+  :group 'supertag-concept)
+
+(defcustom supertag-concept-create-target-function
+  #'supertag-concept-default-create-target
+  "Function that chooses where a new concept node is created.
+
+The function receives TITLE and returns a plist containing `:file', optional
+`:position', and optional `:level'.  A nil position means append at end of
+file.  The default policy never prompts; users can replace it with an adapter
+for Org-roam, Denote, or another capture system."
+  :type 'function
   :group 'supertag-concept)
 
 (defconst supertag-concept--marker-property :SUPERTAG_CONCEPT)
@@ -262,6 +294,10 @@ Each entry is (TERM . NODE-ID).")
      ((null (cdr ids)) (car ids))
      (t (user-error "Concept term is ambiguous: %s" term)))))
 
+(defun supertag-concept-find-by-term (term)
+  "Return the unique concept node ID whose title or alias is TERM."
+  (supertag-concept--find-concept-id-by-term term))
+
 (defun supertag-concept--find-node-id-by-title (title)
   "Return the unique heading node ID whose title exactly equals TITLE."
   (let (matches)
@@ -299,21 +335,93 @@ Each entry is (TERM . NODE-ID).")
           (user-error "Failed to sync concept target: %s" node-id)))))
   node-id)
 
-(defun supertag-concept--create-node (title)
-  "Create a new concept node titled TITLE and return its node id."
-  (let* ((target-file (read-file-name "Create concept in file: " nil nil t))
-         (insert-info (when (and target-file (file-exists-p target-file))
-                        (supertag-ui-select-insert-position target-file)))
-         (insert-pos (plist-get insert-info :position))
-         (insert-level (plist-get insert-info :level))
+(defun supertag-concept--automatic-base-directory ()
+  "Return the best default directory for new concept nodes."
+  (let* ((sync-directories
+          (and (boundp 'supertag-sync-directories)
+               (listp supertag-sync-directories)
+               supertag-sync-directories))
+         (matching-root
+          (and buffer-file-name
+               (cl-find-if
+                (lambda (directory)
+                  (ignore-errors
+                    (file-in-directory-p
+                     (expand-file-name buffer-file-name)
+                     (file-name-as-directory (expand-file-name directory)))))
+                sync-directories))))
+    (file-name-as-directory
+     (expand-file-name
+      (or (and (boundp 'supertag-active-sync-directory)
+               (stringp supertag-active-sync-directory)
+               (not (string-empty-p supertag-active-sync-directory))
+               supertag-active-sync-directory)
+          matching-root
+          (car sync-directories)
+          (and (boundp 'org-directory)
+               (stringp org-directory)
+               org-directory)
+          (and buffer-file-name (file-name-directory buffer-file-name))
+          default-directory)))))
+
+(defun supertag-concept-default-create-target (_title)
+  "Return the non-interactive default target for a new concept node."
+  (list :file
+        (if supertag-concept-default-file
+            (expand-file-name supertag-concept-default-file)
+          (expand-file-name "concepts.org"
+                            (supertag-concept--automatic-base-directory)))
+        :position nil
+        :level supertag-concept-default-level))
+
+(defun supertag-concept-read-create-target (_title)
+  "Interactively choose a target for a new concept node."
+  (let* ((file (expand-file-name
+                (read-file-name "Create concept in file: "
+                                (supertag-concept--automatic-base-directory)
+                                nil nil "concepts.org")))
+         (insert-info (and (file-exists-p file)
+                           (supertag-ui-select-insert-position file))))
+    (if insert-info
+        (list :file file
+              :position (plist-get insert-info :position)
+              :level (plist-get insert-info :level))
+      (list :file file :position nil :level supertag-concept-default-level))))
+
+(defun supertag-concept--normalize-create-target (title target)
+  "Validate and normalize creation TARGET for TITLE."
+  (let* ((resolved (or target
+                       (funcall supertag-concept-create-target-function title)))
+         (file (plist-get resolved :file))
+         (position (plist-get resolved :position))
+         (level (or (plist-get resolved :level)
+                    supertag-concept-default-level)))
+    (unless (and (stringp file) (not (string-empty-p file)))
+      (user-error "Concept target must provide a file"))
+    (unless (and (integerp level) (> level 0))
+      (user-error "Concept target level must be a positive integer"))
+    (unless (or (null position) (integer-or-marker-p position))
+      (user-error "Concept target position must be nil, an integer, or a marker"))
+    (list :file (expand-file-name file)
+          :position position
+          :level level)))
+
+(defun supertag-concept--create-node (title &optional target)
+  "Create a new concept node titled TITLE at optional TARGET.
+Return the new node ID."
+  (let* ((resolved (supertag-concept--normalize-create-target title target))
+         (target-file (plist-get resolved :file))
+         (insert-pos (plist-get resolved :position))
+         (insert-level (plist-get resolved :level))
          (node-id (supertag-node-identity-new)))
-    (unless insert-info
-      (user-error "No valid insert position selected"))
+    (make-directory (file-name-directory target-file) t)
     (with-current-buffer (find-file-noselect target-file)
       (unless (derived-mode-p 'org-mode)
         (org-mode))
       (org-with-wide-buffer
-       (goto-char insert-pos)
+       (goto-char (if insert-pos
+                      (min (point-max) (max (point-min) insert-pos))
+                    (point-max)))
        (unless (or (bobp) (looking-back "\n" 1))
          (insert "\n"))
        (let ((heading-pos (point)))
@@ -327,18 +435,22 @@ Each entry is (TERM . NODE-ID).")
            (user-error "Failed to sync new concept: %s" title)))))
     node-id))
 
-(defun supertag-concept--ensure-node (title)
-  "Return a concept node id for TITLE, creating or marking one if needed."
+(defun supertag-concept--ensure-node (title &optional target)
+  "Return a concept node ID for TITLE, using optional creation TARGET."
   (or (supertag-concept--find-concept-id-by-term title)
       (when-let* ((existing (supertag-concept--find-node-id-by-title title)))
         (supertag-concept--mark-node existing))
-      (supertag-concept--create-node title)))
+      (supertag-concept--create-node title target)))
+
+(defun supertag-concept-ensure-node (title &optional target)
+  "Return a concept node ID for TITLE, creating it at optional TARGET."
+  (supertag-concept--ensure-node title target))
 
 ;;;###autoload
 (defun supertag-promote-concept (beg end)
   "Promote selected text from BEG to END into a concept mention.
-Creates or reuses a concept node, creates one reference from the containing node
-to that concept, and leaves the selected text unchanged."
+Creates or reuses a concept node, then materializes the selected text as a
+physical Org ID link so the normal document projector derives the reference."
   (interactive
    (if (use-region-p)
        (list (region-beginning) (region-end))
@@ -353,21 +465,29 @@ to that concept, and leaves the selected text unchanged."
                   (buffer-substring-no-properties beg end)))))
     (when (string-empty-p title)
       (user-error "Selected text is empty"))
-    (let ((from-id (save-excursion
-                     (goto-char beg)
-                     (supertag-ui--get-containing-node-at-point))))
-      (supertag-ui--ensure-node-synced from-id)
-      (let ((concept-id (supertag-concept--ensure-node title)))
-        (unless (equal from-id concept-id)
-          (unless (supertag-relation-add-reference from-id concept-id)
-            (let* ((err (and (fboundp 'supertag-relation-last-error)
-                             (supertag-relation-last-error)))
-                   (msg (or (plist-get err :message)
-                            "Failed to add concept reference")))
-              (user-error "%s" msg))))
-        (supertag-concept--refresh-all-buffers)
-        (message "Promoted concept mention: %s" title)
-        concept-id))))
+    (unless (fboundp 'supertag-reference-materialize)
+      (require 'supertag-ui-reference))
+    (let ((beg-marker (copy-marker beg))
+          (end-marker (copy-marker end t)))
+      (unwind-protect
+          (let ((source-id
+                 (save-excursion
+                   (goto-char beg-marker)
+                   (supertag-ui--get-containing-node-at-point))))
+            ;; Validate the source before creating a concept, while markers keep
+            ;; the selected region stable if synchronization inserts an ID.
+            (supertag-ui--ensure-node-synced source-id)
+            (let ((concept-id (supertag-concept--ensure-node title)))
+              (if (equal source-id concept-id)
+                  (message "Already inside concept '%s'; no link added" title)
+                (supertag-reference-materialize
+                 beg-marker end-marker concept-id title))
+              (supertag-concept--refresh-all-buffers)
+              (unless (equal source-id concept-id)
+                (message "Promoted concept link: %s" title))
+              concept-id))
+        (set-marker beg-marker nil)
+        (set-marker end-marker nil)))))
 
 (provide 'supertag-concept)
 ;;; supertag-concept.el ends here

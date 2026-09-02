@@ -270,13 +270,8 @@ Named views are a game-changer.  I have:
 - =active-projects=: =#project=, filtered to =status = active=
 - =recent-meetings=: =#meeting=, filtered to =date >= -7d=
 
-#+begin_src emacs-lisp
-  ;; Named views are stored in supertag--view-configs.
-  ;; They can be saved to file and shared:
-  (supertag-view-config-save-to-file "~/org/supertag-views.el")
-  ;; On another machine:
-  (supertag-view-config-load-from-file "~/org/supertag-views.el")
-#+end_src
+Named views persist in the Supertag Store.  File export and import of view
+configurations is not supported.
 
 ** Kanban View — When I Need to See Flow
 

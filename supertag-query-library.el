@@ -26,6 +26,7 @@
 (require 'cl-lib)
 (require 'subr-x)
 (require 'supertag-services-query)
+(require 'supertag-ui-query-block)
 (require 'supertag-services-ui)
 (require 'supertag-ops-node)
 (require 'supertag-ops-link-definition)
@@ -169,25 +170,6 @@ cannot be determined safely."
   (let ((query (cdr (assoc name (supertag-query-saved-list)))))
     (if query (format "  --  %s" query) "")))
 
-(defun supertag-query-library--dynamic-block-command ()
-  "Return the query-block layer's dynamic-block insert command, if defined.
-The dynamic block form (`#+BEGIN: supertag-query ...', an Org \"dblock\")
-is being added to supertag-ui-query-block.el independently of this file,
-so we only detect its insert command by name pattern (matching either
-\"dblock\" or \"dynamic-block\", since Org's own convention is \"dblock\")
-rather than hard-depending on a specific name. Returns nil if no such
-command is loaded yet."
-  (let (found)
-    (mapatoms
-     (lambda (sym)
-       (when (and (not found)
-                  (commandp sym)
-                  (string-match-p "\\`supertag" (symbol-name sym))
-                  (string-match-p "d\\(ynamic-\\)?block" (symbol-name sym))
-                  (string-match-p "insert" (symbol-name sym)))
-         (setq found sym))))
-    found))
-
 ;;; --- Rendering query results --------------------------------------------
 
 (defun supertag-query-library--render-results (query-sexp)
@@ -268,24 +250,19 @@ query this library ran/inserted/built.  Persists with the Store via
 (defun supertag-query-insert-saved (name)
   "Insert the saved query NAME as a query block at point.
 Offers the Org Babel form (`#+BEGIN_SRC supertag-query-block ...')
-by default.  If the query-block layer's dynamic-block insert command
-(the `#+BEGIN: supertag-query ...' form) is loaded, also offer that
-form -- see supertag-ui-query-block.el for its docstring and exact
+by default, or the dynamic-block form (`#+BEGIN: supertag-query ...').
+See `supertag-insert-query-dblock' for the dynamic block's exact
 parameters (:sort/:order/:limit/:columns and friends)."
   (interactive (list (supertag-query-library--completing-read-saved "Insert saved query: ")))
   (let* ((query-string (supertag-query-library--saved-query-string name))
-         (dynamic-cmd (supertag-query-library--dynamic-block-command))
-         (choice (if dynamic-cmd
-                     (completing-read "Insert as: " '("Babel block" "Dynamic block")
-                                       nil t nil nil "Babel block")
-                   "Babel block")))
+         (choice (completing-read "Insert as: " '("Babel block" "Dynamic block")
+                                  nil t nil nil "Babel block")))
     (setq supertag-query-library--last-query query-string)
-    (if (and dynamic-cmd (equal choice "Dynamic block"))
+    (if (equal choice "Dynamic block")
         (progn
           (kill-new query-string)
-          (message "Query copied to kill-ring (yank it if %s prompts for one); invoking it now."
-                   dynamic-cmd)
-          (call-interactively dynamic-cmd))
+          (message "Query copied to kill-ring (yank it if the prompt needs it); invoking it now.")
+          (call-interactively #'supertag-insert-query-dblock))
       (insert (format "#+BEGIN_SRC supertag-query-block :results raw\n%s\n#+END_SRC\n"
                        query-string)))))
 

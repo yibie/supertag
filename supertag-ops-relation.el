@@ -23,6 +23,8 @@
 (declare-function supertag-node-link-pattern "supertag-ops-node" (id))
 (declare-function supertag-tag-update "supertag-ops-tag" (id updater))
 
+(defvar supertag-change--suppress-legacy-store-changed)
+
 ;;; --- Reference Field Ownership ---
 
 (defvar supertag-relation--last-error nil
@@ -348,7 +350,11 @@ Returns the deleted relation data."
        :id id
        :previous previous
        :perform (lambda ()
-                  (supertag-store-remove-entity :relations id)
+                  ;; `supertag-ops-commit' owns the one public path event for
+                  ;; this logical delete.  Suppress the Store helper's earlier
+                  ;; notification while retaining its transaction bookkeeping.
+                  (let ((supertag-change--suppress-legacy-store-changed t))
+                    (supertag-store-remove-entity :relations id))
                   (let ((from-id (plist-get previous :from))
                         (to-id (plist-get previous :to)))
                     (supertag-index--on-relation-changed

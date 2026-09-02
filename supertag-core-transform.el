@@ -1,9 +1,7 @@
 ;;; supertag/transform.el --- Core data transformation mechanism for Supertag -*- lexical-binding: t; -*-
 
 ;;; Commentary:
-;; This file implements the central data transformation mechanism for the
-;; Supertag data-centric architecture. It provides a functional,
-;; atomic, and consistent way to modify the application state.
+;; Transaction support and the shared inline Tag parser.
 
 ;;; Code:
 
@@ -13,49 +11,6 @@
 (require 'supertag-core-store) ; Depends on supertag-get and supertag-update
 (require 'supertag-core-state) ; For shared state variables
 (require 'supertag-core-notify) ; For supertag--notify-change
-
-;;; --- Core Transform Function ---
-
-(defun supertag-transform (path fn &rest args)
-  "Transform data at PATH using function FN.
-PATH is a list of keys (e.g., '(:nodes \"123\" :tags)).
-FN is a function that receives the current value as its first argument,
-and ARGS as subsequent arguments. Returns the transformed value.
-
-Canonical store mode restricts PATH to collection or collection-entity locations."
-  (unless (and (listp path) path)
-    (error "PATH must be a non-empty list, got: %S" path))
-  (when (> (length path) 2)
-    (error "Canonical transform only supports collection/entity paths, got: %S" path))
-  (let* ((current-value (supertag-get path))
-         (new-value (apply fn current-value args)))
-    ;; Update store with new value directly.
-    ;; Validation is handled by specific ops functions in hybrid architecture.
-    ;; Rollback recording (when a transaction is active) happens at the
-    ;; store-level seam inside `supertag-update' itself (which ultimately
-    ;; calls `supertag-store-put-entity' / puthash on the collection), so
-    ;; there is nothing to log here — see `supertag--transaction-record-old-value'.
-    (supertag-update path new-value)
-
-    ;; Return new value
-    new-value))
-
-;;; --- Batch Transform ---
-
-(defun supertag-batch-transform (transforms)
-  "Execute multiple transformations in a batch, ensuring atomicity.
-TRANSFORMS is a list of (path fn args...) tuples.
-Notifications are suppressed until all transformations are complete."
-  (let ((results '()))
-    (supertag-core-state-with-suppressed-notifications
-     (dolist (transform transforms)
-       (let ((path (nth 0 transform))
-             (fn (nth 1 transform))
-             (args (nthcdr 2 transform)))
-         (let ((new-value (apply #'supertag-transform path fn args)))
-           (push (cons path new-value) results))))
-     (supertag--notify-batch-changes)) ; Call batch notification after all transforms
-    (nreverse results)))
 
 ;;; --- Transaction Support ---
 
@@ -214,57 +169,6 @@ which point exactly one batch notification flush happens."
          (when supertag--rollback-error
            (signal (car supertag--rollback-error)
                    (cdr supertag--rollback-error))))))))
-
-;;; --- Path Pattern Matching ---
-
-(defun supertag-transform-pattern (pattern fn &rest args)
-  "Apply transformation function FN to all paths matching PATTERN.
-PATTERN can contain wildcards (e.g., '(:nodes * :tags)).
-Returns a list of (path . new-value) pairs for each transformation."
-  (let ((matching-paths (supertag--find-matching-paths pattern)) ; Helper to be implemented in store.el or query.el
-        (transforms '()))
-    (dolist (path matching-paths)
-      (push (list path fn args) transforms))
-    (supertag-batch-transform transforms)))
-
-;;; --- Internal Helper for Path Matching ---
-
-(defun supertag--find-matching-paths (pattern)
-  "Find all data paths matching PATTERN in the supertag--store.
-PATTERN can contain wildcards (e.g., '(:nodes * :tags)).
-Returns a list of matching paths."
-  (require 'supertag-core-store) ; Ensure supertag--store is available
-  (let ((matches '()))
-    (supertag--traverse-store-matches supertag--store pattern '() matches)
-    matches))
-
-(defun supertag--traverse-store-matches (store pattern current-path matches)
-  "Recursively traverse STORE to find paths matching PATTERN.
-STORE is the current hash table being traversed.
-PATTERN is the remaining pattern to match.
-CURRENT-PATH is the path accumulated so far.
-MATCHES is the list to collect matching paths."
-  (if (null pattern)
-      ;; Pattern exhausted, current-path is a match
-      (push (nreverse current-path) matches)
-    (let ((key (car pattern))
-          (rest-pattern (cdr pattern)))
-      (cond
-       ;; Wildcard match: match all keys at this level
-       ((eq key '*)
-        (maphash
-         (lambda (k v)
-           (when (hash-table-p v)
-             (supertag--traverse-store-matches
-              v rest-pattern (cons k current-path) matches)))
-         store))
-
-       ;; Exact match: continue with specific key
-       (t
-        (let ((value (gethash key store)))
-          (when (and value (hash-table-p value))
-             (supertag--traverse-store-matches
-              value rest-pattern (cons key current-path) matches))))))))
 
 (defconst supertag-inline-tag-terminator-chars
   "＃　，。；：！？、（）【】《》“”‘’"

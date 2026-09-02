@@ -6,7 +6,6 @@
 
 ;;; Code:
 
-(require 'cl-lib)
 (require 'subr-x)
 
 (defun supertag-tag-path-valid-p (path)
@@ -45,25 +44,6 @@
     (error "Cannot rebase tag path '%s' from '%s' to '%s'"
            path old-root new-root))
   (concat new-root (substring path (length old-root))))
-
-(defun supertag-tag-path-namespace-prefixes (paths)
-  "Return sorted unique namespace ancestors derived from valid PATHS."
-  (let ((seen (make-hash-table :test 'equal))
-        prefixes)
-    (dolist (path paths)
-      (let ((parent (supertag-tag-path-parent path)))
-        (while parent
-          (unless (gethash parent seen)
-            (puthash parent t seen)
-            (push parent prefixes))
-          (setq parent (supertag-tag-path-parent parent)))))
-    (sort prefixes #'string<)))
-
-(defun supertag-tag-path-has-descendants-p (path paths)
-  "Return non-nil when one of PATHS is below PATH."
-  (cl-some (lambda (candidate)
-             (supertag-tag-path-descendant-p candidate path))
-           paths))
 
 (provide 'supertag-core-tag-path)
 ;;; supertag-core-tag-path.el ends here

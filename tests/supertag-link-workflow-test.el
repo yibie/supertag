@@ -11,7 +11,6 @@
 (require 'supertag-ops-relation)
 (require 'supertag-services-link)
 (require 'supertag-services-query)
-(require 'supertag-query-link)
 (require 'supertag-view-link-definition)
 (require 'supertag-ontology)
 

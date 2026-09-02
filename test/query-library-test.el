@@ -162,6 +162,29 @@ This never touches the user's real database or init file."
       ;; Second call: Store non-empty, no re-import.
       (should-not (supertag-query-saved--maybe-import-legacy)))))
 
+(ert-deftest supertag-query-library-test-insert-saved-calls-dblock-directly ()
+  "Dynamic insertion calls the query-block command without symbol probing."
+  (let (choices default copied invoked)
+    (cl-letf (((symbol-function 'supertag-query-library--saved-query-string)
+               (lambda (_name) "(tag \"project\")"))
+              ((symbol-function 'completing-read)
+               (lambda (_prompt collection &rest args)
+                 (setq choices collection
+                       default (nth 4 args))
+                 "Dynamic block"))
+              ((symbol-function 'kill-new)
+               (lambda (text &rest _)
+                 (setq copied text)))
+              ((symbol-function 'call-interactively)
+               (lambda (command &rest _)
+                 (setq invoked command)))
+              ((symbol-function 'message) (lambda (&rest _))))
+      (supertag-query-insert-saved "projects"))
+    (should (equal choices '("Babel block" "Dynamic block")))
+    (should (equal default "Babel block"))
+    (should (equal copied "(tag \"project\")"))
+    (should (eq invoked 'supertag-insert-query-dblock))))
+
 ;;; --- 3. Quick-reference buffer --------------------------------------------
 
 (ert-deftest supertag-query-library-test-describe-syntax-renders-buffer ()

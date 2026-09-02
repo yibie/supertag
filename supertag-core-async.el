@@ -71,18 +71,10 @@ Returns the new queue length."
   (supertag-async--ensure-timer)
   (length supertag-async--queue))
 
-(defun supertag-async-queue-size ()
-  "Return the number of items currently in the queue."
-  (length supertag-async--queue))
-
 (defun supertag-async-clear ()
   "Clear all pending jobs."
   (setq supertag-async--queue '())
   (setq supertag-async--failed-items '()))
-
-(defun supertag-async-failed-count ()
-  "Return the number of items retained after processing failures."
-  (length supertag-async--failed-items))
 
 ;;;###autoload
 (defun supertag-async-retry-failed ()

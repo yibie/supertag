@@ -65,7 +65,7 @@ Returns a list of deleted entities."
        (push (funcall delete-fn id) results))
      (nreverse results))))
 
-;; Note: The supertag-with-transaction macro is defined in supertag-transform.el
+;; Note: The `supertag-with-transaction' macro lives in `supertag-core-transform'.
 ;; and can be used to wrap any sequence of these operations for atomicity.
 
 (provide 'supertag-ops-batch)

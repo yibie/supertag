@@ -107,12 +107,11 @@
 - `supertag-automation--evaluate-formula` / `supertag-automation-calculate-formula` (`supertag-automation.el`)：公式求值的薄入口，委托 `supertag-services-formula.el` 的统一中缀语法求值器（2026-08-13 起为唯一实现，legacy `{{}}` 语法自动翻译）。
 - `supertag-automation--apply-rollup-function` / `supertag-automation--execute-rollup-calculation` (`supertag-automation.el`)：rollup 计算语义属于逻辑层，但内嵌在自动化执行中。
 - `supertag-relation-calculate-rollup` (`supertag-ops-relation.el`)：同时做 rollup 计算与写入更新，逻辑与行为未分离。
-- `supertag-view-table--evaluate-filter-condition` / `supertag-view-table--compare-values` (`supertag-view-table.el`)：UI 内部实现过滤语义，和 `supertag-services-query.el` 的过滤/比较逻辑重复。
-- `supertag-query--evaluate-filter-condition` / `supertag-query--compare-values` (`supertag-services-query.el`)：语义过滤实现属于逻辑层，但挂在 services 模块中（可接受但需要边界声明）。
+- `supertag-view-table--evaluate-filter-condition` / `supertag-view-table--compare-values` (`supertag-view-table.el`)：UI 内部实现表格视图的局部过滤语义，不是查询引擎入口。
 
 ### 收敛建议（最小）
 
-- 先把重复的条件、公式、rollup 与过滤实现收敛到现有 `supertag-services-query.el` 或 `supertag-services-formula.el`。
+- 先把重复的条件、公式与 rollup 实现收敛到现有 `supertag-services-query.el` 或 `supertag-services-formula.el`。
 - 行为层（automation/ops）只负责调度与写入，UI 只负责交互与显示。
 - 只有现有 Module 无法形成足够深的 Interface 时才新增 logic Module；不为假想实现预建 adapter/factory。
 
@@ -176,11 +175,6 @@ Semantic command -> Semantic transaction -> 使相关 Projection 失效
 
 3. **程序化/Agent 使用（Elisp / AI）**：把 query 当作可调用的“逻辑函数”。  
    - 入口：`supertag-query-sexp`（实现见 `supertag-services-query.el`）  
-   - 实验：`supertag-diagnostics-view-query-sexp`（在 `supertag-diagnostics.el`，用最小 UI 展示 query 结果）  
-
-4. **解释/诊断（实验，面向“为什么没跑”）**：把“逻辑结论”和“自动化执行原因”一次性展示出来。  
-   - 入口：`M-x supertag-diagnostics-explain-current-node`（输出 Derived facts + Automation dry-run）  
-   - 价值：当你看到 “trigger-miss / condition-fail”，你知道问题在“触发没对上”还是“条件不满足”，不用靠猜。  
 
 落地顺序建议：
 - 先用 Query-Block 固化“语义视图”（逻辑真相源）。  
@@ -241,9 +235,3 @@ Semantic command -> Semantic transaction -> 使相关 Projection 失效
 - 职责：包入口、配置定义、依赖管理
 - 特点：不包含业务逻辑，仅作为包的入口点
 - 边界：配置层，不属于三层架构
-
-### 7.6 测试
-
-**`supertag-diagnostics.el`**：诊断工具
-- 职责：交互式诊断脚本（逻辑解释、automation dry-run、query 结果预览），非自动化测试
-- 边界：开发/调试辅助代码，不属于生产架构

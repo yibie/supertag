@@ -384,7 +384,7 @@ the old mtime until destructive cleanup is allowed."
             (supertag-async--worker)
             (should (null supertag-async--queue))
             (should (equal supertag-async--failed-items (list file)))
-            (should (= 1 (supertag-async-failed-count)))
+            (should (= 1 (length supertag-async--failed-items)))
             (let ((log
                    (with-current-buffer (messages-buffer)
                      (buffer-substring-no-properties

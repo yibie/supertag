@@ -2,8 +2,7 @@
 
 ;;; Commentary:
 ;; This module is the read boundary for composed Supertag data.  Concrete
-;; queries hide Store/index joins from UI consumers.  The legacy generic query
-;; helpers remain temporarily for compatibility and must not gain new callers.
+;; queries hide Store/index joins from UI consumers.
 
 ;;; Code:
 
@@ -11,12 +10,67 @@
 (require 'supertag-core-scan)
 (require 'supertag-core-store)
 (require 'supertag-board-ops)
+(require 'supertag-ops-link-definition)
 (require 'supertag-ops-relation)
 (require 'supertag-ops-node)
 (require 'supertag-ops-tag)
 (require 'supertag-ops-field)
 (require 'supertag-services-formula)
-(require 'supertag-query-operator)
+
+;;; --- Typed Link operators ---
+
+(defun supertag-query-link--parse-binary (type args recursive-parser)
+  "Parse a typed-Link operator with TYPE and two ARGS.
+RECURSIVE-PARSER parses the nested query."
+  (unless (= (length args) 2)
+    (error "'%s' expects a Link reference and one nested query, got %S"
+           type args))
+  (list :type type :reference (car args)
+        :child (funcall recursive-parser (cadr args))))
+
+(defun supertag-query-link--parse-unary (type args _recursive-parser)
+  "Parse a typed-Link operator with TYPE and one Link reference in ARGS."
+  (unless (= (length args) 1)
+    (error "'%s' expects exactly one Link reference, got %S" type args))
+  (list :type type :reference (car args)))
+
+(defun supertag-query-link--definition-id (ast)
+  "Resolve the Link definition ID referenced by AST."
+  (plist-get
+   (supertag-link-definition-resolve (plist-get ast :reference))
+   :id))
+
+(defun supertag-query-link--unique (ids)
+  "Return IDS without nil values or duplicates."
+  (cl-delete-duplicates (delq nil ids) :test #'equal))
+
+(defun supertag-query-link--execute-forward (ast recursive-executor)
+  "Execute forward Link query AST using RECURSIVE-EXECUTOR."
+  (let ((definition-id (supertag-query-link--definition-id ast)) result)
+    (dolist (target-id (funcall recursive-executor (plist-get ast :child)))
+      (setq result
+            (nconc (supertag-link-sources definition-id target-id) result)))
+    (supertag-query-link--unique result)))
+
+(defun supertag-query-link--execute-reverse (ast recursive-executor)
+  "Execute reverse Link query AST using RECURSIVE-EXECUTOR."
+  (let ((definition-id (supertag-query-link--definition-id ast)) result)
+    (dolist (source-id (funcall recursive-executor (plist-get ast :child)))
+      (setq result
+            (nconc (supertag-link-targets definition-id source-id) result)))
+    (supertag-query-link--unique result)))
+
+(defun supertag-query-link--execute-has-out (ast _recursive-executor)
+  "Return nodes with an outgoing Link described by AST."
+  (supertag-query-link--unique
+   (mapcar (lambda (relation) (plist-get relation :from))
+           (supertag-link-find (supertag-query-link--definition-id ast)))))
+
+(defun supertag-query-link--execute-has-in (ast _recursive-executor)
+  "Return nodes with an incoming Link described by AST."
+  (supertag-query-link--unique
+   (mapcar (lambda (relation) (plist-get relation :to))
+           (supertag-link-find (supertag-query-link--definition-id ast)))))
 
 ;;; --- Query System ---
 
@@ -415,6 +469,21 @@ This function is compatible with the old query syntax."
       (unless (= (length args) 1)
         (error "'term' operator expects exactly one argument, but got %S" args))
       `(:type term :value ,(if (stringp (car args)) (car args) (symbol-name (car args)))))
+     ((eq op 'link)
+      (supertag-query-link--parse-binary
+       'link args #'supertag-query--parse-sexp))
+     ((eq op 'exists-link)
+      (supertag-query-link--parse-binary
+       'link args #'supertag-query--parse-sexp))
+     ((eq op 'reverse-link)
+      (supertag-query-link--parse-binary
+       'reverse-link args #'supertag-query--parse-sexp))
+     ((eq op 'has-link)
+      (supertag-query-link--parse-unary
+       'has-link args #'supertag-query--parse-sexp))
+     ((eq op 'has-reverse-link)
+      (supertag-query-link--parse-unary
+       'has-reverse-link args #'supertag-query--parse-sexp))
      ;; Date sugar below: these desugar to `after'/`between' at parse time,
      ;; so the executor needs no knowledge of them. All match on :created-at
      ;; (the same timestamp the other date operators use).
@@ -448,12 +517,7 @@ This function is compatible with the old query syntax."
                 :start-date ,(format "%04d-01-01" arg)
                 :end-date ,(format "%04d-01-01" (1+ arg)))))
      (t
-      (let ((extension
-             (supertag-query-operator-parse
-              op args #'supertag-query--parse-sexp)))
-        (if (eq extension supertag-query-operator-unhandled)
-            (error "Invalid query operator: %S" op)
-          extension))))))
+      (error "Invalid query operator: %S" op)))))
 
 (defun supertag-query--execute-ast (ast)
   "Execute a query AST and return a list of matching node IDs.
@@ -541,19 +605,29 @@ This uses indexes for O(1) lookups instead of O(n) table scans."
      ((eq ast-type 'term)
       (supertag-index-get-nodes-by-word (plist-get ast :value)))
 
+     ((eq ast-type 'link)
+      (supertag-query-link--execute-forward
+       ast #'supertag-query--execute-ast))
+
+     ((eq ast-type 'reverse-link)
+      (supertag-query-link--execute-reverse
+       ast #'supertag-query--execute-ast))
+
+     ((eq ast-type 'has-link)
+      (supertag-query-link--execute-has-out
+       ast #'supertag-query--execute-ast))
+
+     ((eq ast-type 'has-reverse-link)
+      (supertag-query-link--execute-has-in
+       ast #'supertag-query--execute-ast))
+
      ;; A bare modifier query (e.g. (sort-by "title" asc)) means
      ;; "all nodes, modified": modifiers are applied by the public entry
      ;; point after execution.
      ((eq ast-type 'sort-by)
       (supertag-query--get-all-node-ids))
 
-     (t
-      (let ((extension
-             (supertag-query-operator-execute
-              ast #'supertag-query--execute-ast)))
-        (if (eq extension supertag-query-operator-unhandled)
-            '()
-          extension))))))
+     (t '()))))
 
 (defun supertag-query--get-all-node-ids ()
   "Get all node IDs in the system."
@@ -792,366 +866,5 @@ Used for generating table headers in Org Babel output."
                       (walk (plist-get sub-ast :child)))))))
       (walk ast))
     (cl-delete-duplicates fields :test #'string=)))
-
-(defun supertag-query--get-node-field-value (node-id field-name)
-  "Get the value of FIELD-NAME for NODE-ID.
-This reads the global field Store."
-  (when-let* ((fid (supertag-field-resolve-id nil field-name)))
-    (supertag-node-get-global-field node-id fid)))
-
-;;; --- Extended Query System for Relations and Databases ---
-
-(defun supertag-query-related (entity-id &optional relation-type direction relation-kind)
-  "Query entities related to ENTITY-ID.
-RELATION-TYPE and RELATION-KIND optionally filter relations.
-DIRECTION can be :from, :to, or nil (both directions).
-Returns list of (related-id . related-data) pairs."
-  (let ((relations-from (when (or (null direction) (eq direction :from))
-                         (require 'supertag-ops-relation)
-                         (supertag-relation-find-by-from
-                          entity-id relation-type relation-kind)))
-        (relations-to (when (or (null direction) (eq direction :to))
-                       (require 'supertag-ops-relation)
-                       (supertag-relation-find-by-to
-                        entity-id relation-type relation-kind)))
-        (results '()))
-
-    ;; Collect related entities from outgoing relations
-    (dolist (relation relations-from)
-      (let* ((related-id (plist-get relation :to))
-             (related-data (or (supertag-node-get related-id)
-                               (supertag-tag-get related-id))))
-        (when related-data
-          (push (cons related-id related-data) results))))
-
-    ;; Collect related entities from incoming relations
-    (dolist (relation relations-to)
-      (let* ((related-id (plist-get relation :from))
-             (related-data (or (supertag-node-get related-id)
-                               (supertag-tag-get related-id))))
-        (when related-data
-          (push (cons related-id related-data) results))))
-
-    (cl-remove-duplicates results :test (lambda (a b) (equal (car a) (car b))))))
-
-(defun supertag-query-database-records (database-id &optional view-config)
-  "Query all records (nodes) belonging to a database.
-DATABASE-ID is the database tag identifier.
-VIEW-CONFIG is optional view configuration for filtering/sorting.
-Returns list of (node-id . node-data) pairs."
-  (require 'supertag-ops-tag)
-
-  (let* ((all-nodes (supertag-query '(:nodes)))
-         (database-records '()))
-
-    ;; Find all nodes that belong to this database
-    (dolist (node-pair all-nodes)
-      (let* ((node-id (car node-pair))
-             (node-data (cdr node-pair))
-             (tags (plist-get node-data :tags)))
-        (when (member database-id tags)
-          (push node-pair database-records))))
-
-    ;; Apply view configuration if provided
-    (if view-config
-        (supertag-query--apply-view-config database-records view-config)
-      database-records)))
-
-(defun supertag-query--apply-view-config (records view-config)
-  "Apply view configuration to filter and sort RECORDS.
-VIEW-CONFIG contains filter, sort, and grouping options."
-  (let* ((filter-config (plist-get view-config :filter))
-         (sort-config (plist-get view-config :sort))
-         (group-config (plist-get view-config :group-by))
-         (limit (plist-get view-config :limit))
-         (filtered-records records))
-
-    ;; Apply filters
-    (when filter-config
-      (setq filtered-records
-            (supertag-query--apply-filters filtered-records filter-config)))
-
-    ;; Apply sorting
-    (when sort-config
-      (setq filtered-records
-            (supertag-query--apply-sorting filtered-records sort-config)))
-
-    ;; Apply limit
-    (when limit
-      (setq filtered-records (cl-subseq filtered-records 0 (min limit (length filtered-records)))))
-
-    ;; Apply grouping (returns grouped structure)
-    (if group-config
-        (supertag-query--apply-grouping filtered-records group-config)
-      filtered-records)))
-
-(defun supertag-query--apply-filters (records filter-config)
-  "Apply filters to RECORDS based on FILTER-CONFIG."
-  (cl-remove-if-not
-   (lambda (record)
-     (let ((node-data (cdr record)))
-       (supertag-query--evaluate-filter-condition node-data filter-config)))
-   records))
-
-(defun supertag-query--evaluate-filter-condition (node-data condition)
-  "Evaluate a filter CONDITION against NODE-DATA."
-  (pcase (car condition)
-    ('and
-     (cl-every (lambda (sub-condition)
-                 (supertag-query--evaluate-filter-condition node-data sub-condition))
-               (cdr condition)))
-
-    ('or
-     (cl-some (lambda (sub-condition)
-                (supertag-query--evaluate-filter-condition node-data sub-condition))
-              (cdr condition)))
-
-    ('not
-     (not (supertag-query--evaluate-filter-condition node-data (cadr condition))))
-
-    ('org-property
-     (let* ((prop-name (cadr condition))
-            (operator (caddr condition))
-            (expected-value (cadddr condition))
-            (props (plist-get node-data :properties))
-            (actual-value (plist-get props (intern prop-name))))
-       (supertag-query--compare-values actual-value operator expected-value)))
-
-    ('title
-     (let* ((operator (cadr condition))
-            (expected-value (caddr condition))
-            (actual-value (plist-get node-data :title)))
-       (supertag-query--compare-values actual-value operator expected-value)))
-
-    ('tag
-     (let* ((operator (cadr condition))
-            (expected-tag (caddr condition))
-            (tags (plist-get node-data :tags)))
-       (pcase operator
-         ('has (member expected-tag tags))
-         ('not-has (not (member expected-tag tags)))
-         (_ nil))))
-
-    (_ nil)))
-
-(defun supertag-query--compare-values (actual operator expected)
-  "Compare ACTUAL value with EXPECTED using OPERATOR."
-  (pcase operator
-    ('= (equal actual expected))
-    ('!= (not (equal actual expected)))
-    ('> (and (numberp actual) (numberp expected) (> actual expected)))
-    ('< (and (numberp actual) (numberp expected) (< actual expected)))
-    ('>= (and (numberp actual) (numberp expected) (>= actual expected)))
-    ('<= (and (numberp actual) (numberp expected) (<= actual expected)))
-    ('contains (and (stringp actual) (stringp expected) (string-match-p expected actual)))
-    ('starts-with (and (stringp actual) (stringp expected) (string-prefix-p expected actual)))
-    ('ends-with (and (stringp actual) (stringp expected) (string-suffix-p expected actual)))
-    ('empty (or (null actual) (and (stringp actual) (string-empty-p actual))))
-    ('not-empty (not (or (null actual) (and (stringp actual) (string-empty-p actual)))))
-    (_ nil)))
-
-(defun supertag-query--apply-sorting (records sort-config)
-  "Apply sorting to RECORDS based on SORT-CONFIG."
-  (let ((sort-field (plist-get sort-config :field))
-        (sort-order (or (plist-get sort-config :order) :asc)))
-
-    (sort records
-          (lambda (a b)
-            (let* ((node-a (cdr a))
-                   (node-b (cdr b))
-                   (value-a (supertag-query--get-sort-value node-a sort-field))
-                   (value-b (supertag-query--get-sort-value node-b sort-field)))
-              (if (eq sort-order :desc)
-                  (supertag-query--compare-sort-values value-b value-a)
-                (supertag-query--compare-sort-values value-a value-b)))))))
-
-(defun supertag-query--get-sort-value (node-data field)
-  "Get sort value from NODE-DATA for FIELD."
-  (pcase field
-    ('title (plist-get node-data :title))
-    ('created-at (plist-get node-data :created-at))
-    ('modified-at (plist-get node-data :modified-at))
-    ('todo (plist-get node-data :todo))
-    ('priority (plist-get node-data :priority))
-    (_
-     ;; It's a custom field. We must use supertag-field-get.
-     ;; A field can belong to any tag on the node. Find the first value.
-     (catch 'found
-       (dolist (tag-id (plist-get node-data :tags))
-         (let ((value (supertag-field-get (plist-get node-data :id) tag-id (symbol-name field))))
-           (when value
-             (throw 'found value))))))))
-
-(defun supertag-query--compare-sort-values (a b)
-  "Compare two sort values A and B."
-  (cond
-   ((and (null a) (null b)) nil)
-   ((null a) t)
-   ((null b) nil)
-   ((and (numberp a) (numberp b)) (< a b))
-   ((and (stringp a) (stringp b)) (string< a b))
-   ((and (listp a) (listp b)) ; timestamps
-    (time-less-p a b))
-   (t (string< (format "%s" a) (format "%s" b)))))
-
-(defun supertag-query--apply-grouping (records group-config)
-  "Apply grouping to RECORDS based on GROUP-CONFIG.
-Returns alist of (group-value . records-list)."
-  (let ((group-field (plist-get group-config :field))
-        (groups (make-hash-table :test 'equal)))
-
-    ;; Group records by field value
-    (dolist (record records)
-      (let* ((node-data (cdr record))
-             (group-value (supertag-query--get-sort-value node-data group-field))
-             (group-key (or group-value "__ungrouped__")))
-        (let ((existing-group (gethash group-key groups)))
-          (puthash group-key (cons record existing-group) groups))))
-
-    ;; Convert to alist and sort groups
-    (let ((result '()))
-      (maphash (lambda (key value)
-                 (push (cons key (nreverse value)) result))
-               groups)
-      (sort result (lambda (a b) (string< (format "%s" (car a)) (format "%s" (car b))))))))
-
-;;; --- Advanced Query Functions ---
-
-(defun supertag-query-join-relations (base-query relation-configs)
-  "Join related data to base query results.
-BASE-QUERY is the initial query results.
-RELATION-CONFIGS specifies which relations to join.
-Returns enriched results with related data."
-  (mapcar (lambda (record)
-            (let* ((entity-id (car record))
-                   (entity-data (cdr record))
-                   (enriched-data (cl-copy-list entity-data)))
-
-              ;; Add related data for each relation config
-              (dolist (relation-config relation-configs)
-                (let* ((relation-name (plist-get relation-config :name))
-                       (relation-type (plist-get relation-config :type))
-                       (relation-kind (plist-get relation-config :kind))
-                       (direction (plist-get relation-config :direction))
-                       (related-entities
-                        (supertag-query-related
-                         entity-id relation-type direction relation-kind)))
-
-                  ;; Add related entities to the record
-                  (setq enriched-data
-                        (plist-put enriched-data
-                                  (intern (format ":related-%s" relation-name))
-                                  related-entities))))
-
-              (cons entity-id enriched-data)))
-          base-query))
-
-(defun supertag-query-aggregate (records aggregate-config)
-  "Perform aggregation on RECORDS based on AGGREGATE-CONFIG.
-Returns aggregated results."
-  (let* ((aggregate-field (plist-get aggregate-config :field))
-         (aggregate-function (plist-get aggregate-config :function))
-         (group-by (plist-get aggregate-config :group-by))
-         (values '()))
-
-    ;; Collect values
-    (dolist (record records)
-      (let* ((node-data (cdr record))
-             (value (supertag-query--get-sort-value node-data aggregate-field)))
-        (when value
-          (push value values))))
-
-    ;; Apply aggregation function
-    (pcase aggregate-function
-      ('count (length values))
-      ('sum (when (cl-every #'numberp values) (cl-reduce #'+ values :initial-value 0)))
-      ('avg (when (and values (cl-every #'numberp values))
-              (/ (cl-reduce #'+ values :initial-value 0.0) (length values))))
-      ('min (when values (apply #'min values)))
-      ('max (when values (apply #'max values)))
-      ('first (car values))
-      ('last (car (last values)))
-      (_ nil))))
-
-;;; --- Query Builder Interface ---
-
-(defun supertag-query-builder ()
-  "Create a new query builder instance.
-Returns a query builder object that can be chained."
-  (list :type :builder
-        :collection nil
-        :filters '()
-        :sorts '()
-        :joins '()
-        :limit nil
-        :group-by nil))
-
-(defun supertag-query-from (builder collection)
-  "Set the collection for the query BUILDER."
-  (plist-put builder :collection collection))
-
-(defun supertag-query-where (builder field operator value)
-  "Add a WHERE condition to the query BUILDER."
-  (let ((filters (plist-get builder :filters))
-        (condition (list 'org-property field operator value)))
-    (plist-put builder :filters (cons condition filters))))
-
-(defun supertag-query-order-by (builder field &optional order)
-  "Add an ORDER BY clause to the query BUILDER."
-  (let ((sorts (plist-get builder :sorts))
-        (sort-config (list :field field :order (or order :asc))))
-    (plist-put builder :sorts (cons sort-config sorts))))
-
-(defun supertag-query-limit (builder count)
-  "Add a LIMIT clause to the query BUILDER."
-  (plist-put builder :limit count))
-
-(defun supertag-query-execute (builder)
-  "Execute the query BUILDER and return results."
-  (let* ((collection (plist-get builder :collection))
-         (filters (plist-get builder :filters))
-         (sorts (plist-get builder :sorts))
-         (limit (plist-get builder :limit))
-         (results (supertag-query (list collection))))
-
-    ;; Apply filters
-    (when filters
-      (setq results
-            (cl-remove-if-not
-             (lambda (record)
-               (cl-every (lambda (filter)
-                          (supertag-query--evaluate-filter-condition (cdr record) filter))
-                        filters))
-             results)))
-
-    ;; Apply sorting
-    (when sorts
-      (dolist (sort-config (reverse sorts))
-        (setq results (supertag-query--apply-sorting results sort-config))))
-
-    ;; Apply limit
-    (when limit
-      (setq results (cl-subseq results 0 (min limit (length results)))))
-
-    results))
-
-(defun supertag-query-get-all-data ()
-  "Return all nodes and links from the store as a single list of plists.
-This is a low-level function for services like knowledge sync."
-  (let ((all-items '()))
-    (let ((nodes-table (supertag-store-get-collection :nodes))
-          (relations-table (supertag-store-get-collection :relations)))
-      ;; Add all nodes
-      (maphash (lambda (_id props)
-                 (push props all-items))
-               nodes-table)
-      ;; Add all relations
-      (maphash (lambda (_id props)
-                 (push props all-items))
-               relations-table))
-    (nreverse all-items)))
-
-;; Register optional typed-Link operators when this service is loaded directly.
-(require 'supertag-query-link nil t)
 
 (provide 'supertag-services-query)

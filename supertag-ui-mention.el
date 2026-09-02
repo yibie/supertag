@@ -19,8 +19,6 @@
 (require 'supertag-ui-commands)
 (require 'supertag-ui-reference)
 
-(declare-function supertag-view-node-refresh "supertag-view-node")
-
 (defun supertag-mention--source-buffer-and-position (candidate)
   "Return (BUFFER . POSITION) for CANDIDATE's source heading."
   (let* ((source-id (plist-get candidate :source-id))
@@ -109,16 +107,10 @@ provided explicitly.  This preserves aliases and sentence wording."
       (set-marker beg-marker nil)
       (set-marker end-marker nil))))
 
-(defun supertag-mention--refresh-view ()
-  "Refresh the Node View after a mention action."
-  (when (fboundp 'supertag-view-node-refresh)
-    (ignore-errors (supertag-view-node-refresh))))
-
 (defun supertag-mention--finish-source-edit (source-id)
   "Save and reproject SOURCE-ID after a source-owned edit."
   (save-buffer)
-  (supertag-ui--reproject-containing-node source-id)
-  (supertag-mention--refresh-view))
+  (supertag-ui--reproject-containing-node source-id))
 
 (defun supertag-mention-link (candidate)
   "Convert one unlinked mention CANDIDATE into a canonical Org ID link."
@@ -135,7 +127,6 @@ provided explicitly.  This preserves aliases and sentence wording."
         (goto-char (plist-get live :position))
         (supertag-mention--link-at-match
          (plist-get live :bounds) match target-id)))
-    (supertag-mention--refresh-view)
     (message "Linked mention to %s" title)))
 
 (defun supertag-mention-link-all-in-node (candidate)
@@ -154,7 +145,6 @@ provided explicitly.  This preserves aliases and sentence wording."
         (dolist (match (reverse (copy-sequence matches)))
           (supertag-mention--link-at-match
            (plist-get live :bounds) match target-id))))
-    (supertag-mention--refresh-view)
     (message "Linked %d mention(s) to %s" (length matches) title)))
 
 (defun supertag-mention--ignore-value (ids)

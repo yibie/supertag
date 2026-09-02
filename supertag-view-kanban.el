@@ -238,12 +238,6 @@ Returns the card as a list of strings, each correctly padded."
         (goto-char (match-beginning 0))))
     (message "Kanban board rendered for tag '%s'" (plist-get supertag-view-kanban--config :base-tag))))
 
-(defun supertag-view-kanban-render (config &optional node-to-focus)
-  "Render the Kanban board based on CONFIG using the old visual style."
-  (supertag-view-kanban--render-view
-   (supertag-view-kanban--build-view-state
-    (list :config config :node-to-focus node-to-focus))))
-
 ;;; --- Interactive Operations ---
 
 (defun supertag-view-kanban--get-card-info ()
@@ -360,13 +354,13 @@ Returns plist with :node-id, :current-value, and other card info."
   (supertag-view-kanban--register-view)
   (supertag-view-open 'kanban (list :config config :tag-name tag-name)))
 
-(defun supertag-view-kanban-refresh (&optional node-to-focus)
-  "Refresh the Kanban view with current data."
+(defun supertag-view-kanban-refresh (&optional _node-to-focus)
+  "Refresh the Runtime-owned Kanban view with current data."
   (interactive)
   (when supertag-view-kanban--config
-    (if supertag-view--instance
-        (supertag-view-refresh (current-buffer))
-      (supertag-view-kanban-render supertag-view-kanban--config node-to-focus))))
+    (unless supertag-view--instance
+      (user-error "Kanban view is not Runtime-managed; reopen it before refreshing"))
+    (supertag-view-refresh (current-buffer))))
 
 ;;; --- Mode Definition ---
 

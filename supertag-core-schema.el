@@ -554,44 +554,7 @@ schema retrievable by `supertag--get-schema'."
 
 ;;; --- 4. Advanced Features ---
 
-;; 4.1 Schema Extension
-(defun supertag-extend-schema (type extensions)
-  "Extend the schema for the specified TYPE.
-TYPE is the type to extend (e.g., :node, :tag).
-EXTENSIONS is a list of field specifications to add."
-  (let ((var-name (intern (format "supertag-%s-schema" type))))
-    (unless (boundp var-name)
-      (error "Schema for type %s not found." type))
-    (let ((current-schema (symbol-value var-name))
-          (new-schema (copy-sequence current-schema)))
-      (dolist (ext extensions)
-        (let ((field-name (car ext)))
-          ;; Check if field already exists, if so, update it
-          (let ((existing-field (cl-find field-name new-schema :key #'car)))
-            (if existing-field
-                (setf (cdr existing-field) (cdr ext)) ; Update existing
-              (setq new-schema (append new-schema (list ext))))))) ; Add new
-      (set var-name new-schema)
-      ;; Clear cache for this schema type
-      (remhash type supertag--schema-cache))))
-
-;; 4.2 Custom Type Registration
-(defun supertag-register-field-type (type &optional validator converter)
-  "Register a new field type.
-TYPE is the name of the new type (keyword).
-VALIDATOR is an optional validation function.
-CONVERTER is an optional conversion function."
-  (unless (memq type supertag-field-types)
-    (setq supertag-field-types (cons type supertag-field-types)))
-
-  ;; Store validator and converter as properties of the type symbol
-  (when validator
-    (put type 'supertag-validator validator))
-
-  (when converter
-    (put type 'supertag-converter converter)))
-
-;; 4.2.1 Custom Relation Type Registration
+;; 4.1 Custom Relation Type Registration
 (defun supertag-register-relation-type (type &rest props)
   "Register a new semantic relation TYPE with metadata PROPS.
 TYPE is a keyword (e.g., :supports).
@@ -626,13 +589,6 @@ Metadata is stored in `supertag--registered-relation-types'."
     (maphash (lambda (k v) (push (cons k v) result))
              supertag--registered-relation-types)
     (nreverse result)))
-
-;; 4.3 Custom Validation Rules
-(defun supertag-register-validator (field-name validator)
-  "Register a custom validation rule for a specific field.
-FIELD-NAME is the field name (keyword).
-VALIDATOR is the validation function."
-  (put field-name 'supertag-custom-validator validator))
 
 ;;; --- 5. Performance Considerations ---
 
@@ -731,10 +687,9 @@ DATA 可以是任何类型的数据。
 (defun supertag--validate-time (time-value)
   "验证时间值是否为有效的 Emacs 时间格式。
 TIME-VALUE 应该是四元素列表 (high low micro pico)。"
-  (or (null time-value) ; 允许空时间值
-      (and (listp time-value)
-           (= (length time-value) 4)
-           (cl-every #'integerp time-value))))
+  (and (listp time-value)
+       (= (length time-value) 4)
+       (cl-every #'integerp time-value)))
 
 (provide 'supertag-core-schema)
 

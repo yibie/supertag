@@ -37,6 +37,21 @@
                                 (point) 'supertag-entity-id)
                                "node-1")))
               (supertag-view-refresh buffer)
+              (supertag-view-node--hide-side)
+              (should (buffer-live-p buffer))
+              (with-current-buffer buffer
+                (should-not supertag-view--instance)
+                (should-error (supertag-view-node--refresh-view)
+                              :type 'user-error))
+              (let ((supertag-view-node-auto-show t))
+                (with-current-buffer origin
+                  (setq supertag-view-node--last-entity-id nil)
+                  (cl-letf (((symbol-function
+                              'supertag-view-node--current-entity-id)
+                             (lambda () "node-1")))
+                    (supertag-view-node--post-command))))
+              (with-current-buffer buffer
+                (should supertag-view--instance))
               (kill-buffer buffer)
               (should-not (gethash :store-changed supertag--subscribers))
               (with-current-buffer origin

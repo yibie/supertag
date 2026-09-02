@@ -218,13 +218,6 @@ When EMIT-EVENT-P is non-nil, emit :store-changed notification."
        bucket))
     bucket))
 
-(defun supertag-store-normalize! (&optional data)
-  "Normalize DATA (or the live store) into canonical hash-table/plist layout.
-Returns the normalized hash table and updates `supertag--store' when DATA is nil."
-  ;; This function is deprecated due to its complexity and potential for data corruption.
-  ;; It now acts as a pass-through to maintain API compatibility while preventing issues.
-  (or data supertag--store))
-
 ;;; --- Global Field Collections (opt-in scaffolding) ---
 
 (defun supertag-store-put-field-definition (field-id data &optional emit-event-p)
@@ -479,37 +472,6 @@ do not already exist."
             (remhash field-name tag-table)
             old))))))
 
-(defun supertag-store-remove-legacy-tag-fields (node-id tag-id)
-  "Remove the complete legacy field table for NODE-ID and TAG-ID.
-Returns the removed table, or nil when absent.  The table-level write is
-recorded by the active transaction so a failed migration restores it."
-  (supertag-store-assert-mutable
-   (list :remove-legacy-tag-fields node-id tag-id))
-  (let* ((fields-root (supertag-store-get-collection :fields))
-         (node-table (gethash node-id fields-root))
-         (tag-table (and (hash-table-p node-table)
-                         (gethash tag-id node-table))))
-    (when tag-table
-      (supertag--transaction-record-old-value
-       (list :fields node-id tag-id) t tag-table)
-      (remhash tag-id node-table)
-      tag-table)))
-
-;; Direct storage is now the default and only mode for optimal performance
-;; This hybrid architecture combines old system performance with new system features
-
-(defun supertag-store-direct-set (collection id data)
-  "Directly set data in the store using old-style format.
-COLLECTION is the collection name (:nodes, :tags, :relations, :embeds).
-ID is the entity ID. DATA is the plist data."
-  ;; Ensure store is initialized
-  (supertag-store-put-entity collection id data t))
-
-(defun supertag-store-direct-get (collection id)
-  "Directly get data from the store using old-style format.
-COLLECTION is the collection name. ID is the entity ID."
-  (supertag-store-get-entity collection id))
-
 ;;; --- Canonical Path Resolution ---
 
 (defun supertag--resolve-path (container path)
@@ -662,16 +624,6 @@ a collection entity (:nodes \"id\")."
        old-value))
     (_
      (error "Canonical store delete only supports collection/entity paths, got: %S" path))))
-
-(defun supertag-store-clear ()
-  "Clear the entire data store.
-This is primarily intended for testing and system resets."
-  (interactive)
-  (supertag-store-assert-mutable :clear)
-  (setq supertag--store (ht-create))
-  (when (fboundp 'supertag-index-rebuild-all)
-    (supertag-index-rebuild-all))
-  (message "Supertag store has been cleared."))
 
 ;;; --- Unified Commit Pipeline ---
 

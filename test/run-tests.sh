@@ -6,7 +6,9 @@
 #   ./test/run-tests.sh extractor    # Run only extractor tests
 #   ./test/run-tests.sh node         # Run only node-ops tests
 #   ./test/run-tests.sh view         # Run only view-framework tests
+#   ./test/run-tests.sh view-refresh # Run single-path view refresh tests
 #   ./test/run-tests.sh persist      # Run only persistence tests
+#   ./test/run-tests.sh schema-time  # Run only schema time validation tests
 #   ./test/run-tests.sh restore      # Run only snapshot restore tests
 #   ./test/run-tests.sh field-ref    # Run only node-reference field tests
 #   ./test/run-tests.sh query        # Run only query-block tests
@@ -42,6 +44,7 @@ TEST_FILES=(
     "test/test-view-table.el"
     "test/test-view-kanban.el"
     "test/test-view-node-runtime.el"
+    "test/view-refresh-single-path-test.el"
     "test/formula-test.el"
     "test/aggregate-test.el"
     "test/reference-test.el"
@@ -91,13 +94,15 @@ if [ $# -gt 0 ]; then
             view-table) FILTER="$FILTER test/test-view-table.el" ;;
             view-kanban) FILTER="$FILTER test/test-view-kanban.el" ;;
             view-node) FILTER="$FILTER test/test-view-node-runtime.el" ;;
+            view-refresh) FILTER="$FILTER test/view-refresh-single-path-test.el" ;;
             formula)   FILTER="$FILTER test/formula-test.el" ;;
             aggregate) FILTER="$FILTER test/aggregate-test.el" ;;
             reference) FILTER="$FILTER test/reference-test.el" ;;
             vc|virtual) FILTER="$FILTER test/virtual-column-test.el" ;;
             field-ref) FILTER="$FILTER test/test-field-node-reference.el" ;;
             add-reference) FILTER="$FILTER test/test-add-reference.el test/test-denote-reference.el" ;;
-            persist)   FILTER="$FILTER test/supertag-persistence-test.el test/persistence-hardening-test.el test/supertag-restore-test.el" ;;
+            persist)   FILTER="$FILTER test/supertag-persistence-test.el test/persistence-hardening-test.el test/schema-time-test.el test/supertag-restore-test.el" ;;
+            schema-time) FILTER="$FILTER test/schema-time-test.el" ;;
             restore)   FILTER="$FILTER test/supertag-restore-test.el" ;;
             canon)     FILTER="$FILTER test/canonical-serialization-test.el" ;;
             query)     FILTER="$FILTER test/query-block-test.el test/query-library-test.el test/query-model-test.el" ;;
@@ -120,7 +125,7 @@ if [ $# -gt 0 ]; then
             document-command) FILTER="$FILTER test/document-command-ownership-test.el" ;;
             change) FILTER="$FILTER test/canonical-change-test.el" ;;
             all)       FILTER="${TEST_FILES[*]}" ; break ;;
-            *)         echo "Unknown filter: $arg"; echo "Available: extractor node identity view view-runtime view-stream view-table view-kanban view-node formula aggregate reference vc field-ref add-reference persist restore canon query query-model tx merge git conflicts cl-block sync-worker smart-key concept tag-merge reference-migration tag-membership tag-path embed ownership automation-condition architecture document-command change all"; exit 1 ;;
+            *)         echo "Unknown filter: $arg"; echo "Available: extractor node identity view view-runtime view-stream view-table view-kanban view-node view-refresh formula aggregate reference vc field-ref add-reference persist schema-time restore canon query query-model tx merge git conflicts cl-block sync-worker smart-key concept tag-merge reference-migration tag-membership tag-path embed ownership automation-condition architecture document-command change all"; exit 1 ;;
         esac
     done
     TEST_FILES=($(printf '%s\n' $FILTER | awk '!seen[$0]++'))

@@ -77,6 +77,29 @@
       (when-let* ((buffer (get-buffer buffer-name)))
         (kill-buffer buffer)))))
 
+(ert-deftest supertag-view-kanban-refresh-rejects-instance-less-buffer ()
+  "Kanban refresh must never render outside the View Runtime lifecycle."
+  (supertag-view-framework-init)
+  (let ((config (supertag-view-kanban-create-config "task" "status"))
+        (buffer-name "*Supertag Kanban: task by status*")
+        (supertag-use-global-fields nil))
+    (unwind-protect
+        (cl-letf (((symbol-function 'display-buffer) #'ignore)
+                  ((symbol-function 'supertag-find-nodes-by-tag)
+                   (lambda (_tag) nil))
+                  ((symbol-function 'supertag-tag-get-all-fields)
+                   (lambda (_tag)
+                     '((:name "status" :type :options
+                              :options ("Todo"))))))
+          (let ((buffer (supertag-view-kanban-open config)))
+            (with-current-buffer buffer
+              (supertag-view--cleanup-instance)
+              (should-not supertag-view--instance)
+              (should-error (supertag-view-kanban-refresh)
+                            :type 'user-error))))
+      (when-let* ((buffer (get-buffer buffer-name)))
+        (kill-buffer buffer)))))
+
 (ert-deftest supertag-view-kanban-runtime-preserves-card-move-dispatch ()
   "Moving a card must keep dispatching the existing field operation."
   (supertag-view-framework-init)

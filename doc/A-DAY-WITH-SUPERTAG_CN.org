@@ -249,13 +249,7 @@ Supertag 读取后：
 - =active-projects=：=#project=，过滤 =status = active=
 - =recent-meetings=：=#meeting=，过滤 =date >= -7d=
 
-#+begin_src emacs-lisp
-  ;; 命名视图存储在 supertag--view-configs 中。
-  ;; 可以保存到文件并在多台机器间共享：
-  (supertag-view-config-save-to-file "~/org/supertag-views.el")
-  ;; 在另一台机器上：
-  (supertag-view-config-load-from-file "~/org/supertag-views.el")
-#+end_src
+命名视图会持久化到 Supertag Store。目前不支持通过文件导出或导入视图配置。
 
 ** Kanban View——当我需要看到流转
 

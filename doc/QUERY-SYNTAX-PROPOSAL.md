@@ -20,9 +20,9 @@ task001-009 完成于 2026-08-13）。本文件保留拍板记录。
   `term`、`after/before/between`、`recent-days/in-month/in-year`。
 - 数据已就绪：node projection 已含 `:todo`（org todo-keyword）与
   `:priority`（org priority cookie），extractor 在提取，无数据侧工作。
-- 聚合：`supertag-query-aggregate`（`:field/:function/:group-by` config）
-  与 `supertag-rollup-apply`（count/sum/avg/min/max/first/last/
-  unique-count/concat）已存在，无语法入口。
+- 聚合：查询 parser/executor 已把聚合实现为结果修饰符，计算委托
+  `supertag-rollup-apply`（count/sum/avg/min/max/first/last/
+  unique-count/concat）。
 - 排序：query block 的 `:sort/:order` header 参数，不在语法内。
 - Automation trigger 分两层：事件类型（`:on-tag-added/:on-change/
   :on-schedule`）+ 条件语言（`has-tag/has-any-tag/field-equals/
@@ -127,11 +127,10 @@ unique-count/concat）。
 - 聚合/分组子句只允许出现在查询**尾部**，不参与过滤。
 - 有聚合时结果不再是 node 列表，而是标量或 (分组键 . 聚合值) 列表；
   query block 以单行表渲染。
-- 缺失/非数值字段：沿用现有 `supertag-query-aggregate` 语义
+- 缺失/非数值字段：沿用现有查询聚合修饰符语义
   （sum 对非数值集合返回 nil 而非报错）。
 - 改动面：parser 允许尾部子句；执行器把过滤结果交给
-  `supertag-query-aggregate`（其 config 形状 `:field/:function/:group-by`
-  可 1:1 映射，无需新引擎）。
+  `supertag-query--apply-modifiers`，无需平行查询引擎。
 - 拍板点：
   1. 尾部修饰符形态 vs logseq 的 `:find (sum ?v)` 前缀形态？（建议尾部，
      与现有 sexp 风格连续，且 logseq 的前缀形态是其 Datalog 历史包袱）

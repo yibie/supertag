@@ -104,56 +104,6 @@ Returns a list of (node-id . node-data) pairs."
        nodes-collection))
     (nreverse found-nodes)))
 
-(defun supertag-find-nodes-by-title (title-pattern)
-  "Find all nodes whose title matches TITLE-PATTERN by scanning the store.
-TITLE-PATTERN is a regular expression string.
-Returns a list of (node-id . node-data) pairs."
-  (let ((nodes-ht (supertag-store-get-collection :nodes))
-        (results '()))
-    (when (hash-table-p nodes-ht)
-      (maphash (lambda (node-id node-data)
-                 (when (and node-data
-                            (plist-get node-data :title)
-                            (string-match-p title-pattern (plist-get node-data :title)))
-                   (push (cons node-id node-data) results)))
-               nodes-ht))
-    (nreverse results)))
-
-(defun supertag-find-nodes (predicates)
-  "Find nodes satisfying PREDICATES by scanning the store.
-PREDICATES is a list of predicate functions. Each predicate function receives (id . data) and returns t or nil.
-Returns a list of (node-id . node-data) pairs that satisfy all predicates."
-  (let ((nodes-ht (supertag-store-get-collection :nodes))
-        (results '()))
-    (when (hash-table-p nodes-ht)
-      (maphash (lambda (node-id node-data)
-                 (when (and node-data
-                            (cl-every (lambda (pred) (funcall pred node-id node-data)) predicates))
-                   (push (cons node-id node-data) results)))
-               nodes-ht))
-    (nreverse results)))
-
-(defun supertag-index-node-has-tag-p (node-id tag-name)
-  "Check if a node has a specific tag by direct lookup.
-This is an O(1) operation on the node data."
-  (when-let ((node-data (supertag-node-get node-id)))
-    (member tag-name (supertag-node-tag-query-keys node-data))))
-
-
-(defun supertag-find-nodes-by-parent (parent-id)
-  "Find all nodes whose :parent-id is PARENT-ID.
-Returns a list of (node-id . node-data) pairs."
-  (let ((nodes-collection (supertag-store-get-collection :nodes))
-        (found-nodes '()))
-    (when (hash-table-p nodes-collection)
-      (maphash
-       (lambda (id node-data)
-         (when (and node-data
-                    (equal (plist-get node-data :parent-id) parent-id))
-           (push (cons id node-data) found-nodes)))
-       nodes-collection))
-    (nreverse found-nodes)))
-
 (defun supertag-find-file-node (file-path)
   "Find the file node (level 0) for FILE-PATH.
 Returns (node-id . node-data) or nil."
@@ -169,32 +119,6 @@ Returns (node-id . node-data) or nil."
            (setq found (cons id node-data))))
        nodes-collection))
     found))
-
-(defun supertag-get-file-node-for-node (node-id)
-  "Get the file node (parent) for NODE-ID.
-Walks :parent-id chain. Returns (file-node-id . file-node-data) or nil."
-  (when-let ((node (supertag-node-get node-id)))
-    (if-let ((parent-id (plist-get node :parent-id)))
-        (let ((parent (supertag-node-get parent-id)))
-          (when parent
-            (cons parent-id parent)))
-      ;; Fallback: try to find file node by :file path
-      (when-let ((file-path (plist-get node :file)))
-        (supertag-find-file-node file-path)))))
-
-(defun supertag-find-all-file-nodes ()
-  "Find all file nodes (level 0) in the database.
-Returns a list of (node-id . node-data) pairs."
-  (let ((nodes-collection (supertag-store-get-collection :nodes))
-        (found-nodes '()))
-    (when (hash-table-p nodes-collection)
-      (maphash
-       (lambda (id node-data)
-         (when (and node-data
-                    (eq (plist-get node-data :level) 0))
-           (push (cons id node-data) found-nodes)))
-       nodes-collection))
-    (nreverse found-nodes)))
 
 (provide 'supertag-core-scan)
 

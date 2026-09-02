@@ -189,17 +189,16 @@ Point must be at an Org heading. when invoked from other modes."
       (unless (equal eid supertag-view-node--last-entity-id)
         (setq supertag-view-node--last-entity-id eid)
         (when eid
-          (when-let ((buf (supertag-view-node--buffer)))
-            (with-current-buffer buf
-              (if supertag-view--instance
-                  (progn
-                    (setf (plist-get supertag-view--instance :input)
-                          (plist-put
-                           (copy-sequence
-                            (plist-get supertag-view--instance :input))
-                           :node-id eid))
-                    (supertag-view-refresh buf))
-                (supertag-view-node--render eid)))))))))
+          (when-let* ((buf (supertag-view-node--buffer)))
+            (if (buffer-local-value 'supertag-view--instance buf)
+                (with-current-buffer buf
+                  (setf (plist-get supertag-view--instance :input)
+                        (plist-put
+                         (copy-sequence
+                          (plist-get supertag-view--instance :input))
+                         :node-id eid))
+                  (supertag-view-refresh buf))
+              (supertag-view-node--show-side eid))))))))
 
 (defun supertag-view-node-ensure-shown ()
   "Ensure the Node View side window is visible and following."
@@ -718,11 +717,6 @@ STATE 应由 `supertag-view-build-node-state' 构造，只包含数据，不做�
       (supertag-view-node--activate-links-in-buffer))
     (goto-char (point-min))))
 
-(defun supertag-view-node--render (node-id)
-  "Render a simple, clean view for NODE-ID."
-  (supertag-view-node--render-view
-   (supertag-view-node--build-view-state (list :node-id node-id))))
-
 ;;; --- Link Activation ---
 
 (defun supertag-view-node--activate-links-in-buffer ()
@@ -1097,22 +1091,12 @@ Falls back to beginning of buffer when no field is found."
       (when (fboundp 'evil-emacs-state) (ignore-errors (evil-emacs-state))))))
 
 (defun supertag-view-node--refresh-view ()
-  "Refresh side-window content, preserving scroll position."
-  (when-let ((buf (supertag-view-node--buffer)))
+  "Refresh Runtime-owned side-window content and preserve selection."
+  (when-let* ((buf (supertag-view-node--buffer)))
     (with-current-buffer buf
-      (if supertag-view--instance
-          (supertag-view-refresh buf)
-        (let ((eid (or supertag-view-node--current-node-id
-                       (supertag-view-node--current-entity-id))))
-          (when eid
-            (let* ((saved-context (supertag-view-node--get-context-at-point))
-                   (saved-tag (plist-get saved-context :tag-id))
-                   (saved-field (plist-get saved-context :field-name)))
-              (supertag-view-node--render eid)
-              (unless (and saved-tag saved-field
-                           (supertag-view-node--goto-field-in-buffer
-                            buf saved-tag saved-field))
-                (supertag-view-node--goto-first-field)))))))))
+      (unless supertag-view--instance
+        (user-error "Node View is not Runtime-managed; reopen it before refreshing"))
+      (supertag-view-refresh buf))))
 
 
 ;;; --- Commands ---

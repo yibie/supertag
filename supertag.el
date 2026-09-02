@@ -440,7 +440,6 @@ active vault when `supertag-sync-auto-start` is non-nil."
 
 ;; --- Service Functions (services) ---
 (require 'supertag-services-query)
-(require 'supertag-query-link)
 (require 'supertag-services-link)
 (require 'supertag-services-reference)
 (require 'supertag-services-mention)

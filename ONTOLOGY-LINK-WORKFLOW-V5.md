@@ -168,7 +168,7 @@ v5 does not hard-code graph traversal throughout the query engine. It adds one
 small extension registry:
 
 ```text
-supertag-query-operator.el
+supertag-services-query.el (Typed Link operators section)
 ```
 
 A query extension registers:
@@ -181,7 +181,7 @@ AST type         -> executor
 Typed-Link traversal lives in:
 
 ```text
-supertag-query-link.el
+supertag-services-query.el (Typed Link operators section)
 ```
 
 The existing `and`, `or`, `not`, field extraction, sorting, aggregation and
@@ -213,10 +213,10 @@ supertag-view-link.el
 supertag-view-link-definition.el
   Schema View projection
 
-supertag-query-operator.el
+supertag-services-query.el (Typed Link operators section)
   generic query extension seam
 
-supertag-query-link.el
+supertag-services-query.el (Typed Link operators section)
   typed-Link query grammar and execution
 ```
 

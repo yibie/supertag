@@ -442,58 +442,6 @@ The render function should be provided by the view implementation."
                    (string< (plist-get a :name)
                             (plist-get b :name))))))
 
-(defun supertag-view-config-export-elisp (id)
-  "Export view ID configuration as Elisp code.
-Returns a string that can be saved to a file and loaded later.
-The exported code will recreate the view registration."
-  (let ((config (supertag-view-config-get id)))
-    (unless config
-      (error "No configuration found for view: %s" id))
-    (format ";; View configuration for %s\n(supertag-view-register\n %s)"
-            id
-            (string-join
-             (cl-loop for (key value) on config by #'cddr
-                     unless (eq key :render-fn)
-                     collect (format "%S %S" key value))
-             "\n "))))
-
-(defun supertag-view-config-export-all-elisp ()
-  "Export all view configurations as Elisp code."
-  (let ((configs (supertag-view-config-list)))
-    (with-output-to-temp-buffer "*View Configs Export*"
-      (princ ";; Supertag View Configurations\n")
-      (princ ";; Generated: ")
-      (princ (format-time-string "%Y-%m-%d %H:%M:%S"))
-      (princ "\n\n")
-      (princ "(require 'supertag-view-framework)\n\n")
-      (dolist (config configs)
-        (let ((id (plist-get config :id)))
-          (princ (supertag-view-config-export-elisp id))
-          (princ "\n\n"))))
-    (pop-to-buffer "*View Configs Export*")))
-
-(defun supertag-view-config-save-to-file (filename)
-  "Save all view configurations to FILENAME as Elisp code."
-  (interactive "FSave view configs to file: ")
-  (with-temp-file filename
-    (insert ";; Supertag View Configurations\n")
-    (insert ";; Generated: ")
-    (insert (format-time-string "%Y-%m-%d %H:%M:%S"))
-    (insert "\n\n")
-    (insert "(require 'supertag-view-framework)\n\n")
-    (dolist (config (supertag-view-config-list))
-      (let ((id (plist-get config :id)))
-        (insert (supertag-view-config-export-elisp id))
-        (insert "\n\n"))))
-  (message "View configs saved to %s" filename))
-
-(defun supertag-view-config-load-from-file (filename)
-  "Load view configurations from FILENAME.
-Note: This loads the Elisp code which should register the views."
-  (interactive "fLoad view configs from file: ")
-  (load filename nil nil t)
-  (message "View configs loaded from %s" filename))
-
 ;; ============================================================================
 ;; Widget Rendering Helpers (DSL v2)
 ;; ============================================================================

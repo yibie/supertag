@@ -10,9 +10,6 @@
 (require 'supertag-services-link)
 (require 'supertag-ops-relation)
 
-(defvar supertag-link-changed-hook nil
-  "Hook run after an interactive typed Link mutation.")
-
 (defun supertag-link-ui-current-node-id ()
   "Return the semantic node at point or in the current node view."
   (cond
@@ -60,12 +57,6 @@
     (cdr (assoc (completing-read "Other node: " candidates nil t)
                 candidates))))
 
-(defun supertag-link-ui--refresh ()
-  (run-hooks 'supertag-link-changed-hook)
-  (when (and (derived-mode-p 'supertag-view-node-mode)
-             (fboundp 'supertag-view-node-refresh))
-    (supertag-view-node-refresh)))
-
 ;;;###autoload
 (defun supertag-link-add (&optional node-id)
   "Add one typed Link involving NODE-ID or the current node."
@@ -89,7 +80,6 @@
                 (supertag-link-create-replacing-conflicts
                  definition-id (car endpoints) (cdr endpoints)))
             (supertag-link-create definition-id (car endpoints) (cdr endpoints))))
-    (supertag-link-ui--refresh)
     (message "Linked %s and %s via %s"
              (supertag-link-service-node-title (car endpoints))
              (supertag-link-service-node-title (cdr endpoints))
@@ -119,7 +109,6 @@
       (when (yes-or-no-p
              (format "Remove Link to %s? " (plist-get instance :other-title)))
         (supertag-relation-delete (plist-get relation :id))
-        (supertag-link-ui--refresh)
         relation))))
 
 ;;;###autoload

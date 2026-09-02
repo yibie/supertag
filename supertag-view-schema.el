@@ -17,12 +17,12 @@
 (require 'supertag-ops-schema)
 (require 'supertag-ops-global-field)
 (require 'supertag-ops-field)
+(require 'supertag-ops-link-definition)
 (require 'supertag-view-api)
 (require 'supertag-virtual-column)
 (require 'supertag-view-framework)
 (require 'supertag-schema-authority)
 (require 'supertag-ui-link-definition)
-(require 'supertag-view-link-definition)
 
 (declare-function supertag-view-table "supertag-view-table"
                   (data-source &optional columns view-config named-views))
@@ -222,8 +222,7 @@ values."
     (if (and new-name (not (string-empty-p new-name)) (not (string= old-name new-name)))
         (progn
           (supertag-tag-rename tag-id new-name)
-          (message "Tag '%s' renamed to '%s'. Refreshing view..." old-name new-name)
-          (supertag-schema-refresh))
+          (message "Tag '%s' renamed to '%s'." old-name new-name))
       (message "Tag rename cancelled."))))
 
 (defun supertag-schema--rename-at-point ()
@@ -252,8 +251,7 @@ values."
             (if (and new-name (not (string-empty-p new-name)))
                 (progn
                   (supertag-tag-rename-field tag-id field-name new-name)
-                  (message "Field '%s' renamed to '%s'. Refreshing view..." field-name new-name)
-                  (supertag-schema-refresh))
+                  (message "Field '%s' renamed to '%s'." field-name new-name))
               (message "Field rename cancelled."))))))))
 
 (defun supertag-schema--edit-field-definition-at-point ()
@@ -305,8 +303,7 @@ For inherited fields, jumps to the parent tag definition."
                                    (list candidate-id)))
                                 (funcall original-update candidate-id
                                          (lambda (_old) new-definition))))))
-                        (supertag-global-field-edit-interactive field-id))
-                      (supertag-schema-refresh))
+                        (supertag-global-field-edit-interactive field-id)))
                   (supertag-schema-type-change-cancelled
                    (message "Field '%s' type change cancelled; no schema or stored value changed."
                             field-name))))
@@ -314,47 +311,94 @@ For inherited fields, jumps to the parent tag definition."
 
 ;;; --- Rendering ---
 
-(defun supertag-schema--render ()
-  "Render the entire schema tree into the current buffer."
-  (let ((tag-tree (supertag-schema--build-tree)))
-    (let ((inhibit-read-only t))
-      (erase-buffer)
-      (insert "Supertag Schema\n")
-      (insert "=================\n\n")
-      (insert "Tags:\n")
-      (dolist (root-tag tag-tree)
-        (supertag-schema--render-tag-node root-tag))
-      (supertag-view-link-definition-insert-section)
-      (supertag-view-helper-insert-simple-footer
-       "Add:    [a f] Field | [a n] Child Tag | [a r] Root Tag | [a l] Link"
-       "Edit:   [e e] Field | [e r] Rename | [e p] Parent | [e b] Bind | [e l] Link"
-       "Action: [d d] Unbind field or delete globally | [d m] Delete/Unbind Marked"
-       "Mark:   [m m] Mark | [m u] Unmark | [m U] Unmark All | [m e] Extend Marked"
-       "View:   [v v] Custom View | [v t] Table | [?] Full Help | [q] Quit")
-      (goto-char (point-min)))))
-
-(defun supertag-schema--get-own-fields (tag-id)
-  "Get only the fields directly defined on TAG-ID, not inherited ones.
-Reads global associations and definitions."
-  (let* ((entries (supertag-query-tag-field-associations tag-id))
+(defun supertag-schema--build-view-state (_input)
+  "Gather the complete Schema View state without accessing a buffer."
+  (let* ((tag-tree (supertag-schema--build-tree))
          (definitions (supertag-query-field-definitions))
-         (defs-by-id (make-hash-table :test 'equal))
-         result)
+         (definitions-by-id (make-hash-table :test 'equal))
+         (fields-by-tag (make-hash-table :test 'equal))
+         (tags-by-id (make-hash-table :test 'equal)))
     (dolist (pair definitions)
-      (puthash (car pair) (cdr pair) defs-by-id))
-    (when entries
-      (dolist (entry entries)
-        (let* ((field-id (if (plistp entry)
-                             (plist-get entry :field-id)
-                           entry))
-               (definition (and field-id
-                                (gethash field-id defs-by-id))))
-          (when definition
-            (push definition result)))))
-    (nreverse result)))
+      (puthash (car pair) (cdr pair) definitions-by-id))
+    (cl-labels
+        ((index-tag
+          (tag)
+          (let ((tag-id (plist-get tag :id))
+                own-fields)
+            (puthash tag-id tag tags-by-id)
+            (dolist (entry (supertag-query-tag-field-associations tag-id))
+              (let* ((field-id (if (plistp entry)
+                                   (plist-get entry :field-id)
+                                 entry))
+                     (definition (and field-id
+                                      (gethash field-id definitions-by-id))))
+                (when definition
+                  (push definition own-fields))))
+            (puthash tag-id (nreverse own-fields) fields-by-tag)
+            (mapc #'index-tag (plist-get tag :children)))))
+      (mapc #'index-tag tag-tree))
+    (list
+     :tag-tree tag-tree
+     :tags-by-id tags-by-id
+     :fields-by-tag fields-by-tag
+     :link-definitions
+     (mapcar
+      (lambda (definition)
+        (list :definition definition
+              :authority
+              (supertag-schema-authority-get
+               :link (plist-get definition :id))))
+      (supertag-link-definition-list)))))
 
-(defun supertag-schema--render-tag-node (tag-node &optional level)
-  "Recursively render a tag node and its children into the buffer."
+(defun supertag-schema--insert-link-definitions (items)
+  "Render Link Definition projection ITEMS from Schema View state."
+  (insert "\nLink Definitions:\n")
+  (if (null items)
+      (insert "  (none)\n")
+    (dolist (item items)
+      (let* ((start (point))
+             (definition (plist-get item :definition))
+             (authority (plist-get item :authority))
+             (managed (or authority
+                          (eq (plist-get definition :managed-by) :ontology)))
+             (module (or (plist-get authority :module)
+                         (plist-get definition :ontology-module)))
+             (key (or (plist-get authority :key)
+                      (plist-get definition :ontology-key)))
+             (suffix (if managed
+                         (format "  [ontology %s/%s]" module key)
+                       "  [interactive]")))
+        (insert (format "  %s%s\n"
+                        (supertag-link-definition-format definition)
+                        suffix))
+        (add-text-properties
+         start (1- (point))
+         `(supertag-context
+           (:type :link-definition
+            :link-definition-id ,(plist-get definition :id))))))))
+
+(defun supertag-schema--render-view (state)
+  "Render Schema View from gathered STATE only."
+  (let ((inhibit-read-only t))
+    (erase-buffer)
+    (insert "Supertag Schema\n")
+    (insert "=================\n\n")
+    (insert "Tags:\n")
+    (dolist (root-tag (plist-get state :tag-tree))
+      (supertag-schema--render-tag-node root-tag state))
+    (supertag-schema--insert-link-definitions
+     (plist-get state :link-definitions))
+    (supertag-view-helper-insert-simple-footer
+     "Add:    [a f] Field | [a n] Child Tag | [a r] Root Tag | [a l] Link"
+     "Edit:   [e e] Field | [e r] Rename | [e p] Parent | [e b] Bind | [e l] Link"
+     "Action: [d d] Unbind field or delete globally | [d m] Delete/Unbind Marked"
+     "Mark:   [m m] Mark | [m u] Unmark | [m U] Unmark All | [m e] Extend Marked"
+     "View:   [v v] Custom View | [v t] Table | [?] Full Help | [q] Quit")
+    (supertag-schema--restore-marks)
+    (goto-char (point-min))))
+
+(defun supertag-schema--render-tag-node (tag-node state &optional level)
+  "Recursively render TAG-NODE from gathered STATE at LEVEL."
   (let* ((level (or level 0))
          (indent (make-string (* 2 level) ? ))
          (tag-id (plist-get tag-node :id))
@@ -371,9 +415,10 @@ Reads global associations and definitions."
       (add-text-properties start (1- (point))
                            `(supertag-context ,context)))
 
-    ;; Render fields, grouped by origin
-    ;; Use supertag-schema--get-own-fields to get only directly defined fields
-    (let* ((own-fields (supertag-schema--get-own-fields tag-id))
+    ;; Render fields, grouped by origin.
+    (let* ((fields-by-tag (plist-get state :fields-by-tag))
+           (tags-by-id (plist-get state :tags-by-id))
+           (own-fields (gethash tag-id fields-by-tag))
            (processed-fields (make-hash-table :test 'equal))
            (visited-parents (make-hash-table :test 'equal))
            (current-parent-id parent-id))
@@ -395,7 +440,7 @@ Reads global associations and definitions."
       (while (and current-parent-id
                   (not (gethash current-parent-id visited-parents)))
         (puthash current-parent-id t visited-parents)
-        (let* ((parent-own-fields (supertag-schema--get-own-fields current-parent-id))
+        (let* ((parent-own-fields (gethash current-parent-id fields-by-tag))
                (fields-to-render '()))
           ;; Collect only new, un-overridden fields from this parent
           (dolist (field parent-own-fields)
@@ -419,14 +464,11 @@ Reads global associations and definitions."
 
         ;; Move to next parent
         (setq current-parent-id
-              (plist-get
-               (supertag-schema--ensure-plist
-                (supertag-tag-get current-parent-id))
-               :extends))))
+              (plist-get (gethash current-parent-id tags-by-id) :extends))))
 
     ;; Render children recursively
     (dolist (child children)
-      (supertag-schema--render-tag-node child (1+ level)))))
+      (supertag-schema--render-tag-node child state (1+ level)))))
 
 (defun supertag-schema--format-field (field-def)
   "Format a single field definition into a display string."
@@ -496,7 +538,7 @@ Reads global associations and definitions."
     (define-key map (kbd "M-<down>") #'supertag-schema--move-field-down)  ; M-down: Move Field Down
 
     ;; ========== Misc ==========
-    (define-key map "g" #'supertag-schema-refresh)                        ; g: Refresh
+    (define-key map "g" #'supertag-view-refresh)                          ; g: Refresh
     (define-key map "q" #'quit-window)                                    ; q: Quit
     (define-key map "?" #'supertag-schema--show-help)                     ; ?: Help
 
@@ -520,7 +562,8 @@ Users can rebind keys in this map to avoid conflicts with modal editing.")
 \\{supertag-schema-view-mode-map}"
   :keymap supertag-schema-view-mode-map
   (setq-local buffer-read-only t)
-  (setq-local revert-buffer-function #'(lambda (&rest _) (supertag-schema-refresh))))
+  (setq-local revert-buffer-function
+              (lambda (&rest _) (supertag-view-refresh))))
 
 (defface supertag-schema-marked-face
   '((t :background "blue" :foreground "white"))
@@ -528,17 +571,61 @@ Users can rebind keys in this map to avoid conflicts with modal editing.")
 (defvar-local supertag-schema--marked-items nil
   "A list of context plists for marked items in the schema view.")
 
+(defconst supertag-schema--buffer-name "*Supertag Schema*"
+  "Buffer name owned by the Schema View adapter.")
+
+(defun supertag-schema--capture-selection ()
+  "Capture Schema context and line for Runtime selection restoration."
+  (list :context (supertag-schema--get-context-at-point)
+        :line (line-number-at-pos)))
+
+(defun supertag-schema--restore-selection (selection)
+  "Restore Runtime SELECTION by context, Tag, then line number."
+  (let ((context (plist-get selection :context))
+        (line (or (plist-get selection :line) 1)))
+    (or (and context (supertag-schema--goto-context context))
+        (and context
+             (eq (plist-get context :type) :field)
+             (supertag-schema--goto-context
+              (list :type :tag :tag-id (plist-get context :tag-id))))
+        (progn
+          (goto-char (point-min))
+          (forward-line (1- line))
+          (goto-char (line-beginning-position))))))
+
+(defun supertag-schema--subscribe-view (_input _state refresh)
+  "Subscribe Schema View and call REFRESH for displayed Store changes."
+  (supertag-view-api-subscribe
+   :store-changed
+   (lambda (path _old-value _new-value)
+     (when (and (listp path)
+                (memq (car path)
+                      '(:tags :field-definitions :tag-field-associations
+                        :link-definitions)))
+       (funcall refresh)))))
+
+(defun supertag-schema--register-view ()
+  "Register the Schema View adapter when needed."
+  (unless (supertag-view-get 'schema)
+    (supertag-view-register
+     :id 'schema
+     :name "Schema"
+     :selectable nil
+     :buffer-name supertag-schema--buffer-name
+     :mode-fn #'supertag-schema-view-mode
+     :state-fn #'supertag-schema--build-view-state
+     :render-fn #'supertag-schema--render-view
+     :subscribe-fn #'supertag-schema--subscribe-view
+     :capture-selection-fn #'supertag-schema--capture-selection
+     :restore-selection-fn #'supertag-schema--restore-selection
+     :display-action '(display-buffer-same-window))))
+
 ;;;###autoload
 (defun supertag-view-schema ()
-  "Create and display a buffer showing the entire tag and field schema."
+  "Open the tag and field schema through the View Runtime."
   (interactive)
-  (let ((buffer (get-buffer-create "*Supertag Schema*")))
-    (with-current-buffer buffer
-      ;; Render the content FIRST, while the buffer is still writable.
-      (supertag-schema--render)
-      ;; Set the major mode AFTER rendering is complete.
-      (supertag-schema-view-mode))
-    (pop-to-buffer buffer)))
+  (supertag-schema--register-view)
+  (supertag-view-open 'schema nil))
 
 (defun supertag-schema--add-new-tag ()
   "Interactively create a new top-level tag."
@@ -548,8 +635,7 @@ Users can rebind keys in this map to avoid conflicts with modal editing.")
         (progn
           ;; The create function handles sanitization and ID creation.
           (supertag-tag-create `(:name ,new-name))
-          (message "Tag '%s' created. Refreshing view..." new-name)
-          (supertag-schema-refresh))
+          (message "Tag '%s' created." new-name))
       (message "Tag creation cancelled."))))
 
 (defun supertag-schema-view-table-at-point ()
@@ -579,12 +665,11 @@ Users can rebind keys in this map to avoid conflicts with modal editing.")
          ((null parent-id)
           (when (yes-or-no-p (format "Clear parent for '%s'?" child-id))
             (supertag--clear-parent child-id)
-            (message "Cleared parent for '%s'. Refreshing..." child-id) (supertag-schema-refresh)))
+            (message "Cleared parent for '%s'." child-id)))
          ;; Case 2: User selected a parent to add
          (t
           (supertag--set-tag-parent child-id parent-id)
-          (message "Set '%s' to extend '%s'. Refreshing..." child-id parent-id)
-          (supertag-schema-refresh)))))))
+          (message "Set '%s' to extend '%s'." child-id parent-id)))))))
 
 (defun supertag-schema--add-child-tag-at-point ()
   "Interactively add a child tag to the tag at point.
@@ -604,8 +689,7 @@ Offers choice between creating a new tag or selecting an existing tag."
             (if (and child-name (not (string-empty-p child-name)))
                 (progn
                   (supertag-tag-create `(:name ,child-name :extends ,parent-id))
-                  (message "Child tag '%s' created under '%s'. Refreshing..." child-name parent-id)
-                  (supertag-schema-refresh))
+                  (message "Child tag '%s' created under '%s'." child-name parent-id))
               (message "Tag creation cancelled."))))
 
          ;; Option 2: Select existing tag
@@ -626,8 +710,7 @@ Offers choice between creating a new tag or selecting an existing tag."
                 (if (and child-id (not (string-empty-p child-id)))
                     (progn
                       (supertag--set-tag-parent child-id parent-id)
-                      (message "Tag '%s' is now a child of '%s'. Refreshing..." child-id parent-id)
-                      (supertag-schema-refresh))
+                      (message "Tag '%s' is now a child of '%s'." child-id parent-id))
                   (message "No tag selected."))))))
 
          (t (message "Action cancelled.")))))))
@@ -657,20 +740,17 @@ Offers choice between creating a new tag or selecting an existing tag."
                   (pcase choice
                     ("Reuse existing (bind only)"
                      (supertag-tag-associate-field tag-id fid)
-                     (message "Bound existing field '%s' to tag '%s'." fid tag-id)
-                     (supertag-schema-refresh))
+                     (message "Bound existing field '%s' to tag '%s'." fid tag-id))
                     ("Overwrite existing definition"
                      (supertag-global-field-update fid (lambda (_old) field-def))
                      (supertag-tag-associate-field tag-id fid)
-                     (message "Overwrote field '%s' and bound to tag '%s'." fid tag-id)
-                     (supertag-schema-refresh))
+                     (message "Overwrote field '%s' and bound to tag '%s'." fid tag-id))
                     (_ (message "Field creation cancelled."))))
               ;; No conflict
               (progn
                 (supertag-tag-add-field tag-id field-def)
-                (message "Field '%s' added to tag '%s'. Refreshing view..."
-                         (plist-get field-def :name) tag-id)
-                (supertag-schema-refresh)))))
+                (message "Field '%s' added to tag '%s'."
+                         (plist-get field-def :name) tag-id)))))
       (message "Not on a valid tag line."))))
 
 (defun supertag-schema--bind-existing-field-at-point ()
@@ -707,15 +787,13 @@ Offers choice between creating a new tag or selecting an existing tag."
                    (fid (cdr (assoc choice candidates))))
               (when fid
                 (supertag-tag-associate-field tag-id fid)
-                (supertag-schema-refresh)
                 (message "Bound field %s to tag %s" fid tag-id))))))
       (message "Not on a valid tag line.")))
 
 (defun supertag-schema--add-link-definition ()
-  "Create a Link Definition and refresh Schema View."
+  "Create a Link Definition."
   (interactive)
-  (supertag-ui-link-definition-create)
-  (supertag-schema-refresh))
+  (supertag-ui-link-definition-create))
 
 (defun supertag-schema--edit-link-definition-at-point ()
   "Edit the Link Definition at point."
@@ -738,8 +816,7 @@ Offers choice between creating a new tag or selecting an existing tag."
                           definition-id))
             (require 'supertag-view-ontology)
             (supertag-ontology-goto-definition module))
-        (supertag-ui-link-definition-edit definition-id)
-        (supertag-schema-refresh)))))
+        (supertag-ui-link-definition-edit definition-id)))))
 
 (defun supertag-schema--field-association-count (field-id)
   "Return the number of tags directly associated with FIELD-ID."
@@ -803,7 +880,6 @@ retaining data, and deleting its global definition, bindings, and data."
                        (not (string-empty-p field-id)))
                   (supertag-tag-disassociate-field tag-id field-id)
                 (supertag-tag-remove-field tag-id field-name))
-              (supertag-schema-refresh)
               (message "Unbound field '%s' from tag '%s'; the global definition and %d stored node value(s) were preserved."
                        field-name tag-id (or value-count 0)))
              (:delete-global
@@ -817,7 +893,6 @@ retaining data, and deleting its global definition, bindings, and data."
                               "This cannot be undone. ")
                       field-name association-count (or value-count 0)))
                   (supertag-global-field-delete field-id t)
-                  (supertag-schema-refresh)
                   (message "Deleted global field '%s': its definition, %d tag binding(s), and %d stored node value(s) were removed."
                            field-name association-count
                            (or value-count 0)))))
@@ -825,13 +900,11 @@ retaining data, and deleting its global definition, bindings, and data."
               (message "Field action cancelled; no binding, definition, or value changed."))))))
       (:link-definition
        (supertag-ui-link-definition-delete
-        (plist-get context :link-definition-id))
-       (supertag-schema-refresh))
+        (plist-get context :link-definition-id)))
       (:tag
        (let ((tag-id (plist-get context :tag-id)))
          (when (yes-or-no-p (format "DELETE tag '%s' and ALL its uses? This is irreversible." tag-id))
-           (supertag-ops-delete-tag-everywhere tag-id)
-           (supertag-schema-refresh))))
+           (supertag-ops-delete-tag-everywhere tag-id))))
       (_
        (message "Not on a valid Schema line.")))))
 
@@ -843,7 +916,6 @@ retaining data, and deleting its global definition, bindings, and data."
         (let ((tag-id (plist-get context :tag-id))
               (field-name (plist-get context :field-name)))
           (when (supertag-tag-move-field-up tag-id field-name)
-            (supertag-schema-refresh)
             (when (supertag-schema--goto-context context)
               (message "Field '%s' moved up." field-name))))
       (message "Not on a valid field line."))))
@@ -856,34 +928,9 @@ retaining data, and deleting its global definition, bindings, and data."
         (let ((tag-id (plist-get context :tag-id))
               (field-name (plist-get context :field-name)))
           (when (supertag-tag-move-field-down tag-id field-name)
-            (supertag-schema-refresh)
             (when (supertag-schema--goto-context context)
               (message "Field '%s' moved down." field-name))))
       (message "Not on a valid field line."))))
-
-(defun supertag-schema-refresh ()
-  "Refresh the schema view while preserving point as best we can.
-Tries three strategies in order:
-  1. restore the exact context (tag + field) that was at point;
-  2. fall back to just the tag line if the field is gone;
-  3. fall back to the same line number if both are gone."
-  (interactive)
-  (let* ((context-before (supertag-schema--get-context-at-point))
-         (line-before (line-number-at-pos)))
-    (let ((inhibit-read-only t))
-      (supertag-schema--render))
-    (or (and context-before
-             (supertag-schema--goto-context context-before))
-        ;; field gone but its tag may still exist — jump to the tag line
-        (and context-before
-             (eq (plist-get context-before :type) :field)
-             (supertag-schema--goto-context
-              (list :type :tag :tag-id (plist-get context-before :tag-id))))
-        ;; nothing left of the context — keep the same line number
-        (progn
-          (goto-char (point-min))
-          (forward-line (1- line-before))
-          (goto-char (line-beginning-position))))))
 
 (defun supertag-schema--goto-context (context)
   "Search for CONTEXT from top of buffer and move point there."
@@ -917,33 +964,48 @@ Tries three strategies in order:
   (when (supertag-schema--goto-context (list :type :tag :tag-id tag-id))
     (message "Jumped to tag '%s'." tag-id)))
 
+(defun supertag-schema--restore-marks ()
+  "Reapply live marks after rendering and prune missing contexts."
+  (setq supertag-schema--marked-items
+        (cl-remove-if-not
+         (lambda (context)
+           (save-excursion
+             (when (supertag-schema--goto-context context)
+               (add-text-properties
+                (line-beginning-position) (line-end-position)
+                '(face supertag-schema-marked-face))
+               t)))
+         supertag-schema--marked-items)))
+
 (defun supertag-schema--mark-item ()
   "Mark the item at point and move to the next line."
   (interactive)
   (let ((context (supertag-schema--get-context-at-point)))
     (when context
-      (let ((inhibit-read-only t))
-        (unless (member context supertag-schema--marked-items)
-          (push context supertag-schema--marked-items)
-          (add-text-properties (line-beginning-position) (line-end-position) '(face supertag-schema-marked-face))))
-      (next-line 1))))
+      (unless (member context supertag-schema--marked-items)
+        (push context supertag-schema--marked-items)
+        (supertag-view-refresh))
+      (when (supertag-schema--goto-context context)
+        (forward-line 1)))))
 
 (defun supertag-schema--unmark-item ()
   "Unmark the item at point and move to the next line."
   (interactive)
   (let ((context (supertag-schema--get-context-at-point)))
     (when context
-      (let ((inhibit-read-only t))
-        (setq supertag-schema--marked-items (cl-remove context supertag-schema--marked-items :test #'equal))
-        (remove-text-properties (line-beginning-position) (line-end-position) '(face supertag-schema-marked-face)))
-      (next-line 1))))
+      (when (member context supertag-schema--marked-items)
+        (setq supertag-schema--marked-items
+              (cl-remove context supertag-schema--marked-items :test #'equal))
+        (supertag-view-refresh))
+      (when (supertag-schema--goto-context context)
+        (forward-line 1)))))
 
 (defun supertag-schema--unmark-all ()
   "Unmark all marked items in the buffer."
   (interactive)
-  (let ((inhibit-read-only t))
+  (when supertag-schema--marked-items
     (setq supertag-schema--marked-items nil)
-    (remove-text-properties (point-min) (point-max) '(face supertag-schema-marked-face)))
+    (supertag-view-refresh))
   (message "All marks removed."))
 
 (defun supertag-schema--batch-delete-marked-items ()
@@ -952,17 +1014,19 @@ Tries three strategies in order:
   (if (not supertag-schema--marked-items)
       (message "No items marked.")
     (when (yes-or-no-p (format "Really delete %d marked items?" (length supertag-schema--marked-items)))
-      (dolist (context supertag-schema--marked-items)
-        (pcase (plist-get context :type)
-          (:field
-           (supertag-tag-remove-field (plist-get context :tag-id) (plist-get context :field-name)))
-          (:tag
-           (supertag-ops-delete-tag-everywhere (plist-get context :tag-id)))
-          (:link-definition
-           (supertag-link-definition-delete
-            (plist-get context :link-definition-id) nil))))
-      (setq supertag-schema--marked-items nil)
-      (supertag-schema-refresh)
+      (let ((marked-items supertag-schema--marked-items))
+        (setq supertag-schema--marked-items nil)
+        (dolist (context marked-items)
+          (pcase (plist-get context :type)
+            (:field
+             (supertag-tag-remove-field
+              (plist-get context :tag-id) (plist-get context :field-name)))
+            (:tag
+             (supertag-ops-delete-tag-everywhere
+              (plist-get context :tag-id)))
+            (:link-definition
+             (supertag-link-definition-delete
+              (plist-get context :link-definition-id) nil)))))
       (message "Batch delete complete."))))
 
 (defun supertag-schema--batch-extends-marked-tags ()
@@ -981,10 +1045,9 @@ Tries three strategies in order:
                parent-candidates nil nil)))
         (when (and parent-id (not (string-empty-p parent-id)))
           (when (yes-or-no-p (format "Set %d tags to extend '%s'?" (length marked-tags) parent-id))
+            (setq supertag-schema--marked-items nil)
             (dolist (tag-context marked-tags)
               (supertag--set-tag-parent (plist-get tag-context :tag-id) parent-id))
-            (setq supertag-schema--marked-items nil)
-            (supertag-schema-refresh)
             (message "Batch extends complete.")))))))
 
 (defun supertag-schema--merge-read-target ()
@@ -1151,9 +1214,8 @@ Submitting an empty selection retains every available source field."
                     (length (plist-get plan :conflicts))))
       (when (yes-or-no-p (format "Permanently merge %d tag(s) into '%s'? "
                                  (length (plist-get plan :source-ids)) target))
+        (setq supertag-schema--marked-items nil)
         (let ((result (supertag-tag-merge-execute plan)))
-          (setq supertag-schema--marked-items nil)
-          (supertag-schema-refresh)
           (message "Merged %d tag(s) into '%s'; %d node(s), %d file edit(s)."
                    (length (plist-get result :source-ids))
                    (plist-get result :target-id)
@@ -1213,31 +1275,7 @@ a parent tag and a child tag."
             (when removed
               (setq total-removed (+ total-removed removed)))))))
     (message "Total: removed %d inherited field associations." total-removed)
-    (when (> total-removed 0)
-      (supertag-schema-refresh))
     total-removed))
-
-(defun supertag-schema--debug-tag-data (tag-id)
-  "Debug function to inspect the raw data for TAG-ID."
-  (interactive "sTag ID: ")
-  (let* ((tag-data (supertag-tag-get tag-id))
-         (plist-data (and tag-data (supertag-schema--ensure-plist tag-data)))
-         (assoc-table (supertag-query-tag-field-associations tag-id))
-         (own-fields-global assoc-table)
-         (resolved (ignore-errors (supertag-ops-schema-get-resolved-tag tag-id))))
-    (with-current-buffer (get-buffer-create "*Supertag Debug*")
-      (erase-buffer)
-      (insert (format "=== Debug Info for Tag: %s ===\n\n" tag-id))
-      (insert "--- Raw Tag Data ---\n")
-      (insert (format "%S\n\n" plist-data))
-      (insert "--- Global field associations (from :tag-field-associations) ---\n")
-      (insert (format "%S\n\n" own-fields-global))
-      (insert "--- Resolved schema (from supertag-ops-schema-get-resolved-tag) ---\n")
-      (insert (format "%S\n\n" resolved))
-      (insert "--- supertag-schema--get-own-fields result ---\n")
-      (insert (format "%S\n" (supertag-schema--get-own-fields tag-id)))
-      (goto-char (point-min))
-      (display-buffer (current-buffer)))))
 
 ;;; --- Help System ---
 

@@ -210,8 +210,8 @@ supertag-ui-link-definition.el
 supertag-view-link.el
   Node View projection
 
-supertag-view-link-definition.el
-  Schema View projection
+supertag-view-schema.el (Link Definitions section /
+  supertag-schema--insert-link-definitions)
 
 supertag-services-query.el (Typed Link operators section)
   generic query extension seam

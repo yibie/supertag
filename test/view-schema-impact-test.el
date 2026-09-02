@@ -60,8 +60,7 @@
   (let ((old '(:id "status" :name "Status" :type :string))
         (new '(:name "Status" :type :boolean))
         prompt
-        updated
-        refreshed)
+        updated)
     (cl-letf (((symbol-function 'supertag-schema--get-context-at-point)
                (lambda () '(:type :field :tag-id "task"
                             :field-name "Status")))
@@ -84,22 +83,20 @@
                              :error "Cannot convert")))))
               ((symbol-function 'y-or-n-p)
                (lambda (text) (setq prompt text) nil))
-              ((symbol-function 'supertag-schema-refresh)
-               (lambda () (setq refreshed t))))
+              ((symbol-function 'supertag-view-refresh)
+               (lambda (&rest _) (ert-fail "unexpected manual refresh"))))
       (supertag-schema--edit-field-definition-at-point))
     (should-not updated)
-    (should-not refreshed)
     (should (string-match-p "string -> boolean" prompt))
     (should (string-match-p "2 node(s) have stored values" prompt))
     (should (string-match-p "1 will fail" prompt))
     (should (string-match-p "will NOT be rewritten" prompt))))
 
 (ert-deftest supertag-view-schema-type-change-confirmed-uses-existing-update-path ()
-  "Accepting the preview calls the captured Ops updater then refreshes."
+  "Accepting the preview calls the updater and relies on Store subscription."
   (let ((old '(:id "status" :name "Status" :type :string))
         (new '(:name "Status" :type :boolean))
-        updated-definition
-        refreshed)
+        updated-definition)
     (cl-letf (((symbol-function 'supertag-schema--get-context-at-point)
                (lambda () '(:type :field :tag-id "task"
                             :field-name "Status")))
@@ -118,11 +115,10 @@
                (lambda (&rest _)
                  '(:total 0 :convertible nil :failed nil)))
               ((symbol-function 'y-or-n-p) (lambda (&rest _) t))
-              ((symbol-function 'supertag-schema-refresh)
-               (lambda () (setq refreshed t))))
+              ((symbol-function 'supertag-view-refresh)
+               (lambda (&rest _) (ert-fail "unexpected manual refresh"))))
       (supertag-schema--edit-field-definition-at-point))
-    (should (equal new updated-definition))
-    (should refreshed)))
+    (should (equal new updated-definition))))
 
 (ert-deftest supertag-view-schema-field-action-menu-states-data-consequences ()
   "The field action menu explicitly describes unbind and global delete."
@@ -145,7 +141,7 @@
 
 (ert-deftest supertag-view-schema-unbind-preserves-global-field-data-path ()
   "Choosing unbind never calls the destructive global delete operation."
-  (let (disassociated refreshed)
+  (let (disassociated)
     (cl-letf (((symbol-function 'supertag-schema--get-context-at-point)
                (lambda () '(:type :field :tag-id "task"
                             :field-name "Status" :field-id "status")))
@@ -158,15 +154,14 @@
                  (setq disassociated (list tag-id field-id))))
               ((symbol-function 'supertag-global-field-delete)
                (lambda (&rest _) (ert-fail "unexpected global delete")))
-              ((symbol-function 'supertag-schema-refresh)
-               (lambda () (setq refreshed t))))
+              ((symbol-function 'supertag-view-refresh)
+               (lambda (&rest _) (ert-fail "unexpected manual refresh"))))
       (supertag-schema--delete-at-point))
-    (should (equal '("task" "status") disassociated))
-    (should refreshed)))
+    (should (equal '("task" "status") disassociated))))
 
 (ert-deftest supertag-view-schema-global-delete-is-confirmed-and-prunes-data ()
   "Choosing global delete confirms counts and calls Ops with prune-values."
-  (let (deleted prompt refreshed)
+  (let (deleted prompt)
     (cl-letf (((symbol-function 'supertag-schema--get-context-at-point)
                (lambda () '(:type :field :tag-id "task"
                             :field-name "Status" :field-id "status")))
@@ -185,11 +180,10 @@
                  (setq deleted (list field-id prune-values))))
               ((symbol-function 'supertag-tag-disassociate-field)
                (lambda (&rest _) (ert-fail "unexpected unbind")))
-              ((symbol-function 'supertag-schema-refresh)
-               (lambda () (setq refreshed t))))
+              ((symbol-function 'supertag-view-refresh)
+               (lambda (&rest _) (ert-fail "unexpected manual refresh"))))
       (supertag-schema--delete-at-point))
     (should (equal '("status" t) deleted))
-    (should refreshed)
     (should (string-match-p "3 tag binding(s)" prompt))
     (should (string-match-p "2 stored node value(s)" prompt))
     (should (string-match-p "provenance" prompt))

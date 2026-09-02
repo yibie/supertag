@@ -11,7 +11,7 @@
 (require 'supertag-ops-relation)
 (require 'supertag-services-link)
 (require 'supertag-services-query)
-(require 'supertag-view-link-definition)
+(require 'supertag-view-schema)
 (require 'supertag-ontology)
 
 (defmacro supertag-v5-test--isolated (&rest body)
@@ -21,7 +21,8 @@
          (supertag-ontology-runtime-tags-provider nil)
          (supertag-ontology-runtime-fields-provider nil)
          (supertag-ontology-runtime-associations-provider nil)
-         (supertag-ontology-runtime-links-provider nil))
+         (supertag-ontology-runtime-links-provider nil)
+         (supertag-schema-authority-provider-function nil))
      (supertag--ensure-store)
      (supertag-index-clear-all)
      ,@body))
@@ -259,7 +260,9 @@
     (supertag-v5-test--put-tag "tag-b" "B")
     (supertag-v5-test--put-definition "related" "Related" "tag-a" "tag-b")
     (with-temp-buffer
-      (supertag-view-link-definition-insert-section)
+      (supertag-schema--insert-link-definitions
+       (plist-get (supertag-schema--build-view-state nil)
+                  :link-definitions))
       (goto-char (point-min))
       (search-forward "Related")
       (let ((context (get-text-property (line-beginning-position)

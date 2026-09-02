@@ -7,6 +7,7 @@
 #   ./test/run-tests.sh node         # Run only node-ops tests
 #   ./test/run-tests.sh view         # Run only view-framework tests
 #   ./test/run-tests.sh view-refresh # Run single-path view refresh tests
+#   ./test/run-tests.sh view-schema  # Run Schema View Runtime tests
 #   ./test/run-tests.sh persist      # Run only persistence tests
 #   ./test/run-tests.sh schema-time  # Run only schema time validation tests
 #   ./test/run-tests.sh restore      # Run only snapshot restore tests
@@ -45,6 +46,7 @@ TEST_FILES=(
     "test/test-view-kanban.el"
     "test/test-view-node-runtime.el"
     "test/view-refresh-single-path-test.el"
+    "test/view-schema-runtime-test.el"
     "test/formula-test.el"
     "test/aggregate-test.el"
     "test/reference-test.el"
@@ -95,6 +97,7 @@ if [ $# -gt 0 ]; then
             view-kanban) FILTER="$FILTER test/test-view-kanban.el" ;;
             view-node) FILTER="$FILTER test/test-view-node-runtime.el" ;;
             view-refresh) FILTER="$FILTER test/view-refresh-single-path-test.el" ;;
+            view-schema) FILTER="$FILTER test/view-schema-runtime-test.el" ;;
             formula)   FILTER="$FILTER test/formula-test.el" ;;
             aggregate) FILTER="$FILTER test/aggregate-test.el" ;;
             reference) FILTER="$FILTER test/reference-test.el" ;;
@@ -125,7 +128,7 @@ if [ $# -gt 0 ]; then
             document-command) FILTER="$FILTER test/document-command-ownership-test.el" ;;
             change) FILTER="$FILTER test/canonical-change-test.el" ;;
             all)       FILTER="${TEST_FILES[*]}" ; break ;;
-            *)         echo "Unknown filter: $arg"; echo "Available: extractor node identity view view-runtime view-stream view-table view-kanban view-node view-refresh formula aggregate reference vc field-ref add-reference persist schema-time restore canon query query-model tx merge git conflicts cl-block sync-worker smart-key concept tag-merge reference-migration tag-membership tag-path embed ownership automation-condition architecture document-command change all"; exit 1 ;;
+            *)         echo "Unknown filter: $arg"; echo "Available: extractor node identity view view-runtime view-stream view-table view-kanban view-node view-refresh view-schema formula aggregate reference vc field-ref add-reference persist schema-time restore canon query query-model tx merge git conflicts cl-block sync-worker smart-key concept tag-merge reference-migration tag-membership tag-path embed ownership automation-condition architecture document-command change all"; exit 1 ;;
         esac
     done
     TEST_FILES=($(printf '%s\n' $FILTER | awk '!seen[$0]++'))

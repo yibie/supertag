@@ -280,7 +280,8 @@
       (should coding)
       (should-not (plist-get coding :children)))
     (with-temp-buffer
-      (supertag-schema--render)
+      (supertag-schema--render-view
+       (supertag-schema--build-view-state nil))
       (should (string-match-p "^diary$" (buffer-string)))
       (should (string-match-p "^  happy$" (buffer-string)))
       (should-not (string-match-p "happy -> diary" (buffer-string)))

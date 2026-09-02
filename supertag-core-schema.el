@@ -669,6 +669,11 @@ TYPE 是可选的数据类型提示 (:node, :tag, :store 等)。
     (:relation (supertag--validate-relation data))
     (_ (supertag--validate-any data))))
 
+(defun supertag--validate-optional-time (time-value)
+  "Return non-nil when TIME-VALUE is nil or a valid Emacs time value."
+  (or (null time-value)
+      (supertag--validate-time time-value)))
+
 (defun supertag--validate-node (node)
   "验证节点数据格式。
 NODE 应该是包含节点信息的 plist。"
@@ -677,8 +682,8 @@ NODE 应该是包含节点信息的 plist。"
        (stringp (plist-get node :id))
        (plist-get node :type)
        (eq (plist-get node :type) :node)
-       (supertag--validate-time (plist-get node :created-at))
-       (supertag--validate-time (plist-get node :modified-at))))
+       (supertag--validate-optional-time (plist-get node :created-at))
+       (supertag--validate-optional-time (plist-get node :modified-at))))
 
 (defun supertag--validate-tag (tag)
   "验证标签数据格式。
@@ -690,8 +695,8 @@ TAG 应该是包含标签信息的 plist。"
        (stringp (plist-get tag :name))
        (plist-get tag :type)
        (eq (plist-get tag :type) :tag)
-       (supertag--validate-time (plist-get tag :created-at))
-       (supertag--validate-time (plist-get tag :modified-at))))
+       (supertag--validate-optional-time (plist-get tag :created-at))
+       (supertag--validate-optional-time (plist-get tag :modified-at))))
 
 (defun supertag--validate-store (store)
   "验证存储数据格式。

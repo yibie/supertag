@@ -12,6 +12,7 @@
 (require 'parse-time) ; For parse-iso8601-time-string, used by presence
 (require 'supertag-core-notify) ; For supertag-subscribe and supertag-emit-event
 (require 'supertag-core-store) ; For supertag--store
+(require 'supertag-core-schema) ; Owns the shared strict time validator
 (require 'supertag-core-index) ; For derived index rebuild after load
 (require 'supertag-core-transform) ; For supertag-with-transaction (real per-entity rollback)
 
@@ -2445,13 +2446,6 @@ Returns t if times are equal, otherwise returns nil."
   (and (supertag--validate-time time1)
        (supertag--validate-time time2)
        (equal time1 time2)))
-
-(defun supertag--validate-time (time-value)
-  "Validate that the time value is in valid Emacs time format.
-TIME-VALUE should be a four-element list (high low micro pico)."
-  (and (listp time-value)
-       (= (length time-value) 4)
-       (cl-every #'integerp time-value)))
 
 ;;; --- Data Version Management ---
 

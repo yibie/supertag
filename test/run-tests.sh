@@ -50,6 +50,7 @@ TEST_FILES=(
     "test/test-add-reference.el"
     "test/test-denote-reference.el"
     "test/persistence-hardening-test.el"
+    "test/schema-time-test.el"
     "test/supertag-restore-test.el"
     "test/canonical-serialization-test.el"
     "test/query-block-test.el"

@@ -36,6 +36,7 @@ computed here at top level, not recomputed inside a test/helper.")
 (add-to-list 'load-path supertag-merge-test--repo-dir)
 
 (require 'supertag-core-persistence)
+(require 'supertag-core-schema)
 (require 'supertag-merge)
 
 ;;; --- Shared helpers ---
@@ -106,6 +107,19 @@ plist to store for that id; defaults to a plain untouched node."
 (defconst supertag-merge-test--time-a '(27000 1 0 0))
 (defconst supertag-merge-test--time-b '(27000 2 0 0))
 (defconst supertag-merge-test--time-c '(27000 3 0 0))
+
+(ert-deftest supertag-merge-test-newer-side-requires-two-valid-times ()
+  "Prefer ours for a missing time, otherwise select a strictly newer theirs."
+  (should
+   (eq :ours
+       (supertag-merge--newer-side
+        '(:id "ours" :modified-at nil)
+        '(:id "theirs" :modified-at (100000 0 0 0)))))
+  (should
+   (eq :theirs
+       (supertag-merge--newer-side
+        (list :id "ours" :modified-at supertag-merge-test--time-a)
+        (list :id "theirs" :modified-at supertag-merge-test--time-c)))))
 
 ;;; --- 1. Decision-table rows (entity level) ---
 

@@ -309,11 +309,6 @@ Returns a plist with keys:
   :type 'integer
   :group 'supertag-view)
 
-(defcustom supertag-view-table-image-max-width-ratio 0.8
-  "Maximum ratio of image width to cell content space."
-  :type 'float
-  :group 'supertag-view)
-
 (defcustom supertag-view-table-image-column-width 14
   "Default display width of image column (in characters)."
   :type 'integer

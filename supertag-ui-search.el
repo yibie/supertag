@@ -126,11 +126,6 @@ Handles both time stamps (list) and date strings."
   "Customization for supertag search."
   :group 'supertag)
 
-(defcustom supertag-search-preview-length 300
-  "Preview content maximum length."
-  :type 'integer
-  :group 'supertag-search)
-
 (defface supertag-search-current
   '((t :inherit region))
   "Face for current selected item."

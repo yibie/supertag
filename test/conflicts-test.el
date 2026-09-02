@@ -1,7 +1,7 @@
 ;;; conflicts-test.el --- ERT tests for supertag-conflicts.el -*- lexical-binding: t; -*-
 
 ;;; Commentary:
-;; Regression tests for P1-5 of .phrase/phases/phase-git-sync-20260713/PLAN.md's
+;; Regression tests for P1-5 of archive/legacy-v2/2026-08-25-phrase/phases/phase-git-sync-20260713/PLAN.md's
 ;; review list: closing the loop on `:sync-conflicts' records that
 ;; supertag-merge.el (S3) already writes but that nothing previously let a
 ;; user see or resolve.

@@ -2,7 +2,7 @@
 
 ;;; Commentary:
 ;;
-;; S3b of .phrase/phases/phase-git-sync-20260713/PLAN.md ("S3 语义 merge
+;; S3b of archive/legacy-v2/2026-08-25-phrase/phases/phase-git-sync-20260713/PLAN.md ("S3 语义 merge
 ;; driver" -> "S4 用户旅程" test plan). Unlike test/merge-test.el (which
 ;; exercises `supertag-merge-3way' and the batch driver entry point
 ;; directly, with hand-built base/ours/theirs files), this file drives REAL

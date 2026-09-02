@@ -162,14 +162,6 @@
 (declare-function supertag-virtual-column-delete-interactive "supertag-virtual-column" ())
 (declare-function supertag-virtual-column-list-interactive "supertag-virtual-column" ())
 
-;; supertag-view-priority-matrix.el / supertag-view-progress-dashboard.el /
-;; supertag-view-effort-distribution.el (no autoload cookie; wrapped).
-;; Only `-demo' entry points exist for these views today, so the menu
-;; wires and labels them honestly as demos.
-(declare-function supertag-view-priority-matrix-demo "supertag-view-priority-matrix" ())
-(declare-function supertag-view-progress-dashboard-demo "supertag-view-progress-dashboard" ())
-(declare-function supertag-view-effort-distribution-demo "supertag-view-effort-distribution" ())
-
 ;; supertag-migration.el (;;;###autoload; also unconditionally required by
 ;; supertag.el, so it is safe to reference directly)
 (declare-function supertag-migrate-database-to-new-arch "supertag-migration" ())
@@ -458,20 +450,6 @@ first if needed.")
   "Run `supertag-virtual-column-list-interactive', loading its feature
 first if needed.")
 
-(supertag-menu--defwrapper supertag-menu--view-priority-matrix-demo
-  supertag-view-priority-matrix supertag-view-priority-matrix-demo
-  "Run `supertag-view-priority-matrix-demo', loading its feature first if needed.")
-
-(supertag-menu--defwrapper supertag-menu--view-progress-dashboard-demo
-  supertag-view-progress-dashboard supertag-view-progress-dashboard-demo
-  "Run `supertag-view-progress-dashboard-demo', loading its feature
-first if needed.")
-
-(supertag-menu--defwrapper supertag-menu--view-effort-distribution-demo
-  supertag-view-effort-distribution supertag-view-effort-distribution-demo
-  "Run `supertag-view-effort-distribution-demo', loading its feature
-first if needed.")
-
 (supertag-menu--defwrapper supertag-menu--toggle-svg-tags
   supertag-view-svg-tag supertag-svg-tag-mode-toggle
   "Toggle SVG rendering for inline tags.")
@@ -551,10 +529,7 @@ first if needed.")
     ("w" "Whiteboard"                  supertag-board-mode
      :if (lambda () (fboundp 'supertag-board-mode)))
     ("G" "Graph UI"                    supertag-graph-ui-open
-     :if (lambda () (fboundp 'supertag-graph-ui-open)))
-    ("p" "Priority matrix (demo)"      supertag-menu--view-priority-matrix-demo)
-    ("g" "Progress dashboard (demo)"   supertag-menu--view-progress-dashboard-demo)
-    ("e" "Effort distribution (demo)" supertag-menu--view-effort-distribution-demo)]
+     :if (lambda () (fboundp 'supertag-graph-ui-open)))]
    ["Display"
     ("t" "Toggle SVG tags"      supertag-menu--toggle-svg-tags)
     ("c" "Toggle concept links" supertag-menu--toggle-concept-links)]

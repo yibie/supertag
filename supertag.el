@@ -488,7 +488,34 @@ active vault when `supertag-sync-auto-start` is non-nil."
 ;; (archived: supertag-rag, supertag-ui-chat — moved to archive/)
 
 ;; --- Migration ---
-(require 'supertag-migration)
+;; Keep migration commands available to source checkouts without loading the
+;; migration implementation until one of them is invoked.
+(autoload 'supertag-migration-preview-reciprocal-links "supertag-migration"
+  "Preview reciprocal-link migration candidates." t)
+(autoload 'supertag-migration-execute-reciprocal-links "supertag-migration"
+  "Execute a reviewed reciprocal-link migration." t)
+(autoload 'supertag-migrate-reciprocal-links "supertag-migration"
+  "Review and migrate reciprocal links interactively." t)
+(autoload 'supertag-migrate-database-to-new-arch "supertag-migration"
+  "Migrate a legacy database to the current architecture." t)
+(autoload 'supertag-migration-audit-global-fields "supertag-migration"
+  "Audit readiness for global-field migration." t)
+(autoload 'supertag-migration-audit-stable-tags "supertag-migration"
+  "Audit readiness for stable-tag migration." t)
+(autoload 'supertag-migration-run-stable-tags "supertag-migration"
+  "Audit or run stable-tag migration." t)
+(autoload 'supertag-migration-rewrite-tag-token "supertag-migration"
+  "Audit or rewrite a tag token in Org files." t)
+(autoload 'supertag-migration-run-global-fields "supertag-migration"
+  "Audit or run global-field migration." t)
+(autoload 'supertag-analyze-org-properties "supertag-migration"
+  "Analyze Org properties for field migration." t)
+(autoload 'supertag-convert-properties-to-field "supertag-migration"
+  "Convert one Org property to a tag field." t)
+(autoload 'supertag-batch-convert-properties-to-fields "supertag-migration"
+  "Convert selected Org properties to tag fields." t)
+(autoload 'supertag-migration-add-ids-to-org-headings "supertag-migration"
+  "Add missing IDs to Org headings in a directory." t)
 
 ;; --- Diagnostics (optional) ---
 (autoload 'supertag-doctor "supertag-doctor"

@@ -26,8 +26,8 @@
 (require 'org)
 (require 'org-element)
 
-(defvar supertag-query-saved nil)
-(defvar supertag--view-configs (make-hash-table :test 'eq))
+(defvar supertag-query-saved)
+(defvar supertag--view-configs)
 
 (declare-function supertag-tag-merge--plist-p
                   "supertag-ops-tag-merge" (value))

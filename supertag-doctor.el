@@ -212,7 +212,7 @@ Silent when the last load succeeded normally and the default roots are clear."
     (insert (format "Store version: %s\n" current))
     (when (and target store-loaded (stringp current))
       (insert (format "Match: %s\n" (if (string= target current) "yes" "NO - mismatch")))))
-  ;; P1-8 (.phrase/phases/phase-git-sync-20260713/PLAN.md "S2 规范化序列化",
+  ;; P1-8 (archive/legacy-v2/2026-08-25-phrase/phases/phase-git-sync-20260713/PLAN.md "S2 规范化序列化",
   ;; 修订 2026-07-13): the on-disk FILE FORMAT (legacy single-`prin1' vs. S2
   ;; canonical line-per-entity) is a separate axis from the data VERSION
   ;; above -- a database can be stamped at the current `supertag-data-version'

@@ -2,7 +2,7 @@
 
 ;;; Commentary:
 ;;
-;; S3b of .phrase/phases/phase-git-sync-20260713/PLAN.md ("S3 语义 merge
+;; S3b of archive/legacy-v2/2026-08-25-phrase/phases/phase-git-sync-20260713/PLAN.md ("S3 语义 merge
 ;; driver" -> everything except the pure merge core itself, which is
 ;; `supertag-merge.el', S3a). This file wires that pure core into a real git
 ;; checkout: `.gitattributes', **per-clone** `.git/config' merge-driver
@@ -28,7 +28,7 @@
 ;; a vault backed by a SINGLE `supertag-sync-directories' root (or none
 ;; configured at all, in which case the database's own directory is used).
 ;; Multiple configured roots are refused outright rather than guessed at —
-;; seeing `.phrase/phases/phase-git-sync-20260713/PLAN.md' section "S4 用户
+;; seeing `archive/legacy-v2/2026-08-25-phrase/phases/phase-git-sync-20260713/PLAN.md' section "S4 用户
 ;; 旅程" / "V1 限制" is the documented escape hatch (consolidate to one root,
 ;; or do not enable git sync yet).
 ;;
@@ -700,15 +700,15 @@ contain DB-DIR (the vault-layout requirement -- git sync needs the
 database physically inside the chosen repo); or no root can be inferred
 and we cannot prompt (`noninteractive')."
   (when (supertag-git--multiple-sync-roots-p)
-    (user-error "supertag-git-setup: refusing -- `supertag-sync-directories' configures multiple roots (%s). Git sync (V1) only supports a single-root vault; see .phrase/phases/phase-git-sync-20260713/PLAN.md \"S4 用户旅程\" / \"V1 限制\" for how to consolidate."
+    (user-error "supertag-git-setup: multiple sync roots configured (%s); consolidate `supertag-sync-directories' to a single vault root, then retry"
                 (mapconcat #'identity (supertag-git--sync-roots) ", ")))
   (let ((roots (supertag-git--sync-roots)))
     (cond
      ((= (length roots) 1)
       (let ((root (file-name-as-directory (expand-file-name (car roots)))))
         (unless (supertag-git--ancestor-p root db-dir)
-          (user-error "supertag-git-setup: refusing -- the configured sync root %s does not contain the database directory %s. Git sync (V1) requires the database to live inside the single vault root; see .phrase/phases/phase-git-sync-20260713/PLAN.md \"S4 用户旅程\" / \"仓库布局\"."
-                      root db-dir))
+          (user-error "supertag-git-setup: database directory %s is outside the configured sync root %s; move the database directory inside that vault root, then retry"
+                      db-dir root))
         root))
      (noninteractive
       (error "supertag-git-setup: %s is not inside a git repository and no usable `supertag-sync-directories' root is configured to infer one; run this interactively to be prompted for a root, or `git init` the vault yourself first"
@@ -2081,11 +2081,9 @@ state."
 
 ;;;###autoload
 (define-minor-mode supertag-git-sync-mode
-  "Automatic git commit/fetch/merge/push loop for the current Supertag
-vault (S4 of .phrase/phases/phase-git-sync-20260713/PLAN.md). Off by
-default (opt-in) -- see this file's Commentary above this mode's
-definition for the full design (serialization, async, offline
-degradation).
+  "Automatic Git commit/fetch/merge/push loop for the current Supertag vault.
+This opt-in mode is disabled by default.  See this file's Commentary for the
+serialization, asynchronous operation, and offline-degradation design.
 
 While enabled:
 - Saving the database (`supertag-save-store' succeeding) or any file

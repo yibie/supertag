@@ -2,7 +2,7 @@
 
 ;;; Commentary:
 ;;
-;; S4 of .phrase/phases/phase-git-sync-20260713/PLAN.md ("S4 用户旅程" /
+;; S4 of archive/legacy-v2/2026-08-25-phrase/phases/phase-git-sync-20260713/PLAN.md ("S4 用户旅程" /
 ;; "S4 自动同步循环"). Covers the three additions this phase makes to
 ;; `supertag-git.el':
 ;;

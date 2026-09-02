@@ -30,7 +30,7 @@ This is a fallback definition. The primary definition is in supertag.el.")
   "Current data format version.
 Used for data format compatibility checks and automatic migration.
 
-Bumped 5.0.0 -> 6.0.0 (P1-8, see .phrase/phases/phase-git-sync-20260713/PLAN.md
+Bumped 5.0.0 -> 6.0.0 (P1-8, see archive/legacy-v2/2026-08-25-phrase/phases/phase-git-sync-20260713/PLAN.md
 \"S2 规范化序列化\", 修订 2026-07-13): the S2 canonical, line-per-entity
 serialization is NOT actually readable by pre-6.0 (<= 5.9.x) builds the way
 the original S2 writeup assumed. Those builds' `supertag--persistence--try-read-store'
@@ -967,7 +967,7 @@ or files with a `.db` extension that still contain an Emacs-lisp printed store."
 
 ;;; --- S2: Canonical, deterministic, line-per-entity serialization ---
 ;;
-;; Design goal (see .phrase/phases/phase-git-sync-20260713/PLAN.md "S2 规范化
+;; Design goal (see archive/legacy-v2/2026-08-25-phrase/phases/phase-git-sync-20260713/PLAN.md "S2 规范化
 ;; 序列化"): same logical store content must produce byte-identical output on
 ;; any machine, and a single-field change on one entity must show up as a
 ;; single-line `git diff'. This is a hard prerequisite for S3's git merge
@@ -1033,7 +1033,7 @@ or files with a `.db` extension that still contain an Emacs-lisp printed store."
 The second line embeds the CURRENT `supertag-data-version' (computed at
 call time, not baked into a `defconst', so it always reflects whatever
 this build's version actually is) alongside the canonical format-generation
-number -- see P1-8 / .phrase/phases/phase-git-sync-20260713/PLAN.md \"S2
+number -- see P1-8 / archive/legacy-v2/2026-08-25-phrase/phases/phase-git-sync-20260713/PLAN.md \"S2
 规范化序列化\", 修订 2026-07-13. This is a `;'-comment, skipped by
 `supertag--persistence--skip-leading-comments-and-whitespace' before any
 `read', so it carries no parsing weight -- it exists purely so a human (or
@@ -1693,7 +1693,7 @@ is simply skipped, same as if FILE had already been canonical."
 
 (defun supertag--persistence--snapshot-preformat6 (file)
   "Copy legacy-format FILE to a never-auto-deleted `preformat6' backup.
-Part of P1-8 (.phrase/phases/phase-git-sync-20260713/PLAN.md \"S2 规范化
+Part of P1-8 (archive/legacy-v2/2026-08-25-phrase/phases/phase-git-sync-20260713/PLAN.md \"S2 规范化
 序列化\", 修订 2026-07-13): the FIRST time a canonical save is about to
 overwrite an on-disk database still in the legacy (pre-6.0) format, this
 preserves that legacy file as

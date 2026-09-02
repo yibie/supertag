@@ -2,7 +2,7 @@
 
 ;;; Commentary:
 ;; Regression tests for the S2 "canonical, deterministic, line-per-entity
-;; serialization" work (.phrase/phases/phase-git-sync-20260713/PLAN.md
+;; serialization" work (archive/legacy-v2/2026-08-25-phrase/phases/phase-git-sync-20260713/PLAN.md
 ;; "S2 规范化序列化"): the on-disk DB format written by
 ;; `supertag--persistence-write-store-atomically' must be:
 ;;   - deterministic: same logical content -> byte-identical file, on any
@@ -232,7 +232,7 @@ order, only on entity id."
 ;; only the FIRST top-level form -- against the canonical, line-per-entity
 ;; format that is the root scalar line, never any entity. See
 ;; `supertag-data-version''s docstring and
-;; .phrase/phases/phase-git-sync-20260713/PLAN.md "S2 规范化序列化" (修订
+;; archive/legacy-v2/2026-08-25-phrase/phases/phase-git-sync-20260713/PLAN.md "S2 规范化序列化" (修订
 ;; 2026-07-13) for the full writeup this covers:
 ;;   1. the data version bump itself (so `supertag--maybe-auto-migrate' at
 ;;      least fires against a genuinely stale-versioned old database);

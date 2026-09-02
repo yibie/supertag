@@ -91,7 +91,7 @@
   "Name of the currently active view.")
 
 (defconst supertag-view-table--row-cache-collections
-  '(:nodes :databases :automations :behaviors :relations :fields
+  '(:nodes :databases :automations :relations :fields
     :field-values :field-provenance :tags :field-definitions
     :tag-field-associations)
   "Store collections that can affect a rendered Table row.")
@@ -162,7 +162,7 @@ reuse unaffected rows; an unannounced Store mutation is still detected by
          (if (and targeted-p (nth 1 path))
              (remhash (nth 1 path) supertag-view-table--row-cache)
            (clrhash supertag-view-table--row-cache)))
-        ((or :databases :automations :behaviors)
+        ((or :databases :automations)
          (if (and targeted-p (nth 1 path))
              (remhash (nth 1 path) supertag-view-table--row-cache)
            (clrhash supertag-view-table--row-cache)))
@@ -448,7 +448,7 @@ Only strips keywords if `supertag-view-table-strip-todo-keywords' is non-nil."
      (lambda (path _old-value _new-value)
        (when (and (listp path)
                   (memq (car path)
-                        '(:nodes :databases :automations :behaviors
+                        '(:nodes :databases :automations
                           :field-values :field-provenance :tags
                           :field-definitions :tag-field-associations)))
          (when (buffer-live-p buffer)
@@ -685,11 +685,6 @@ If called interactively without DATA-SOURCE, prompts for data source selection."
            (:name "File" :key :file :width 36))
        (supertag-view-table--get-columns-for-tag
         (plist-get query-obj :value))))
-    (:behavior
-     '((:name "Name" :key :name :width 30)
-       (:name "Trigger" :key :trigger :width 15)
-       (:name "Action" :key :action :width 15)
-       (:name "Enabled" :key :enabled :width 10 :type :boolean)))
     (:automation
      '((:name "Name" :key :name :width 30)
        (:name "Description" :key :description :width 40)
@@ -996,8 +991,6 @@ Uses improved styling from old version."
     (pcase (plist-get query-obj :type)
       (:tag
        (supertag-view-api-get-entity :nodes entity-id))
-      (:behavior
-       (supertag-view-api-get-entity :behaviors entity-id))
       (:automation
        (supertag-view-api-get-entity :automations entity-id))
       (:database
@@ -1938,16 +1931,6 @@ With prefix argument INDEX, switch to specific table number."
   (supertag-view-table-refresh)
   (message "Filter cleared."))
 
-(defun supertag-view-table-show-behaviors ()
-  "Switch the current view to display all behaviors."
-  (interactive)
-  (let ((query-obj (list :type :behavior :value "*all-behaviors*")))
-    (setq-local supertag-view-table--query-objs (list query-obj))
-    (setq-local supertag-view-table--current-table-index 0)
-    (rename-buffer (format "*Supertag Table: %s*" "Behaviors"))
-    (supertag-view-table-refresh)
-    (message "Switched view to Behaviors.")))
-
 (defun supertag-view-table-show-automations ()
   "Switch the current view to display all automations."
   (interactive)
@@ -2016,7 +1999,6 @@ With prefix argument INDEX, switch to specific table number."
     ;; Filtering
     (define-key map (kbd "/") #'supertag-view-table-filter)
     (define-key map (kbd "C-c /") #'supertag-view-table-clear-filter)
-    (define-key map (kbd "C-c v b") #'supertag-view-table-show-behaviors)
     (define-key map (kbd "C-c v a") #'supertag-view-table-show-automations)
     ;; Image-related commands
     (define-key map (kbd "w") #'supertag-view-table--adjust-image-column-width)
@@ -2145,11 +2127,6 @@ Users can rebind keys in this map to avoid conflicts with modal editing.")
     (princ "~/Pictures/photo.jpg\n")))
 
 ;;; --- Convenience Commands ---
-
-(defun supertag-view-table-behaviors ()
-  "Display all behaviors in table view."
-  (interactive)
-  (supertag-view-table (list :type :behavior :value "*all-behaviors*")))
 
 (defun supertag-view-table-automations ()
   "Display all automations in table view."

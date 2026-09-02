@@ -52,11 +52,9 @@ This function is UI-agnostic and read-only."
       ((or :nodes :tags :relations :link-definition :link-definitions :embeds
            ;; Some query specs use singular names in UI layers; accept them here.
            :automation :automations
-           :behavior :behaviors
            :database :databases)
        (let ((type (pcase type
                      (:automation :automations)
-                     (:behavior :behaviors)
                      (:database :databases)
                      (:link-definition :link-definitions)
                      (_ type))))
@@ -70,7 +68,7 @@ This function is UI-agnostic and read-only."
                     (supertag-link-definition-list)))
            (:automations (mapcar (lambda (automation) (plist-get automation :id))
                                  (supertag-query-automations)))
-           ;; :embeds/:behaviors/:databases are legacy/non-canonical
+           ;; :embeds/:databases are legacy/non-canonical
            ;; collections; they contain no entities.
            (_ '()))))
       (_
@@ -88,7 +86,6 @@ This function is UI-agnostic and read-only."
            (:link-definition :link-definitions)
            (:embed :embeds)
            (:automation :automations)
-           (:behavior :behaviors)
            (:database :databases)
            (_ type))))
     (pcase normalized
@@ -100,7 +97,7 @@ This function is UI-agnostic and read-only."
        (car (supertag-query-automations
              (lambda (automation)
                (equal (plist-get automation :id) entity-id)))))
-      ;; :embeds/:behaviors/:databases are legacy/non-canonical collections.
+      ;; :embeds/:databases are legacy/non-canonical collections.
       (_ nil))))
 
 (defun supertag-view-api-get-entities (type entity-ids)

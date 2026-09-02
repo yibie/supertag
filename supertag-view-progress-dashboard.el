@@ -145,45 +145,6 @@ Returns a list of project data plists."
        :persist nil
        :widgets #'supertag-view-progress--widgets))
 
-;; ============================================================================
-;; Demo
-;; ============================================================================
-
-(defun supertag-view-progress-dashboard-demo ()
-  "Demonstrate the progress dashboard with mock data."
-  (interactive)
-  ;; Create mock virtual column functions if not available
-  (cl-letf (((symbol-function 'supertag-view--get-vc)
-             (lambda (node-id column-id &optional default)
-               ;; Mock data based on node-id
-               (pcase node-id
-                 ("proj-1" (pcase column-id
-                            ("progress" 100)
-                            ("total-tasks" 10)
-                            ("done-tasks" 10)
-                            ("total-effort" 80)
-                            (_ default)))
-                 ("proj-2" (pcase column-id
-                            ("progress" 65)
-                            ("total-tasks" 20)
-                            ("done-tasks" 13)
-                            ("total-effort" 120)
-                            (_ default)))
-                 ("proj-3" (pcase column-id
-                            ("progress" 30)
-                            ("total-tasks" 15)
-                            ("done-tasks" 5)
-                            ("total-effort" 60)
-                            (_ default)))
-                 (_ default)))))
-
-    (supertag-view-open 'progress-dashboard
-                        (list :tag "project"
-                              :nodes (list
-                                      (list :id "proj-1" :title "Website Redesign")
-                                      (list :id "proj-2" :title "Mobile App Development")
-                                      (list :id "proj-3" :title "Database Migration"))))))
-
 (provide 'supertag-view-progress-dashboard)
 
 ;;; supertag-view-progress-dashboard.el ends here

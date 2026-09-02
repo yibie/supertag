@@ -167,26 +167,6 @@ DATA is an alist of (label . value)."
        :persist nil
        :widgets #'supertag-view-effort--widgets))
 
-;; ============================================================================
-;; Demo
-;; ============================================================================
-
-(defun supertag-view-effort-distribution-demo ()
-  "Demonstrate the effort distribution view with mock data."
-  (interactive)
-  (cl-letf (((symbol-function 'supertag-find-nodes-by-tag)
-             (lambda (_tag)
-               (list
-                (cons "task-1" (list :title "Task 1" :status "done" :tags '("project" "frontend") :effort 8))
-                (cons "task-2" (list :title "Task 2" :status "done" :tags '("project" "backend") :effort 12))
-                (cons "task-3" (list :title "Task 3" :status "in-progress" :tags '("project" "frontend") :effort 6))
-                (cons "task-4" (list :title "Task 4" :status "todo" :tags '("project" "backend") :effort 10))
-                (cons "task-5" (list :title "Task 5" :status "in-progress" :tags '("project" "backend") :effort 8))))))
-
-    (supertag-view-open 'effort-distribution
-                        (list :tag "project"
-                              :nodes nil))))  ; nodes are fetched by the mock
-
 (provide 'supertag-view-effort-distribution)
 
 ;;; supertag-view-effort-distribution.el ends here

@@ -2,7 +2,7 @@
 
 ;;; Commentary:
 ;; Tests for supertag-merge.el, the pure semantic 3-way merge core for
-;; supertag-db.el (.phrase/phases/phase-git-sync-20260713/PLAN.md, "S3 语义
+;; supertag-db.el (archive/legacy-v2/2026-08-25-phrase/phases/phase-git-sync-20260713/PLAN.md, "S3 语义
 ;; merge driver" -> "S3a 纯合并核心").  Covers:
 ;;   - one ERT test per row of the plan's merge decision table;
 ;;   - the field-type equality matrix (canonicalization-equal never

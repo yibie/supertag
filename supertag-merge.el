@@ -2,7 +2,7 @@
 
 ;;; Commentary:
 ;;
-;; S3a of .phrase/phases/phase-git-sync-20260713/PLAN.md ("S3 语义 merge
+;; S3a of archive/legacy-v2/2026-08-25-phrase/phases/phase-git-sync-20260713/PLAN.md ("S3 语义 merge
 ;; driver"): the pure, side-effect-free merge core, plus a thin batch driver
 ;; entry point.  This file deliberately does NOT implement `supertag-git-setup',
 ;; `.gitattributes' handling, or `doctor' integration -- that is S3b.

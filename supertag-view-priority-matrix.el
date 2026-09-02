@@ -200,33 +200,6 @@ MAX-TITLE-LEN is the maximum title length."
        :persist nil
        :widgets #'supertag-view-priority--widgets))
 
-;; ============================================================================
-;; Demo
-;; ============================================================================
-
-(defun supertag-view-priority-matrix-demo ()
-  "Demonstrate the priority matrix with mock data."
-  (interactive)
-  (cl-letf (((symbol-function 'supertag-find-nodes-by-tag)
-             (lambda (_tag)
-               (list
-                ;; DO: High urgency, high importance
-                (cons "task-1" (list :title "Fix critical bug" :urgency 9 :importance 10))
-                (cons "task-2" (list :title "Client deadline today" :urgency 10 :importance 8))
-                ;; PLAN: Low urgency, high importance
-                (cons "task-3" (list :title "Q4 planning" :urgency 3 :importance 9))
-                (cons "task-4" (list :title "Refactor codebase" :urgency 2 :importance 8))
-                ;; DELEGATE: High urgency, low importance
-                (cons "task-5" (list :title "Answer email" :urgency 7 :importance 2))
-                (cons "task-6" (list :title "Schedule meeting" :urgency 6 :importance 3))
-                ;; DELETE: Low urgency, low importance
-                (cons "task-7" (list :title "Check social media" :urgency 1 :importance 1))
-                (cons "task-8" (list :title "Organize desktop" :urgency 2 :importance 2))))))
-
-    (supertag-view-open 'priority-matrix
-                        (list :tag "task"
-                              :nodes nil))))
-
 (provide 'supertag-view-priority-matrix)
 
 ;;; supertag-view-priority-matrix.el ends here

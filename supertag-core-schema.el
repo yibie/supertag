@@ -87,7 +87,6 @@ Lowercase, trim whitespace, convert internal whitespace to underscores."
   '(:node    ; Org node (headline with tags)
     :tag     ; Tag (supertag with field definitions)
     :database ; Virtual database entity
-    :behavior ; Behavior entity
     :automation ; Automation entity
     :embed)   ; Embed entity for embedded content blocks
   "Entity types supported by the system.")
@@ -287,7 +286,6 @@ Keys are keyword symbols, values are plists with:
                               :icon (:type :string :default nil)
                               :extends (:type :string :default nil)
                               :color (:type :string :default nil)
-                              :behaviors (:type :list :default nil)
                               ;; Virtual database configuration
                               :database-type (:type :keyword :default nil)
                               :views (:type :list :default nil)))
@@ -308,16 +306,6 @@ Keys are keyword symbols, values are plists with:
                                   :sync-fields (:type :list :default nil)
                                   :rollup-field (:type :string :default nil)
                                   :rollup-function (:type :function :default nil)))
-                      (:behavior '(:id (:type :string :required t :validator supertag--valid-id-p)
-                                  :name (:type :string :required t)
-                                  :trigger (:type :keyword :required t :validator supertag--valid-behavior-trigger-p)
-                                  :condition (:type :list :default nil)
-                                  :action (:type :keyword :required t :validator supertag--valid-automation-action-p)
-                                  :params (:type :plist :default nil)
-                                  :schedule (:type :string :default nil)
-                                  :enabled (:type :boolean :default t)
-                                  :created-at (:type :timestamp :default (lambda () (current-time)))
-                                  :modified-at (:type :timestamp :default (lambda () (current-time)))))
                       (:automation '(:id (:type :string :required t :validator supertag--valid-id-p)
                                     :name (:type :string :required t)
                                     :description (:type :string :default "")

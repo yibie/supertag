@@ -1717,28 +1717,19 @@
              supertag-change--suppress-legacy-store-changed 'outer))
      (princ (format "LC-LOAD-ATTEMPT %S %S before=%S\n" lc-case lc-entry lc-before))
      (if (memq lc-case '(risk risk-org))
-         (let (failure)
-           (condition-case err (load (expand-file-name lc-entry lc-root) nil nil t)
-             (file-missing (setq failure err)))
-           (if failure
-               (progn
-                 (should (equal (car (last failure)) "ob-supertag-query-block"))
-                 (should (eq lc-case 'risk))
-                 (princ (format "LC-EXPECTED-LOAD-FAILURE %S feature=%S query-api=%S store=%S\n"
-                                failure (featurep (intern (file-name-base lc-entry)))
-                                (fboundp 'supertag-query-node) (bound-and-true-p supertag--store))))
-             (should (eq lc-case 'risk-org))
-             (princ "LC-RISK-ORG-FIRST-ENTRY\n")
-             (lc-seed)
-             (pcase lc-entry
-               ("supertag-node.el" (supertag-node-delete "a"))
-               ("supertag-tag.el" (supertag-tag-merge--rewrite-relations '("a") "b"))
-               ("supertag-services-sync.el"
-                (unless (or lc-before (equal (getenv "SUPERTAG_LD_STAGE") "before"))
-                  (require 'supertag-link))
-                (should (member "observed" (supertag-text-link-candidates))))
-               (_ (should (supertag-query-relations-from "a"))))
-             (princ "LC-RISK-REAL-CALL-DONE\n")))
+         (progn
+           (load (expand-file-name lc-entry lc-root) nil nil t)
+           (princ "LC-RISK-ENTRY\n")
+           (lc-seed)
+           (pcase lc-entry
+             ("supertag-node.el" (supertag-node-delete "a"))
+             ("supertag-tag.el" (supertag-tag-merge--rewrite-relations '("a") "b"))
+             ("supertag-services-sync.el"
+              (unless (or lc-before (equal (getenv "SUPERTAG_LD_STAGE") "before"))
+                (require 'supertag-link))
+              (should (member "observed" (supertag-text-link-candidates))))
+             (_ (should (supertag-query-relations-from "a"))))
+           (princ "LC-RISK-REAL-CALL-DONE\n"))
        (load (expand-file-name lc-entry lc-root) nil nil t)
        (princ (format "LC-ENTRY %S %S\n" lc-case lc-entry))
        (when (and (not lc-before) (memq lc-case '(node tag-merge tag-rename sync-candidates sync-project query-get query-dsl)))
@@ -1978,18 +1969,10 @@
              supertag-text-link--session-types '("ld-session")
              supertag-text-link--owned-registrations (make-hash-table :test #'equal)))
      (princ (format "LD-LOAD-ATTEMPT %S %s before=%S\n" ld-case ld-entry ld-before))
-     (let ((ld-hash (and (boundp 'supertag-text-link--owned-registrations)
-                        supertag-text-link--owned-registrations)) ld-failure)
-       (condition-case err (load (expand-file-name ld-entry ld-root) nil nil t)
-         (file-missing (setq ld-failure err)))
-       (if ld-failure
-           (progn
-             (should (eq ld-case 'qd))
-             (should (equal (car (last ld-failure)) "ob-supertag-query-block"))
-             (princ (format "LD-EXPECTED-LOAD-FAILURE %S link=%S query=%S api=%S store=%S\n"
-                            ld-failure (featurep 'supertag-link) (featurep 'supertag-query)
-                            (fboundp 'supertag-query-node) (bound-and-true-p supertag--store))))
-         (princ (format "LD-ENTRY %S %s graph=%S\n" ld-case ld-entry (reverse ld-events)))
+      (let ((ld-hash (and (boundp 'supertag-text-link--owned-registrations)
+                        supertag-text-link--owned-registrations)))
+       (load (expand-file-name ld-entry ld-root) nil nil t)
+       (princ (format "LD-ENTRY %S %s graph=%S\n" ld-case ld-entry (reverse ld-events)))
          (when (equal ld-entry "supertag-services-sync.el")
            (should-not (featurep 'supertag-link))
            (should-not (member "supertag-link" ld-events)))
@@ -2001,7 +1984,7 @@
            ('owner
             (should (equal (symbol-file 'supertag-text-link-refresh 'defun)
                            (expand-file-name "supertag-link.el" ld-root))))
-           ((or 'header-empty 'header-plain 'nodes-empty 'nodes-plain 'qd-org)
+           ((or 'header-empty 'header-plain 'nodes-empty 'nodes-plain 'qd 'qd-org)
             (let* ((plain (memq ld-case '(header-plain nodes-plain)))
                    (nodes (memq ld-case '(nodes-empty nodes-plain)))
                    (file (expand-file-name "source.org" ld-tmp))
@@ -2129,7 +2112,7 @@
                 (princ (format "LD-NAMED-REAL-RESULT %S\n" nodes))
                 (should (equal '((:relation-name "ld-named" :target-id "ld-target"))
                                (plist-get (car nodes) :named-links))))))
-           (_ (error "Unknown LD case %S" ld-case)))))
+           (_ (error "Unknown LD case %S" ld-case))))
      (princ (format "LD-DONE %S %s\n" ld-case ld-entry))))
 
 (defun supertag-add-link-test--ld-child (case entry)

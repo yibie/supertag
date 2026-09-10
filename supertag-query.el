@@ -9,7 +9,8 @@
 ;; Node, Tag and Relation ordinary providers load on demand; Store owns physical indexes;
 ;; Text/date/file projection scans are local reads; Tag indexes remain derived.
 ;; Link formatting and Tag input providers also load on demand.
-;; Org query-block Babel registration runs when this library loads.
+;; The Babel executor is defined here; ob-supertag-query-block.el is the
+;; separate loader Org requires for `(supertag-query-block . t)'.
 ;; A projection is not disk/live equality.
 ;;; Code:
 (require 'cl-lib)
@@ -1579,10 +1580,10 @@ invalid param renders as a one-line error string instead of a table."
 
 ;;; --- Initialization and Configuration ---
 
-;; Org Babel registration - new language name
-(with-eval-after-load 'org
-  (add-to-list 'org-babel-load-languages '(supertag-query-block . t))
-  (add-to-list 'org-babel-default-header-args '(supertag-query-block . ((:results . "raw")))))
+;; Per-language Babel defaults.  `org-babel-load-languages' is reserved for
+;; libraries named ob-<language>, whereas this executor lives in this file.
+(defvar org-babel-default-header-args:supertag-query-block
+  '((:results . "raw")))
 
 ;;; --- Guided query builder and syntax reference ---
 

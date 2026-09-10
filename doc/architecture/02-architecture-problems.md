@@ -1,3 +1,5 @@
+The legacy schema/table/kanban/search/capture entry points described here are archived; see README for the current workflow.
+
 # Supertag 当前架构问题审计
 
 > 核心判断：问题真实、值得修，但不值得重写。系统已经有正确的所有权模型和数个可靠深模块；风险来自这些新边界尚未成为唯一入口。最严重的问题不是“大文件”，而是同一个事实可按不同顺序、经不同写入 API、触发不同事件被修改。
@@ -117,7 +119,7 @@ Automation 当前保留了旧异步 queue、同步 event router、commit hook �
 
 这不是单纯“1139 行太长”，而是变化原因不同：领域 read model 随 schema/ownership 变化，DSL 随语法变化，排序随 UI/value semantics 变化，builder 随配置 API 变化。把它们放在同一 public namespace，会迫使调用者挑选内部工具。
 
-实际已经发生越界：`supertag-ui-query-block.el` 包装并调用 query 模块的 `--sort-value`、`--numeric`、`--value<` 私有函数，[`supertag-ui-query-block.el:122`](../../supertag-ui-query-block.el#L122)。同时：
+实际已经发生越界：`supertag-query-block.el` 包装并调用 query 模块的 `--sort-value`、`--numeric`、`--value<` 私有函数，[`supertag-query-block.el:122`](../../supertag-query-block.el#L122)。同时：
 
 - Query Engine 有自己的 numeric/value comparison 和 sort；
 - Query Block 为 header sort 再实现一套；

@@ -1,3 +1,5 @@
+The legacy schema/table/kanban/search/capture entry points described here are archived; see README for the current workflow.
+
 # Supertag 渐进式重构与优化计划
 
 > 目标：不替换 Store、不重写 View、不改变持久化格式，先把所有权和提交语义收敛成唯一道路，再删除重复实现。每一步都必须保持仓库可运行、可回退，并用现有 contract tests 加少量静态 guard 证明边界真的收紧了。
@@ -296,7 +298,7 @@ reconcile 一个 node 或一个 complete snapshot 分别形成清楚的 operatio
 
 #### Commit 3.3：迁移 Query Block 与 Table
 
-Query Block header sort 和 Table filter/sort 编译为 Query Engine transform。删除 [`supertag-ui-query-block.el:122`](../../supertag-ui-query-block.el#L122) 对 private query helper 的调用，以及 Table 的重复 comparator。
+Query Block header sort 和 Table filter/sort 编译为 Query Engine transform。删除 [`supertag-query-block.el:122`](../../supertag-query-block.el#L122) 对 private query helper 的调用，以及 Table 的重复 comparator。
 
 #### Commit 3.4：拆物理文件
 

@@ -1,10 +1,22 @@
+本文描述的 schema/table/kanban/search/capture 旧入口已归档，当前入口见 README。
+
 # Supertag 数据主权宪章
 
-- Status: Accepted
+- Status: Historical / superseded as default architecture authority
 - Date: 2026-08-12
 - Scope: 数据所有权、写入方向、重建与恢复语义
 
-Supertag 的长期模型是：
+## 说明
+
+本宪章已退出默认架构裁决，当前模型见 [MODEL_CN.md](../MODEL_CN.md)。
+下文稳定Semantic Tag、schema、独立DB语义写者、固定Query/raw Store限制及命令名称
+只描述旧模型，不约束新落点或恢复旧默认产品。一个事实一个owner、文档与
+非重建数据保护继续有效；退出旧模型不允许删历史facts、备份或未解冲突。
+旧迁移命令和.phase路径是历史来源，不是当前操作建议，不应照此运行真实库。
+
+## 历史正文（原章节编号保留）
+
+当时的模型是：
 
 > Org 文档主权 + 数据库语义主权 + 可丢弃查询投影。
 
@@ -54,11 +66,10 @@ Store 是当前的物理容器，不是整个系统的单一真相源。一个�
 
 ## 4. Reindex 不是数据库恢复
 
-公开命令 `M-x supertag-reindex-org` 会从一个完整 Org 快照重建现有 Store 内
+公开命令 `M-x supertag-sync-full-rescan`（实现函数 `supertag-reindex-org`）会从一个完整 Org 快照重建现有 Store 内
 Org 派生的 node、Tag Occurrence、Document Link 及其派生索引；快照不完整时
 中止且不修改 Store。它不是 whole-store reset，也不能恢复 schema、field value、
-Board、Automation 等不可重建的 Semantic Facts。旧命令
-`M-x supertag-sync-full-rescan` 只作为兼容别名保留；新代码和文档必须使用公开命令。
+Board、Automation 等不可重建的 Semantic Facts。内部代码直接调用 `supertag-reindex-org`；面向用户的文档只写公开命令。
 
 目标 `Reindex` 契约只允许重建 Document Projection 和 derived indexes。
 `Semantic Restore` 则从备份或同步副本恢复不可重建的 Semantic Facts。两者不得混称。
@@ -84,7 +95,7 @@ Board、Automation 等不可重建的 Semantic Facts。旧命令
 
 ## 7. 相关文档
 
-- 领域术语：`CONTEXT.md`
+- 领域术语：`MODEL_CN.md` 第 2 节
 - 决策记录：`.phrase/phases/phase-ownership-separation-20260812/adr_ownership_constitution_20260812.md`
 - 当前/目标代码地图：`.phrase/phases/phase-ownership-separation-20260812/tech-refer_ownership_separation_20260812.md`
 - 任务顺序：`.phrase/phases/phase-ownership-separation-20260812/task_ownership_separation_20260812.md`

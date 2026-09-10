@@ -1,19 +1,30 @@
 # Supertag – 在 Emacs 里，把你的 Org 文件变成结构化知识库
 
+<!-- P1 development -->
+## 开发验证
+
+首条替换读路径 `supertag-note-query-read-node` 返回隔离的节点/Org 属性投影，
+由现有 Node View builder 直接消费。投影不证明 disk/live 相等；公开加载链仍有
+旧 tag、relation 和业务依赖，本片不改 writer 或队列。
+
+运行 `bash test/run-tests.sh` 执行 contract、compat 与具名 transition；
+`bash test/run-tests.sh --guidance` 执行轻量指导检查。
+历史 field/Board 断言须显式运行 `bash test/run-tests.sh archive`，
+Board npm/build 则是独立的手动 CI 选项。本地 runner 不安装依赖。
+范围及日志见[测试指南](test/README.md)。
+本片不声称完整包隔离、fresh-package 安装、Embark 集成或其余整修包已经验收。
+<!-- /P1 development -->
+
 [中文](./README_CN.md) | [English](./README.md)
 
-Supertag 把普通的 Org 标题变成一个**可结构化查询的知识库**。不依赖外部服务，不需要 Python，你的 `.org` 文件始终是纯文本——我们只是让它变聪明了。
+Supertag 帮你在 Org 中**写笔记、连接想法、找回旧内容**。用标题和正文记录，用标签组织，用链接关联。不需要先定义字段或设计表格，你的 `.org` 文件始终是纯文本。
 
 > **从 Org-Supertag 升级？** 6.0 是不保留兼容别名、也不自动搬迁数据的
 > 破坏性改名。启动前请先阅读 **[迁移到 Supertag](doc/MIGRATING-TO-SUPERTAG.md)**。
 
-> **⚠️ 数据库仍在使用旧的 Tag 嵌套字段？**
-> 用当前版本编辑字段前，请**先完成全局字段迁移**。全局字段模型现已强制启用；`supertag-use-global-fields` 已废弃，设置它不会改变读写路径。
-> 具体步骤见 [`doc/GLOBAL-FIELD-MIGRATION-GUIDE_CN.md`](doc/GLOBAL-FIELD-MIGRATION-GUIDE_CN.md)。
+> **从书写开始**：先把想法写下来。需要整理时加一个标签，需要关联时插入链接；之后用 Stream 集中阅读，用 Discovery 搜索全库。
 
-> **为什么这很重要**：你有没有试过"找出所有还没读的论文"？或者"@小王负责的、本周到期的任务"？纯 Org-mode 做不到，除非你手动维护 PROPERTIES 抽屉再 grep。Supertag 让这件事变成点几下鼠标。
-
-> **📖 准备开始？** 先读 **[Supertag 的一天](doc/A-DAY-WITH-SUPERTAG_CN.org)**——一个人的完整日常工作流，所有 Elisp 配置都可以 copy-paste，用 `C-c C-v C-t` 提取到你的配置里。(English: [A Day with Supertag](doc/A-DAY-WITH-SUPERTAG.org))
+> **准备开始？** 按下方“安装与首次运行”和“真实工作流”操作。历史长篇指南 [Supertag 的一天](doc/A-DAY-WITH-SUPERTAG_CN.org) 仍包含已封存的视图与字段流程，不应照搬为当前配置。
 
 ---
 
@@ -21,17 +32,27 @@ Supertag 把普通的 Org 标题变成一个**可结构化查询的知识库**�
 
 | 没有 Supertag | 有 Supertag |
 |---|---|
-| 每个字段都要手写 `:PROPERTIES:` 抽屉 | 打一次 `#tag`，定义一次字段，之后在表格视图里填 |
-| `grep` + 正则找"高优先级本周任务" | `M-x supertag-search`，结构化查询，秒出结果 |
-| 不同笔记之间靠复制粘贴关联 | 输入 `[[` 后补全，只写一条正向 Org link，并显示上下文 Backlink |
-| 每开一个新项目都要从零搭跟踪系统 | 定义一次 `#project` 的字段模板，终身复用 |
-| "那个会议记录到底写在哪了？" | 按日期、参与人、决议查 `#meeting` |
+| 同一主题的笔记散落在多个文件里 | 给标题加 `#tag`，在 Stream 中集中阅读 |
+| 想不起旧笔记的标题或位置 | 打开 Discovery 随机阅读，按 `s` 搜索全库关键词 |
+| 需要连接两段相关的想法 | 输入 `[[` 后补全，建立普通 Org 链接并查看反向引用 |
+| 阅读时想补充几句话 | 在 Stream 按 `e` 编辑源笔记，或回到原文继续写 |
 
-**核心理念**：你继续像往常一样写 Org 文件。Supertag 在后台读取它们，构建结构化索引，然后给你一个"类数据库"的视图层——建立在你的纯文本之上。
+**核心理念**：先写内容，需要时再组织。Supertag 为纯文本提供标签浏览、链接和搜索；字段系统不再是产品目标。Org properties 是可选的原生文本，已有属性和历史数据不会因此被删除。
 
 ---
 
 ## 安装与首次运行
+
+**可选依赖 Embark（推荐）：** 安装后可使用下面介绍的情景动作；SuperTag 本身不依赖 Embark。
+
+**可选依赖 superchat：** 请先自行加载并配置 superchat，再使用 `supertag-ai-extract-properties`（Embark 节点键 `x`，或菜单 `e`）。superchat 中配置的模型会提取属性候选，在 Node View 的 **Property candidates** 节逐条审阅；Accept 经现有 writer 保存到 Org PROPERTIES，Skip 丢弃候选且零写入。Supertag 不自带 LLM 客户端，不安装 superchat 不影响其它功能。提示词可通过 `supertag-ai-prompts` 定制。
+
+批量与取消：`supertag-ai-extract-tag-properties`（菜单 `w` → `E`）选一个标签后逐个提取其节点，本批次同一时刻只发一个请求（独立的既有 pending 请求可以共存并会被跳过）；批次结束打开 `*Supertag AI Plan*`，按文件列出全部候选（`k` 跳过一行，`a` 应用，`q` 退出）。应用只写你看到的那份计划：期间候选变了、或目标文件有未保存修改的节点，一律不写并计入汇总。`supertag-ai-cancel-extraction`（菜单 `w` → `C`）与节里的 [Cancel] 按钮取消单个节点；`supertag-ai-cancel-batch`（菜单 `w` → `B`）停止批次。无法解析的回复保留 [Show raw] 按钮，便于你在 superchat 里调整模型的 JSON 输出。
+
+
+**可选能力：相似笔记。** 安装并启动 Ollama（或兼容 `/api/embed` 的服务），用 `ollama pull bge-m3` 准备模型，再开启 `supertag-semantic-enabled`。Node View 会在未链接提及之后自动显示 **Similar notes (candidates)**。它通过 `curl` 异步向 `supertag-semantic-endpoint`（默认 `http://localhost:11434`）发送 Store 投影中的标题、大纲路径和每节点最多 1500 字自有正文；不写 Org、不自动建链。卡片显示节点级相似度和原文预览，不声称精确命中某段，也不代表概念同一。
+
+默认模型为 `bge-m3`。合成中文改写与中英互检探针中，`dengcao/Qwen3-Embedding-0.6B:Q8_0` 表现更好，中文为主的库推荐拉取该模型并修改 `supertag-semantic-model`；这只是合成数据证据，不保证真实库质量。模型改变会重建数据目录中的可丢弃 int8 side-car `supertag-semantic.el`。可按笔记调整 `supertag-semantic-min-similarity`（默认 0.4）和 `supertag-semantic-max-results`（默认 5）。维护菜单 **More maintenance → Data & setup** 提供 `supertag-semantic-rebuild`、`supertag-semantic-status`、`supertag-semantic-stop`；端点失败后本轮暂停，点击节内 [Retry] 或 rebuild 才再试。默认关闭，不增加包依赖。
 
 ```emacs-lisp
 ;; 用 straight.el 安装
@@ -43,7 +64,6 @@ Supertag 把普通的 Org 标题变成一个**可结构化查询的知识库**�
 
 1. **`M-x supertag-setup`** —— 引导式配置向导。它会报告当前状态，让你选择要同步的目录、选择 file-ID 来源（Org-roam、Denote 或两者都要）、设置持久化选项，并可选地执行首次扫描。
 2. **`M-x supertag-menu`** —— 按「记录、整理、查找、维护」组织的任务菜单。用它来发现命令，而不是死记硬背。
-3. **`M-x supertag-doctor`** —— 任何时候感觉不对劲都可以跑一下。它是一次完整的健康检查，并会引导你修复问题。
 
 就这些。不需要 API key，不需要运行数据库服务器。**你现有的 Org 文件直接就能用。**
 
@@ -53,11 +73,7 @@ Supertag 把普通的 Org 标题变成一个**可结构化查询的知识库**�
 
 **`M-x supertag-menu`** 按四类任务组织入口：**记录 Capture & Write**、**整理 Organize**、**查找 Find & View**、**维护 Maintain**。日常命令留在首屏，自动化、迁移、查询和显示等低频命令收进对应的 `More...` 二级菜单。这篇 README 如果你只记住一件事，记住它就够了。
 
-最省事的快捷键方案是内置的全局 minor mode：
-
-```emacs-lisp
-(supertag-act-mode 1)  ; C-c s → 默认动作，C-c S → 上下文动作菜单
-```
+Embark 是可选依赖（推荐）。可通过 `M-x package-install RET embark` 从 GNU ELPA 安装；装好后，`embark-act` 会在标题、#标签、id 链接、概念提及与选区上提供 Supertag 动作；标题上的 `x` 通过可选 superchat 提取属性候选。不安装也可通过 `supertag-menu` 与 M-x 使用全部命令。须在 Supertag 加载前将 `supertag-embark-integration` 设为 nil（或重启 Emacs）；已注册的集成在本次会话内保持有效。 Org 正文内以所在节点为对象，首标题前交给 Embark 原生对象。可写选区中 RET/`l` 添加链接，`t` 给区域内全部节点添加标签，`p` 将所选文字 Promote（沿用既有边界校验）。Stream、Discovery、Node View 节点卡片上 RET 回原文、`v` 打开 Node View；Node View 标签行支持 RET/`r`/`c`/`R`/`D` 标签动作。
 
 也可以用 `global-set-key` 把菜单绑到任何你喜欢的键上。
 
@@ -83,7 +99,7 @@ Supertag 把普通的 Org 标题变成一个**可结构化查询的知识库**�
 
 Org-roam 与 Denote 文件放在同一同步目录时，使用 `auto`。链接由每个节点自己的身份决定：Org-ID 节点使用 `id:`，Denote 文件节点使用 `denote:`。文件没有所选的持久化身份时，它仍是普通 Org 文件；SuperTag 不会为它生成临时 ID。
 
-修改设置后，执行 `M-x supertag-reindex-org`。
+修改设置后，执行 `M-x supertag-sync-full-rescan`。
 
 ---
 
@@ -91,69 +107,33 @@ Org-roam 与 Denote 文件放在同一同步目录时，使用 `auto`。链接�
 
 Supertag 只建立在三个简单想法上：
 
-### 1. `#tag` 把标题变成一条记录
+### 1. 用 `#tag` 把相关笔记放在一起
 
 ```org
 * Attention Is All You Need #paper
 ```
 
-`#paper` 标签的意思是"这个标题属于 'paper' 这个集合"。就像你在任何系统里打标签一样——只不过这个标签有超能力。
+给论文笔记加上 `#paper`，就可以在同一个 Stream 中阅读它们，不必把它们搬到同一个文件。
 
-### 2. 标签可以定义字段（就像数据库的列）
+### 2. 用正文记录，用链接关联
 
-`#paper` 这个标签打好之后，你就可以定义要追踪什么信息：
+摘要、疑问、结论都可以直接写在标题下面，不需要先填写一组属性。用 `supertag-add-link` 连接已有笔记；需要查看引用和提及时，打开 Node View。
 
-```
-authors  →  文本
-year     →  数字
-venue    →  文本
-status   →  选择（未读 / 阅读中/ 已读）
-rating   →  数字（1–5）
-```
+### 3. 在视图中阅读、搜索和继续写
 
-这些字段**每个标签只需要定义一次**（在 Schema View 里，`M-x supertag-view-schema`）。之后，每一个打上 `#paper` 的节点自动拥有这些字段。
-
-### 3. 视图让你浏览、填写、查询数据
-
-- **表格视图** (`M-x supertag-view-table`)：像一个针对你标签节点的电子表格。点列头排序，过滤，批量编辑。
-- **节点视图** (`M-x supertag-view-node`)：编辑单个节点的字段，带自动补全和校验。
-- **看板视图** (`M-x supertag-view-kanban`)：拖拽式的看板，适合 `#task`、`#project`。
-- **Stream View** (`M-x supertag-view-stream`)：把一个标签及其所有传递 `:extends` 后代节点显示为单列时间标题流。用 `n`/`p` 移动，按 `e` 打开完整源节点，按 `v` 进入 Node View 修改字段。
+- **节点视图** (`M-x supertag-view-node`)：只读查看节点已保存的 Org properties、标签、引用与提及。
+- **Stream View** (`M-x supertag-view-stream`)：把一个标签及其斜杠路径下的所有子标签（`#media` 含 `#media/book`）节点的完整集合显示为单列时间标题流。用 `n`/`p` 移动，按 `e` 编辑源标题及其自身正文（文件级节点显示整份文件），按 `v` 进入只读 Node View。`C-c C-c` 保存**整个源文件，包括其他已有草稿**，再投影节点并返回 Stream。`C-c C-k` 只撤销本会话尚未保存的编辑：原生 `C-x C-s` 成功保存后会成为新的取消基线，范围外编辑保留。保存失败保持编辑会话；保存后投影失败保留已落盘正文，并提供既有重试入口。
 
 ---
 
 ## 一步一步：你的第一个 5 分钟
 
-假设你是一个研究者，论文散落在各种笔记里。
+1. 打开或新建 Org 文件，用 `supertag-add-tag` 添加标签；Stream 与 Discovery 都以源文本为准。
+2. 在 Stream 或 Node View 按 `g` 刷新；在节点卡片按 `v` 打开 Node View。
+3. 用 `supertag-discovery` 搜索笔记；在标题、标签、链接或选区使用 Embark，可调用加链接、打标签和 Promote。
+4. 用 Org capture 模板新建笔记。需要版本化数据迁移时，先用 `supertag-migrate-preview` 预览，再用 `supertag-migrate-apply` 应用。
 
-### 第一步：给论文打标签
-
-光标移到任意 Org 标题，`M-x supertag-add-tag`，输入 `paper`：
-
-```org
-* Attention Is All You Need #paper
-```
-
-### 第二步：定义"论文"要追踪什么
-
-`M-x supertag-view-schema` → 找到 `paper` → 添加字段：
-
-| 字段 | 类型 |
-|------|------|
-| `authors` | 文本 |
-| `year` | 数字 |
-| `status` | 选择：未读、阅读中、已读 |
-| `rating` | 数字 1–5 |
-
-### 第三步：填数据
-
-`M-x supertag-view-table` → 选择标签 `paper`。你会看到一张包含所有 `#paper` 节点的表格。点任意单元格即可编辑。按 `year` 排序找最新论文。按 `status = 未读` 过滤看阅读队列。
-
-### 第四步：给更多论文打标签
-
-找到其他论文标题，加上 `#paper`。它们会自动出现在表格里。
-
-**搞定。你现在有了一个可查询的研究文献库。** 整个过程没有手写 PROPERTIES 抽屉，没有复制粘贴，没有手动整理。
+Table、Schema、Kanban、Board、Graph 和独立 Ontology 入口已封存，不属于当前工作流。
 
 ---
 
@@ -167,14 +147,14 @@ rating   →  数字（1–5）
 * CLIP Paper #paper
 ```
 
-在 `#paper` 上定义字段：`authors`、`year`、`status`（未读/阅读中/已读）、`rating`。
+在标题下直接写阅读摘要、尚未理解的问题和自己的评论。
 
 **日常使用**：
-1. `M-x supertag-view-table` → 选 `paper` → 按 `status` 排序
-2. 过滤到 `未读` → 挑一篇 → 按 `o` 跳转到标题
-3. 读完：点 `status` 格 → 选 `已读` → 打分
+1. `M-x supertag-view-stream` → 选 `paper`；按 `g` 刷新，按 `v` 查看节点
+2. 在条目上按 `e` 补充阅读笔记，`C-c C-c` 保存整个源文件（包括其他已有草稿）
+3. 按 `v` 打开 Node View：属性、引用、提及与语义候选一处可见
 
-**为什么方便**：你按状态和评分找论文，而不是在 50 个标题里来回翻、逐个读标题。
+**为什么方便**：集中阅读同一主题的笔记，按关键词找回内容，不必先录入评分和阅读状态。
 
 ### 📋 项目任务跟踪
 
@@ -184,14 +164,14 @@ rating   →  数字（1–5）
 * 部署 v2.1 #task
 ```
 
-在 `#task` 上定义字段：`status`、`priority`、`due`、`assignee`。
+在正文中写清下一步；需要任务状态或时间安排时，可以继续使用原生 Org TODO 和时间戳。
 
 **日常使用**：
-1. `M-x supertag-view-kanban` → 选 `task` → 按 `status` 分列
-2. 拖拽任务在不同列之间推进
-3. `M-x supertag-search` → `(and (tag "task") (field "priority" "high"))` 找紧急项
+1. `M-x supertag-view-stream` → 选 `task`，集中阅读任务笔记
+2. 在 Stream 里按 e 编辑来源、g 刷新
+3. 执行 `M-x supertag-discovery`，按 `s` 输入空格分隔关键词，阅读全部匹配笔记
 
-**为什么方便**：你的任务分散在不同的 Org 文件里（会议记录、项目文件），但在一个看板上你看到全部。
+**为什么方便**：你的任务分散在不同的 Org 文件里（会议记录、项目文件），但在一个 Stream 里你看到全部。
 
 ### 📝 会议记录与决议追踪
 
@@ -199,12 +179,12 @@ rating   →  数字（1–5）
 * 2024-11-15 迭代规划 #meeting
 ```
 
-在 `#meeting` 上定义字段：`date`、`participants`、`decisions`、`action-items`。
+把参会人、讨论和决议写在正文里，需要时用普通列表记录行动项。
 
 **日常使用**：
-1. `M-x supertag-capture` → 选 `meeting` 模板 → 填字段
-2. 之后：`M-x supertag-search` → `(tag "meeting")` → 按日期范围过滤
-3. "Q4 所有决议" 几秒找到
+1. 直接写 Org 标题，或使用已有的 `org-capture` 配置
+2. 之后：执行 `M-x supertag-discovery`，按 `s` 搜索标题、标签、正文与 Org 属性值
+3. 输入正文中实际出现的关键词，例如 `meeting 发布`；多个关键词需全部匹配
 
 **为什么方便**：会议记录在它们的自然位置（项目文件里），但你跨所有文件统一查询。
 
@@ -215,176 +195,69 @@ rating   →  数字（1–5）
 | 你想做什么 | 命令 | 效果 |
 |---|---|---|
 | 打标签 | `M-x supertag-add-tag` | 添加 `#tag` 到标题，节点自动出现在该标签的表格里 |
-| 看一个标签的所有节点 | `M-x supertag-view-table` | 电子表格视图。可排序、过滤、直接编辑单元格 |
-| 按时间浏览一个标签 | `M-x supertag-view-stream` | 单列标题流，包含传递 `:extends` 后代；按 `e` 打开完整源节点 |
-| 编辑单个节点的字段 | `M-x supertag-view-node` | 表单视图，带自动补全、选择器和校验 |
-| 一次填完节点字段 | `M-x supertag-edit-fields` | 依次询问一个 Tag 的全部字段，最后把改动一起提交 |
-| 看板视图 | `M-x supertag-view-kanban` | 拖拽式看板，列之间移动 |
-| 定义标签字段 | `M-x supertag-view-schema` | 增删字段、设置类型、配置继承关系 |
-| 定义类型化关系 | Schema View 中按 `a l` | 声明 source/target Type、正反向名称与基数 |
-| 连接类型化节点 | `M-x supertag-link-menu` | 只显示并创建符合当前节点 Type 的关系 |
-| 用代码声明 Type、Field、Link | 在 Elisp 文件中写 `supertag-defontology`，然后 `M-x supertag-ontology-preview` / `M-x supertag-ontology-apply` | 加载只注册声明；preview 把每个变更标为 SAFE / BEHAVIORAL / DESTRUCTIVE；apply 在一个事务中部署 |
-| 对节点执行 Action | `M-x supertag-action-run`（或在 Node View 按 `A`） | 先显示计划效果（`set-field status = "active" -> "done"`），再按该 Action 的 Policy 执行 |
-| 合并重复标签 | Schema View 中用 `m m` 标记，再按 `m M` | 预览后合并到新/已有 tag；原子更新字段、节点、引用和 Org 文件 |
-| 快速捕获新节点 | `M-x supertag-capture` | 模板化快速录入，自动写入 Org 文件 |
-| 搜索 | `M-x supertag-search` | 结构化查询，结果可导出到文件 |
-| 关联节点 | 输入 `[[` 后补全，或执行 `M-x supertag-reference-insert` | 复用已有节点或显式创建 concept，只写 source 的正向 Org link，target Backlink 自动派生 |
+| 看一个标签的所有节点（封存 UI） | 显式加载 `supertag-view-table`，再执行 `M-x supertag-view-table` | 旧电子表格视图；默认不加载、不展示入口 |
+| 按时间浏览一个标签 | `M-x supertag-view-stream` | 完整标签及后代标题集合；`e` 编辑源节点，`C-c C-c` 保存整文件再投影，`C-c C-k` 撤销未保存会话编辑并保留原生成功保存 |
+| 查看节点的 Org properties | `M-x supertag-view-node` | 只读显示已保存的投影属性、标签、引用与提及 |
+| 定义类型化关系（封存 UI） | 显式加载 `supertag-view-schema`，再在 Schema View 中按 `a l` | 旧 schema 编辑器；不再是默认入口 |
+| 添加或查看关系 | 执行 `M-x supertag-add-link`（前缀参数输入关系名），再打开 Node View | 普通链接保留 `id`/`denote`；`[[supports:NODE-ID]]` 等命名链接是保存的文本，可使用配置名称或本会话新输入名称 |
+| 查找或明确新建节点 | `M-x supertag-find-node`；用 `C-u M-x supertag-find-node` 在另一窗口操作 | 已有节点只导航、不写入；无匹配时须明确选择 Create 并选择完整创建模板。Find 不在来源处插入链接，也不执行 Promote 监视 |
+| 用代码声明 Type、Field、Link（封存流程） | 显式加载 `supertag-ontology`，再使用 `supertag-defontology` 与 `M-x supertag-ontology-preview` / `M-x supertag-ontology-apply` | 旧 ontology 部署仍可从封存组件使用，不属于默认命令面 |
+| 执行封存的 Ontology Action | 显式加载 `supertag-ui-action`，再执行 `M-x supertag-action-run` | 旧 Policy-aware 实现仍可使用，但 Node View 不再加载、列出或执行这些 capabilities |
+| 合并重复标签 | 在当前标签工作流中预览并合并；Schema View 已封存 | 预览后合并到新/已有 tag；Schema 改名经预览确认后复用 Org writer，逐文件写入 |
+| 捕获新节点 | `M-x org-capture` | 使用标准 Org Capture；Supertag 模板可继续使用其内部收尾逻辑 |
+| 重新发现笔记 | `M-x supertag-discovery` | 默认打开 10 条随机完整正文；`s` 搜索全库并显示全部关键词匹配，`g` 刷新，并可将已选普通引用插回起始笔记 |
+| 关联节点 | 输入 `[[` 后补全，或执行 `M-x supertag-add-link` | 链接已有节点或显式按模板新建独立目标，只写 source 的正向 Org link，target Backlink 自动派生 |
 | 处理未链接提及 | 打开 Node View，使用 **Unlinked Mentions** | 将普通文字中的 title/alias 提及作为临时候选；可链接一次、链接来源节点内全部，或在该来源节点忽略 |
-| 预览 Ontology 迁移 | `M-x supertag-ontology-migration-preview` | 将迁移声明与实时破坏性 Schema diff 对照，在写入前列出所有数据动作 |
-| 执行 Ontology 迁移 | `M-x supertag-ontology-migration-apply` | 在一个事务中转换数据、部署破坏性 Schema、重建派生关系并写入已执行账本 |
-| 将选中文本提升为概念 | `M-x supertag-promote-concept` | 创建/复用概念节点，从当前节点建立 reference，原文保持普通文本 |
-| 确认 Agent 填写的字段值 | 在 Node View 按 `c` | 值不变，来源记为 human，⟨AI⟩ 角标消失 |
+| 按模板提升文本或标题 | `M-x supertag-promote` | 预览实际内容后明确复用/新建；选区替换为普通 Org 链接 |
 | 高亮概念提及 | `M-x supertag-concept-link-mode` | 将概念 title/alias 的提及显示为琥珀色语义高亮，不落库为链接 |
-| 操作光标下的对象 | `M-x supertag-act` | 列出适用于当前 tag、node、field、mention、选区、link、button 或 table cell 的动作，默认动作排第一 |
-| 直接执行默认动作 | `M-x supertag-act-dwim` | 不弹菜单，立即执行光标处对象的默认动作 |
-| 重建 Org 索引 | `M-x supertag-reindex-org` | 从一个完整快照重建 Document Projection；绝不恢复 Semantic Facts |
+| 光标处的情景动作 | `embark-act`（Embark，可选） | 识别对象并提供对应动作；RET 为默认动作 |
+| 重建 Org 索引 | `M-x supertag-sync-full-rescan` | 从一个完整快照重建 Document Projection；绝不恢复 Semantic Facts |
 
-除了单条命令，Supertag 还提供一套小巧的 S-expression 查询语言，可以组合标签、字段、日期、全文搜索和类型化 Link 遍历，例如
-`(and (tag "task") (not (field "status" "done")))`，或 `(link work/tasks (field "status" "blocked"))`。可以把它写进 `supertag-query-block`
-babel 代码块，用 `M-x supertag-query-save` 保存以便复用，或者用 `M-x supertag-query-build`
-交互式构建。完整语法见 `doc/QUERY.md`（英文）。
+Discovery 初始页是不排序、无重复的阅读抽样。可通过
+`supertag-discovery-initial-sample-size` 调整默认的 10 条；关键词搜索始终显示
+全部匹配，不受该设置限制。
+
+需要把结果留在笔记中时，可使用 `supertag-query-block` 代码块，例如 `(tag "paper")`。通过 `M-x supertag-add-query-block` 插入，或用 `M-x supertag-query-build` 构建查询。进阶语法见 `doc/QUERY.md`；日常搜索不需要学习查询语言。
 
 可选快捷键示例：
 
 ```emacs-lisp
 (with-eval-after-load 'org
-  (define-key org-mode-map (kbd "C-c n l") #'supertag-reference-insert)
-  (define-key org-mode-map (kbd "C-c n p") #'supertag-promote-concept)
+  (define-key org-mode-map (kbd "C-c n l") #'supertag-add-link)
+  (define-key org-mode-map (kbd "C-c n p") #'supertag-promote)
   (define-key org-mode-map (kbd "C-c n o") #'supertag-concept-open-at-point))
 ```
 
 ### Create-or-link 与上下文 Backlink
 
-在普通 Org 正文中输入 `[[`，即可补全已有节点的 title 或 alias。没有精确
-匹配时，补全列表才会出现显式的 `[Create new concept]` 项；仅仅输入文字不会
-创建数据。选中后，临时写法会被替换为规范的物理 Org link，再由既有文档投影
-流程生成 Backlink。系统不会向 target 文件写入一条反向链接。
+在普通 Org 正文中输入 `[[`，即可补全已有节点的 title 或 alias。补全会为当前标题提供显式的 `[Create new node]` 项，即使已有同名节点也一样。选中该项会创建新的 ID；未匹配的直接输入还会经过一次明确的新建选择，仅输入文字不会创建数据。选中后，临时写法会被替换为规范的物理 Org link，再由既有文档投影流程生成 Backlink。系统不会向 target 文件写入一条反向链接。
 
-中文等全角输入法可以直接输入 `【【` 代替 `[[`：两种写法触发同一套补全，
-输入法自动配对出来的 `】】` 会在写入链接时一并消掉。可识别的括号对由
-`supertag-reference-shorthand-openers` 决定，可以自行追加。
+中文等全角输入法可以直接输入 `【【` 代替 `[[`：两种写法触发同一套补全，输入法自动配对出来的 `】】` 会在写入链接时一并消掉。可识别的括号对由`supertag-reference-shorthand-openers` 决定，可以自行追加。
 
-`M-x supertag-reference-insert` 提供不依赖弹窗的同一流程；存在选区时，选中文本
-会作为初始标题。新 concept 默认追加到当前 vault 或匹配 sync root 下的
-`concepts.org`，不再询问文件和位置；使用前缀参数可以显式选择目标，也可以
-自定义 `supertag-concept-create-target-function` 接入 Org-roam、Denote 或其他
-capture 系统。
+`M-x supertag-add-link` 提供同一流程；存在选区时保留选中文字作为链接说明，没有选区时使用目标标题。前缀参数会询问精确关系名。新输入的名称只注册在当前Emacs 会话，不写用户配置；已配置名称可在重启和重建后继续读取，未配置名称的冷启动自动发现属于后续里程碑。
 
-Node View 现在分别显示当前节点的 **References** 与 **Backlinks**。每个条目都带
-可跳转标题、文件与 outline path、关系类型，以及围绕 title/alias 提取的正文
-片段。它们只是由现有 Store 数据即时生成的 Projection，不是第二套引用索引。
+新目标使用 `supertag-creation-templates`。每个纯数据 plist 提供 `:key`、`:name`、绝对 `:target-file`，并可带 `:tags`、`:properties` 和 `:body`。例如：
+
+```emacs-lisp
+(setq supertag-creation-templates
+      '((:key "c" :name "Concept"
+         :target-file "/path/to/vault/concepts.org"
+         :tags ("concept")
+         :properties (("STAGE" . "seed"))
+         :body "初始正文。\n\n** 来源\n")))
+```
+
+默认模板落到有效 vault 的 `concepts.org`。即使标题同名，明确新建仍产生新 ID；选择已有目标时不会套用模板，也不会修改或搬移目标。
+
+Node View 现在分别显示当前节点的 **References** 与 **Backlinks**。每个条目都带可跳转标题、文件与 outline path、关系类型，以及围绕 title/alias 提取的正文片段。它们只是由现有 Store 数据即时生成的 Projection，不是第二套引用索引。
 
 ### 未链接提及（Unlinked Mentions）
 
-Node View 还会在其他来源节点的普通正文中查找当前节点的 title 与 alias。未链接
-提及只是候选，不会落库；只有用户执行 **Link** 或 **Link all in node** 后，才会
-写成规范 Org ID Link，并沿既有投影流程成为 Backlink。已有 Org Link 与 literal/code
+Node View 还会在其他来源节点的普通正文中查找当前节点的 title 与 alias。未链接提及只是候选，不会落库；只有用户执行 **Link** 或 **Link all in node** 后，才会写成规范 Org ID Link，并沿既有投影流程成为 Backlink。已有 Org Link 与 literal/code
 区域不会重复匹配；中文匹配也不会套用错误的 ASCII 词边界。
 
-**Ignore in node** 会把 `SUPERTAG_IGNORE_MENTIONS` 写到来源 heading，因此忽略决定是
-可检查、可同步的 Org 数据，而不是隐藏缓存。发现过程只使用小型、不可持久化的
-解析缓存。完整边界见 `UNLINKED-MENTIONS.md`。
+**Ignore in node** 会把 `SUPERTAG_IGNORE_MENTIONS` 写到来源 heading，因此忽略决定是可检查、可同步的 Org 数据，而不是隐藏缓存。发现过程只使用小型、不可持久化的解析缓存。完整边界见 `UNLINKED-MENTIONS.md`。
 
-### 用代码声明 Ontology
-
-当某个标签/字段模式稳定下来后，可以改用 Elisp 声明，而不是在 Schema View 里
-手工维护：
-
-```emacs-lisp
-(supertag-defontology work
-  :version 1
-  (field status :label "Status" :type options :options (idea active blocked done))
-  (type project :label "Project" :fields (status))
-  (type task    :label "Task"    :fields (status))
-  (link tasks :label "Tasks" :inverse-label "Project"
-        :from project :to task :from-cardinality many :to-cardinality one))
-```
-
-加载文件只注册声明。`M-x supertag-ontology-preview` 会对照实时 Store 给出部署
-计划，每个操作被标为 **SAFE**（新增字段、类型、Link，改 label）、
-**BEHAVIORAL**（Function、Action、Policy——apply 时要求显式批准）或
-**DESTRUCTIVE**（字段类型变更、删除选项、收紧基数——没有配套迁移时 apply 直接
-拒绝）。`M-x supertag-ontology-apply` 在一个事务中部署；重复部署未变化的声明
-不会产生任何操作。
-
-已部署的 Type 同时响应声明里的 key 和 label：上面的模块部署后，`#project` 与
-`#Project` 都绑定到 Project；在 `type` 表单上加 `:aliases (proj 项目)` 可以再增加
-写法。你在 Schema View 里手工加的别名会被保留。
-
-之后类型化 Link 会强制检查端点类型和基数（`Link Tasks permits only one source
-for target node …`），查询可以沿 Link 遍历：
-`(and (tag "Project") (link work/tasks (field "status" "blocked")))`。Node View
-会列出节点的类型化 Link；再加上 `function`、`action`、`policy` 表单后，还会显示
-可计算的 Functions 和可执行的 Actions。可从 `examples/personal-work-ontology.el`
-起步；完整语法见 `ONTOLOGY-LINK-WORKFLOW-V5.md` 与
-`ONTOLOGY-FUNCTION-ACTION-V10.md`。
-
-### Ontology 迁移
-
-普通 Ontology 部署只接受安全增加和兼容更新。Field 类型转换、移除 Type/Field
-关联、收紧 Link 基数等破坏性变更，必须配套显式的 `supertag-defmigration` 声明。
-加载迁移文件只注册纯声明；Preview 不写 Store；Apply 则在一个事务中完成数据
-动作、Schema 部署、派生关系对账和 Store-owned 已执行账本。
-
-Preview 还会标出会悄悄清空数据的转换：当 `transform-field` 回调把已有值映射成
-`nil` 时，计划里会出现 `WARNING :transform-clears-value` 和 `cleared=N` 计数。
-要有意删除某个值，请返回 `supertag-ontology-migration-drop`。
-
-Migration DSL v1 刻意只支持 `transform-field`、`detach-field` 与 `tighten-link`。
-每一个破坏性操作都必须被精确覆盖；Type/全局 Field 删除、父类型或 Link 端点
-改变、runtime rebinding 仍然直接拒绝，不提供模糊的 force 开关。详见
-`ONTOLOGY-MIGRATION-V8.md` 与 `examples/ontology-migration-v8-example.el`。
-
-本阶段不会再实现一套 Transclusion。现有嵌入能力继续由
-`supertag-ops-embed.el`、`supertag-services-embed.el` 与
-`supertag-ui-embed.el` 统一拥有。
-
-### Agent 填写的字段值与纯数据 API
-
-设计字段的价值，在于有别人替你填。当 Agent（例如 superchat 通过它的 Supertag
-桥接）写入一个字段时，值本身和手填的值存在同一个地方，旁边多一条**来源
-（provenance）**记录：谁断言的（`:agent` 或 `:human`）、什么时候、用的哪个模型、
-以及当时节点正文的 `:hash`。Node View 会给这类值加上 **⟨AI⟩** 角标；如果之后节点
-正文改过，角标变成 **⟨AI · outdated⟩**；Table View 的单元格则标记 ⟨AI⟩ / ⟨AI?⟩。
-在 Node View 的字段上按 `c` 即可确认：值不变，来源升级为 `:human`，角标消失。
-你在 Node View、Table View 或看板里亲手编辑的值会记为 human；sync、automation
-或旧代码写入的值没有来源记录，视为普通事实。
-
-Agent 一侧通过 `supertag-api.el` 里的六个纯数据函数和 Supertag 对话：
-`supertag-api-query`、`supertag-api-node`、`supertag-api-schema` 负责读；
-`supertag-api-set-field`、`supertag-api-link`、`supertag-api-add-field` 负责写。
-参数与返回值都是普通 Elisp 数据（字符串、数字、关键字、plist），
-`supertag-api-json` 可把结果转成 JSON，`supertag-api-catalog` 声明每个函数的
-效果（`:read` / `:write`）与参数，宿主据此把它们注册为 LLM 工具并套用自己的
-授权模型。写操作走的是与 UI 相同的校验和事务；`set-field` 会把 Agent 的值绑定到
-节点当前的 hash；`link` 只创建类型化 Link，不会伪造文档引用（那由 Org 正文拥有）。
-
-```emacs-lisp
-(supertag-api-set-field "node-id" "Status" "active" :model "claude-sonnet-5")
-;; => (:node "node-id" :tag "project" :field "status" :name "Status"
-;;     :value "active" :previous nil :changed t
-;;     :provenance (:origin :agent :at "…" :model "claude-sonnet-5" :source-hash "…"))
-```
-
-### Concept mention 的行为边界
-
-- Promote 只接受 Org node 内的非空文本。它会复用唯一的同名标题节点或创建新节点，建立一条显式 reference，并保持选区原文不变；同名 file-node 不会被静默转换为 concept。
-- Mention 只存在于显示层。Org link、code/verbatim、普通注释与 `COMMENT` 子树、keyword/drawer、source block 和表格都不会高亮。
-- 多个 concept 共用 title 或 alias 时，该词存在歧义。SuperTag 不会根据 hash table 顺序任意选择目标；文本保持普通显示，promote 会明确报告冲突。
-
-如果在 SuperTag 之外修改了 concept title 或 alias，请在已启用的 buffer 中执行 `M-x supertag-concept-refresh`。
-
-### 光标处上下文动作
-
-把光标放在 inline tag、node、field、concept mention、选区、Org link、Emacs button 或
-table cell 上，执行 `M-x supertag-act` 即可从适用于该对象的动作中选择，默认动作排在第一位。
-`M-x supertag-act-dwim` 则不弹菜单、立即执行默认动作。动作列表中始终保留完整
-`supertag-menu` 的入口，光标下没有语义对象时也会直接回落到该菜单。安装了 Embark 的用户，
-同样的对象也会成为 `embark-act` 的 target，执行动作时沿用最初检测到的完整对象。除非启用
-`supertag-act-mode`，两个命令都不设置默认按键；启用后 `C-c s` 直接执行默认动作，`C-c S`
-打开上下文动作菜单。完整命令目录仍通过 `M-x supertag-menu` 打开。
-
----
 
 ## 为什么不会增加负担
 
@@ -396,27 +269,21 @@ Supertag 从三个层面避免这个问题：
 
 你**永远不需要**通过 SuperTag 的视图来操作。正常写 Org。`#tag` 标记只是文本。如果你明天不用 SuperTag 了，你的文件是 100% 可读的 Org-mode——只不过多了一些 `#tag` 标记而已，丝毫不影响。
 
-### 2. 字段定义一次，永久复用
+### 2. 不必先设计结构
 
-你在 `#task` 上定义 `status`、`priority`、`due` 只需**一次**。之后每一个 `#task` 节点自动拥有这些字段。前期投入 30 秒，收益是永久性的。
+可以只有标题和正文，之后再加标签或链接。Supertag 不要求你为每类笔记定义字段、维护必填项，或把所有笔记整理成相同的格式。
 
 ### 3. 同步自动且安全
 
-Supertag 按定时器读取你的文件（可通过 `doc/SYNC-CONFIGURATION.md` 配置）。只有显式命令和 View 才会写入 Org；sync 与 reindex 不修改 Org 文件。`M-x supertag-reindex-org` 只重建现有 Store 中的 Document Projection；不可重建的 Semantic Facts 必须从数据库备份或同步副本恢复。
+Supertag 按定时器读取你的文件（可通过 `doc/SYNC-CONFIGURATION.md` 配置）。只有显式命令和 View 才会写入 Org；sync 与 reindex 不修改 Org 文件。`M-x supertag-sync-full-rescan` 只重建现有 Store 中的 Document Projection；不可重建的 Semantic Facts 必须从数据库备份或同步副本恢复。
 
-### 算一笔账
+### 从一篇阅读笔记开始
 
-**不用 SuperTag**——追踪论文：
-- 手写 `:PROPERTIES:` 抽屉：`:authors:`、`:year:`、`:status:`
-- 跨文件 `grep` `status.*unread`
-- 不能排序，不能过滤，没有表格视图
+1. 写一个标题，加上 `#paper`。
+2. 在正文中记下想法，给相关笔记插入链接。
+3. 用 Stream 阅读同类笔记，按 `e` 继续写；用 Discovery 的 `s` 搜索全库。
 
-**用 SuperTag**——追踪论文：
-- 给标题加 `#paper`（每个 2 秒）
-- Schema View 定义字段一次（30 秒）
-- 表格视图：排序、过滤、编辑（即时）
-
-**收益**：10 篇论文，省下约 5 分钟 PROPERTIES 打字时间，还白送一个实时更新的表格视图。100 篇论文，差距是小时级的。
+这些步骤不需要字段定义，也不需要属性抽屉。
 
 ---
 
@@ -426,12 +293,9 @@ Supertag 按定时器读取你的文件（可通过 `doc/SYNC-CONFIGURATION.md` 
 
 | 当你熟悉了…… | 可以试试这个 |
 |---|---|
-| 标签和表格视图 | **自动化规则**——条件触发自动填字段 (`doc/AUTOMATION-SYSTEM-GUIDE_cn.md`) |
-| 手动捕获 | **捕获模板**——预定义常用录入表单 (`doc/CAPTURE-GUIDE_cn.md`) |
+| 手动捕获 | **捕获模板**——复用常用笔记的正文骨架 (`doc/CAPTURE-GUIDE_cn.md`) |
 | 基本查询 | **查询块**——在 Org 文件里嵌入动态查询结果 (`doc/ABOUT-QUERY-BLOCK_cn.md`) |
-| 反复重建的标签/字段模式 | **用代码声明 Ontology**——一次声明 Type、Field 和类型化 Link，预览后部署 (`examples/personal-work-ontology.el`, `ONTOLOGY-LINK-WORKFLOW-V5.md`) |
-| 已经稳定的 Ontology 模块 | **Ontology Migration DSL**——预览并安全执行破坏性模型升级 (`ONTOLOGY-MIGRATION-V8.md`) |
-| 默认视图 | **自定义视图**——用原生按钮和可编辑字段构建声明式仪表盘 (`doc/VIEW_FRAMEWORK_DEV_GUIDE.md`) |
+| 默认视图 | **Node View 与 Discovery**——打开节点即见引用、提及与语义候选；Discovery 多选笔记并插回 (`doc/VIEW_FRAMEWORK_DEV_GUIDE.md`) |
 | 单资料库 | **多 Vault**——工作/个人分开管理 (`doc/SYNC-CONFIGURATION.md`) |
 | 写插件 | **插件开发指南**——自定义抽取器和扩展 (`doc/SUPERTAG-PLUGIN-GUIDE_cn.md`) |
 
@@ -442,47 +306,39 @@ Supertag 按定时器读取你的文件（可通过 `doc/SYNC-CONFIGURATION.md` 
 | 什么数据 | 存在哪 | 格式 |
 |---|---|---|
 | 你的 Org 文件 | 你配置的目录 | 纯 `.org` 文本 |
-| 结构化字段值 | `~/.emacs.d/supertag/supertag-db.el` | Emacs Lisp 数据 |
+| 文档投影、标签身份及历史语义数据 | `~/.emacs.d/supertag/supertag-db.el` | Emacs Lisp 数据 |
 | 同步状态 | `~/.emacs.d/supertag/sync-state.el` | 文件 mtime 和 hash |
 | 每日备份 | `~/.emacs.d/supertag/backups/` | 带时间戳的数据库快照 |
 
-**Org 文件拥有文档事实；数据库拥有语义事实。** 标题、正文、文档拓扑、Org properties、Tag Occurrence 和真实 Org link 属于文档；稳定 Tag identity、Schema、field value、Semantic Edge、Board、Automation 以及持久 Query/View 定义属于数据库。当前数据库也保存 Org 内容的可重建 Projection，但这些副本没有独立主权。
+**Org 文件拥有文档事实；数据库拥有语义事实。** 标题、正文、文档拓扑、Org properties、Tag Occurrence 和真实 Org link 属于文档。配置的精确链接类型（例如 `supports:`）投影为可重建的命名关系，并显示在两端 Node View 中；属性键不会派生关系。稳定 Tag identity、Schema、旧 Semantic Edge、Board、Automation 以及持久 Query/View 定义属于数据库。当前数据库也保存 Org 内容的可重建 Projection，但这些副本没有独立主权。
 
-`M-x supertag-reindex-org` 会从一个完整 Org 快照重建 node、Tag Occurrence、Document Link 及其派生索引；快照不完整时，它会中止且不修改 Store。它不是 whole-database reset，也不是 Semantic Restore，无法恢复不可重建的 Semantic Facts。没有备份或同步副本时丢失 `supertag-db.el`，就会永久丢失不可重建数据。完整规则见[《数据主权宪章》](doc/OWNERSHIP-CONSTITUTION_cn.md)。
+`M-x supertag-sync-full-rescan` 会从一个完整 Org 快照重建 node、Tag Occurrence、Document Link 及其派生索引；快照不完整时，它会中止且不修改 Store。它不是 whole-database reset，也不是 Semantic Restore，无法恢复不可重建的 Semantic Facts。没有备份或同步副本时丢失 `supertag-db.el`，就会永久丢失不可重建数据。完整规则见[《数据主权宪章》。
 
 ---
 
 ## 多机同步
 
-多机同步 `supertag-db.el` 有两种办法：**git 原生同步**（推荐——它真正懂合并），或者把数据目录放进同步文件夹服务（配置更简单，但"最后写入者赢"）。
+Git 同步只传输 Org 文本，每台机器从文档重建本地投影缓存；数据库、备份、锁和 presence 文件不由 Git 同步。
 
-### git 原生同步（推荐）
+### 多库隔离
 
-**机器 1**（第一次配置时）：
+Supertag 的各个库彼此隔离。自动切库只在通过 Org mode hook 打开 Org 文件时触发，默认关闭。切换前必须先保存当前库；保存失败或已开启 Git 同步模式时会拒绝切换。切库会清理临时候选、Automation 队列、延迟同步、scheduler 任务、AI 候选和迁移诊断。
 
-```
-M-x supertag-git-setup
-```
+scheduler 与 discovery 历史文件按当前库的数据目录动态计算。自动切库不会重新加载已经打开的 Org buffer；Node View 中若旧 ID 不属于当前库，刷新时显示空态，选取当前库节点后再显示内容。
 
-这会把你的 vault 纳入 git 管理：如果还没有仓库就初始化一个；如果数据库还没有被纳入仓库内，就把它搬迁到 `<repo-root>/.supertag/supertag-db.el`；并为 `supertag-db.el` 配置一个语义合并驱动，让不同机器上的并发编辑按字段合并，而不是互相覆盖。随后它会提示输入远端 URL——给它一个（任何空的 git 远端都行：GitHub、自建服务器、NAS）它就会创建首次提交并推送；留空则暂时保持本地状态（完全有效、受支持的状态——等有远端了再重新运行这个命令）。
+### Git Org 文本同步
 
-**机器 2**（以及之后的每一台机器）：
+先配置唯一的 `supertag-sync-directories` 根，再运行 `M-x supertag-git-setup`。它在该根初始化仓库（如需要）、写根 `.gitignore`，只提交 `*.org`（含子目录）和根 `.gitignore`，并可选配置 origin URL、推送；URL 留空则仅在本地使用。数据库留在 `supertag-data-directory`，不搬迁、不安装合并驱动。
 
-```
-M-x supertag-git-clone
-```
+旧仓若已经跟踪数据库或 `.gitattributes`，setup 会询问一次，然后仅从 Git 索引移除这些路径；磁盘文件和历史不删除。`supertag-git-sync-now` 只提示运行 setup，不擅自取消跟踪。索引中已有无关暂存文件时，自动提交拒绝并保留它们。
 
-给它同一个远端 URL 和一个本地目录。它会 clone、为*这台机器*配置合并驱动，并加载数据库。如果数据库缺失或无法读取，它只能从 clone 下来的 Org 文件重建 Document Projection；Semantic Facts 必须从数据库备份或同步副本恢复。
+其它机器运行 `M-x supertag-git-clone`，输入远端 URL 和空本地目录。它设置 Org 同步根，一律从克隆的 Org 文本重建并保存本地投影，不加载仓内数据库。非文档数据不通过本特性传输。
 
-**每个 clone 都必须自己跑一遍配置。** `merge.supertag-db.driver` 存在 `.git/config` 里，git 从不同步这个文件——所以机器 2 上 `supertag-git-clone` 配置驱动这一步不是可有可无的杂务，正是它让*这台*机器的合并变成语义合并，而不是退化成 git 默认的按行文本合并（退化后是什么样子见下面"冲突"一节）。
+`M-x supertag-git-sync-mode` 开启 Org 保存后的 debounce 提交、定时/焦点 fetch 与 merge、push。离线提交保留在本地，联网后续推；push 被拒绝时 fetch/merge 后仅重试一次。`M-x supertag-git-sync-now` 跳过 debounce。成功 pull 后仅将新增/修改的 Org 文件入既有队列，删除文件沿用 orphan 生命周期（`:file=nil`，保留宽限期后由既有 GC 处理），周期扫描仍作兜底。
 
-**可选的自动化：** `M-x supertag-git-sync-mode` 会开启一个后台循环，自动 debounce 提交你的改动、按定时器和焦点事件 fetch/merge、并推送——包括在联网恢复后一次性追赶断网期间积累的提交，不需要等一次新的编辑来触发。不开这个模式，手动 `git pull`/`git push`（或 `magit-pull`/`magit-push`）效果完全一样；这个模式只是便利层，不是正确性所在。
+**Org 冲突：** mode 保持开启，模式行出现 `!`，pull/debounce timers 暂停；首个冲突文件以 Emacs 内置 `smerge-mode` 打开。解决文本并保存后，运行 `supertag-git-sync-now`，才会暂存已解决文件、完成 merge commit、刷新本地投影、恢复 timers 并 push。仍有 marker 或冲突 buffer 未保存则继续暂停，不自动选边。启动时仓库已有冲突也进入相同状态。`M-: (supertag-doctor)` 列出根、仍跟踪的缓存与冲突文件。
 
-需要跳过 debounce 立即同步时，执行 `M-x supertag-git-sync-now`。模式开启后，正常的 `C-x C-c` 会检查尚未落盘的 Store、受管 working tree 改动、正在运行的 Git 操作，以及相对最近一次 fetch 的 ahead commit。没有本地改动时直接退出，即使远端 ahead 也不在退出时主动同步；有本地改动时选择同步，成功后 Emacs 自动退出，同步失败或期间又有新改动则保持打开。你也可以明确选择保留可恢复的 working tree/local commit 后退出。低层 `kill-emacs` 会按 Emacs 自身约定绕过这项正常退出查询。
-
-**冲突。** 数据库自身的编辑在常见情况下——两侧改的是不同节点或字段——会自动合并。当**同一个**字段在两侧被改成不同的值，或者纯 `.org` 正文在两侧改了同一行，git 会把那个文件留在真实的、未解决的冲突状态：对 `supertag-db.el` 本身，它会拒绝加载直到冲突解决（报错信息会点名文件并指向这里）；对 `.org` 文件，同步扫描器会跳过导入任何仍带冲突标记的文件，而不是把垃圾内容导入进来。不管哪种情况，`M-x supertag-doctor`（"8. Git Sync" 一节）都会列出具体哪些还没解决——像处理其他 git 冲突一样，手工解决或用 `magit`/`git checkout --merge`。
-
-**所有同步机器必须一起升级。** 6.0 起数据库文件采用新的磁盘格式（确定性、每实体一行——正是它让字段级 git 合并成为可能），只有 6.0+ 能读。一台还在 5.9.x 的机器拉取到 6.0 机器保存的数据库后，会*看起来*加载成功但库是空的——旧代码只读文件首行且不报错。它的保存守卫能防住实际数据丢失（空内存库拒绝覆盖非平凡文件），但在那台机器升级之前，一切看上去都"消失"了。所以：在任何一台机器用 6.0 保存之前，把共享这个 vault 的**每一台**机器都升级到 6.0+。升级本身自动完成（首次加载旧库时自动迁移，并在 `backups/` 留下 `supertag-db-premigrate-*` 与 `supertag-db-preformat6-*` 两类永不被自动清理的降级快照；想回退旧版，执行 `M-x supertag-restore`，从列表中选中对应快照、预览后确认恢复，然后立即退出 Emacs 并用旧版重新打开）。恢复命令会保留快照的旧格式；若另一 Emacs 实例持有数据库锁则拒绝覆盖，并先把当前状态（包括尚未落盘的修改）保存为唯一的 `backups/supertag-db-prerestore-*` 恢复点。`M-x supertag-doctor` 会报告当前磁盘格式与迁移快照数量。
+正常退出 Emacs 时可选择先同步尚未送出的 Org 改动，或明确保留在本地后退出。数据库保存独立于 Git 传输。
 
 ### 同步文件夹服务（Dropbox / iCloud / Syncthing）
 
@@ -494,7 +350,7 @@ M-x supertag-git-clone
 
 **5.9.0 的数据库锁并不能解决这个问题。** 从 5.9.0 起，Supertag 会对数据库文件加一个建议性的锁（`supertag-db-lock`），防止*同一台机器*上的两个 Emacs 实例互相踩踏。当前版本默认把本机锁放在 `temporary-file-directory/supertag-locks/`，不再把新锁写入网络/同步目录；它仍然只能保护"同机双开"，对跨机器场景没有意义。升级后，如果数据库旁还残留旧版本的 `.#supertag-db.el`，先确认没有旧版本 Emacs 正在使用该 vault，再删除这个陈旧锁文件即可。
 
-**presence（在场）告警。** 为了至少给同步文件夹的用户一个提醒（这不是锁——同步服务动辄几分钟的传播延迟决定了它在物理上不可能是锁），Supertag 会在数据库文件旁边写一个很小的 `supertag-presence.json` 文件，记录"最后是哪台主机碰过它、什么时候"。当你加载数据库时，如果发现另一台主机大约在最近 5 分钟内（`supertag-presence-stale-seconds`）还活跃过，就会弹出一条醒目的告警，点名那台主机并说明风险。**看到告警后怎么办：** 如果你确定另一台机器已经退出 Emacs，可以放心继续——这条告警只出现一次，不会重复弹出，直到另一台主机再次声明 presence 为止。如果不确定，先去那台机器上退出 Emacs。随时可以用 `M-x supertag-doctor` 查看当前 presence 文件记录的主机、距今时长和判定结果（本机 / 异机活跃 / 异机过期）。将 `supertag-presence-enable` 设为 `nil` 可以完全关闭这个功能。
+**presence（在场）告警。** 为了至少给同步文件夹的用户一个提醒（这不是锁——同步服务动辄几分钟的传播延迟决定了它在物理上不可能是锁），Supertag 会在数据库文件旁边写一个很小的 `supertag-presence.json` 文件，记录"最后是哪台主机碰过它、什么时候"。当你加载数据库时，如果发现另一台主机大约在最近 5 分钟内（`supertag-presence-stale-seconds`）还活跃过，就会弹出一条醒目的告警，点名那台主机并说明风险。**看到告警后怎么办：** 如果你确定另一台机器已经退出 Emacs，可以放心继续——这条告警只出现一次，不会重复弹出，直到另一台主机再次声明 presence 为止。如果不确定，先去那台机器上退出 Emacs。随时可以用 `M-: (supertag-doctor)` 查看当前 presence 文件记录的主机、距今时长和判定结果（本机 / 异机活跃 / 异机过期）。将 `supertag-presence-enable` 设为 `nil` 可以完全关闭这个功能。
 
 **不要同步 `sync-state.el` 和 `backups/`。** 这两者虽然和数据库放在同一个数据目录下，但都是本机专属的记录（`sync-state.el` 追踪的是*这台机器*文件系统的 mtime/hash；`backups/` 只是磁盘占用，没必要在多台机器间重复保留）。如果你的同步工具是整个数据目录一起同步，请在工具允许的范围内把这两个路径排除掉；就算被覆盖了，最坏结果也只是多做一次 Org reindex，不会丢数据。
 
@@ -504,31 +360,14 @@ M-x supertag-git-clone
 
 ## 从旧版本迁移
 
-> **⚠️ 5.9.x → 6.0.0**：数据库文件格式已变更（见上文"多机同步"）——升级自动完成，但之后想降级需要恢复备份快照。用 `M-x supertag-restore` 选中并恢复升级前的快照，然后立即退出 Emacs 并用旧版重新打开。多机共享 vault 的用户必须所有机器一起升级。
+加载受支持的 5.x/6.x 数据库时，自动升级到数据版本 7.0.0。任何迁移变更之前，
 
-> **⚠️ 旧嵌套字段 → 当前版本**：编辑字段前，请先完成[全局字段迁移](doc/GLOBAL-FIELD-MIGRATION-GUIDE_CN.md)。当前版本始终使用全局字段模型。
+SuperTag 都先把数据库复制到 `backups/supertag-db-premigrate-<old-version>-*.el`，再逐字节核验快照。仅修改数据库的转换把旧字段和继承关系保留为待迁移记录，不改 Org 文件。5.0 之前的版本请先用 SuperTag 6.x 升级。
 
-### 从 SuperTag 4.x 升级
+1. 运行 `M-x supertag-migrate-preview`，审阅旧字段、活 Org 冲突和标签路径改名。
+2. 运行 `M-x supertag-migrate-apply` 并确认变更，复用既有 Org writer 保存；受影响 buffer 中的活草稿也会一起保存。冲突及无法导出的记录继续保留，可用 `M-x supertag-migrate-status` 查看。请先完成 apply，再清理孤儿标签。
 
-```emacs-lisp
-;; 1. 备份数据目录 (~/.emacs.d/supertag/)
-;; 2. 加载并运行迁移
-M-x load-file RET supertag-migration.el RET
-M-x supertag-migrate-database-to-new-arch RET
-```
-
-### 从纯 Org 文件开始
-
-无需迁移。给标题加 `#tag`，定义字段，开始使用视图。你现有的文件原样兼容。
-
-### 旧 reciprocal reference link
-
-旧版 Supertag 可能同时在 source 与 target 文件插入同一 reference。这类自动生成的
-link 与用户手写 link 完全同形，因此系统绝不自动删除。先运行
-`M-x supertag-migration-preview-reciprocal-links`，只读查看每一条互相指向的物理 link；
-确定其中某条已经多余后，再运行 `M-x supertag-migrate-reciprocal-links`，逐条选择并二次
-确认。默认不选择任何条目，abort 零写入。每个被改文件都会留下相邻的
-`.<文件名>.supertag-migration-*.bak` 快照；重新投影失败时，全部文件自动恢复。
+待导出提示只在版本迁移完成当次显示。若关闭自动迁移，可用 `M-x supertag-migrate-run` 显式执行同一条带快照核验的数据库迁移。
 
 ---
 
@@ -536,11 +375,10 @@ link 与用户手写 link 完全同形，因此系统绝不自动删除。先运
 
 | 问题 | 解决方法 |
 |---|---|
-| 不知道从哪查起 | `M-x supertag-doctor` —— 8 个板块的健康检查，并引导你逐项修复 |
-| Org 派生节点或链接看起来过期 | `M-x supertag-reindex-org` |
+| Org 派生节点或链接看起来过期 | `M-x supertag-sync-full-rescan` |
 | 自动同步没启动 | 检查 `supertag-sync-directories` 是否正确配置 |
-| 某个文件没同步 | `M-x supertag-sync-analyze-file` |
-| 字段值不见了 | reindex 不能恢复 Semantic Facts；请从数据库备份或同步副本恢复 |
+| 某个文件没同步 | `M-x supertag-sync-status`（按需检查文件） |
+| 旧版数据库字段值不见了 | reindex 不能恢复这些历史 Semantic Facts；请从数据库备份或同步副本恢复。Org properties 则以源文件为准 |
 | 同步导致 Emacs 卡顿 | 参见 `doc/SYNC-CONFIGURATION.md` 的性能调优 |
 
 ---
@@ -552,29 +390,74 @@ link 与用户手写 link 完全同形，因此系统绝不自动删除。先运
 | **Org-roam** | Org-roam 是笔记关联图谱；SuperTag 是结构化表格。可以共存。 |
 | **Notion** | Notion 把数据锁在云端。SuperTag 离线，数据在你自己的文件里。 |
 | **Obsidian** | Obisidian 是另一个编辑器。SuperTag 原生在 Emacs 里，不用切换工具。 |
-| **org-ql** | org-ql 查询 Org 内联属性。SuperTag 把字段数据单独存储，不污染 Org 文件，还支持视图和自动化。 |
+| **org-ql** | org-ql 提供 Org 查询。Supertag 的日常入口侧重标签阅读、笔记链接、Node View 与 Discovery 搜索；Org properties 仍保存在源文件中。 |
 
 ---
 
-## Ontology Policy
+### 可选 Agent 集成与纯数据 API
 
-每个已部署 Action 现在必须由一个 fail-closed Policy 管理，完整覆盖
-`interactive-user`、`automation`、`llm`、`external`。决策只有 `allow`、
-`deny`、`confirm`、`propose-only`。在 Org heading 或 Node View 中执行
-`M-x supertag-action-run`；只允许提案的 LLM 应调用
-`supertag-ontology-action-propose`，不能直接执行。完整边界见
-[`ONTOLOGY-POLICY-V11.md`](ONTOLOGY-POLICY-V11.md)。
+Agent 集成不是书写的前提。历史字段的来源记录仍随 `:legacy-fields` 保留，不因产品方向调整而删除；这不代表当前默认工作流提供字段系统。
 
-## Ontology LLM Tools
+Agent 一侧通过 `supertag-api.el` 里的五个纯数据函数和 Supertag 对话：`supertag-api-query`、`supertag-api-node`、`supertag-api-schema`、`supertag-api-catalog`、`supertag-api-json`。参数与返回值都是普通 Elisp 数据（字符串、数字、关键字、plist）；`supertag-api-json` 可把结果转成 JSON，`supertag-api-catalog` 声明每个函数的效果与参数，宿主据此把它们注册为 LLM 工具并套用自己的授权模型。写入经 Node View 与 Org writer，不再有 API 写函数。
 
-只有在 Ontology 源码中显式声明 `:llm-tool t` 的 Function 或 Action，才会
-进入 LLM 工具目录。Function 始终只读；Action 再根据 `llm` Policy 决策：
-`allow` 可以执行，`confirm` 需要独立的一次性确认能力，`propose-only` 只能
-返回临时提案，`deny` 完全不进入目录。使用 `M-x supertag-ui-tool-list` 检查
-当前目录，或用 `M-x supertag-ui-tool-copy-catalog-json` 复制中立 JSON。完整
-边界见 [`ONTOLOGY-LLM-TOOL-V12.md`](ONTOLOGY-LLM-TOOL-V12.md)。
+### Concept mention 的行为边界
+
+- `supertag-promote` 按键选择共享的 `supertag-creation-templates`。有选区时，只将选中文本替换成普通 Org 链接，不搬走所在标题；没有选区时操作当前标题。同名候选展示实际内容，必须明确选择复用或新建，不自动合并。
+- 新建应用完整模板（文件、标签、属性、初始正文）。复用保留 ID、子树、已有属性和正文，只追加标签、补缺失属性；外部标题移入模板文件，旧处留下普通链接，而非 Move 的带 ID stub。复用不重复插入初始正文。
+- 监视仅包含当前模板目标文件中已有持久 Org ID 的标题，与其来自手工、Find、Add Link 或 Promote 无关。无 ID 标题不参与监视；确认执行需要身份的操作时由文档 writer 补 ID，读取、预览和取消不补。删除/改目标后，旧文件没有其他模板引用才退出监视；文件、历史 marker 属性和链接全部保留。
+- Mention 只存在于显示层。Org link、code/verbatim、普通注释与 `COMMENT` 子树、keyword/drawer、source block 和表格都不会高亮。
+- 多个被监视节点共用 title 或 alias 时，文本保持普通显示。生成的 Embed 内容也不参与提及；只有显式链接动作才写链接。
+
+日常使用建议按用途装配命令，而不是每次选择模板。以下命令由用户定义，并非内置命令；定义后可通过 `M-x` 或快捷键调用：
+
+```emacs-lisp
+;; Run after your normal Supertag configuration. Adjust these destinations.
+(require 'supertag-concept)
+(setq supertag-creation-templates
+      (list
+       (list :key "concept" :name "Concept"
+             :target-file (expand-file-name "concepts.org" org-directory)
+             :tags '("concept"))
+       (list :key "person" :name "Person"
+             :target-file (expand-file-name "people.org" org-directory)
+             :tags '("person"))
+       (list :key "quote" :name "Quote"
+             :target-file (expand-file-name "quotes.org" org-directory)
+             :tags '("quote"))))
+
+(supertag-define-promote-command supertag-promote-concept "concept")
+(supertag-define-promote-command supertag-promote-person "person")
+(supertag-define-promote-command supertag-promote-quote "quote")
+
+(define-key org-mode-map (kbd "C-c n c") #'supertag-promote-concept)
+(define-key org-mode-map (kbd "C-c n P") #'supertag-promote-person)
+(define-key org-mode-map (kbd "C-c n q") #'supertag-promote-quote)
+```
+
+这些命令跳过模板选择，但保留复用/新建选择和保存确认。通用 `supertag-promote` 仍可临时选择其他模板。模板仅作为目标文件、标签、属性和初始正文的配置，命令共用同一提升实现。示例中的 `setq` 会替换整个共享模板列表（也影响 Add Link 和 Find Node）；已有配置请合并条目而非直接覆盖，并自行调整文件与快捷键。模板 key 在命令执行时查找，后续修改配置不必重新定义命令。
+
+默认模板仍指向 `concepts.org`。确认后会保存受影响的整个文件，包含已有草稿；确认前取消不写入。跨文件 Promote 不承诺原子性：目标已经保存后，旧位置留链或当前选区保存失败不会删除目标。结构化错误包含阶段、身份和可调用的 `:retry`/`:retry-args`，应重试该操作而非再次执行 Promote。保存失败保留草稿，投影失败保留已落盘文本；恢复状态只在当前进程中保留，不是崩溃恢复日志。
+
+在投影视图卡片上，`t`/`r` 可远程加减标签；Stream 标题行的 `#tag` 支持 RET/r/c/R/D，目标文件有未保存编辑时会拒绝远程写。
+
+### 光标处上下文动作
+
+安装可选的 Embark 后，在对象上执行 `embark-act`。RET 选择默认动作，也可用 `embark-dwim` 直接执行默认动作。
+
+| 对象 | RET 默认动作 | 其它键 |
+|---|---|---|
+| Org 标题或正文 | 打开/关闭 Node View（`v` 同效；无 ID 时不会补 ID） | `t` 添加标签，`r` 移除标签，`l` 添加链接，`d` 选择并删除链接，`m` 移动，`M` 移动并留链接，`p` Promote，`x` 提取属性（可选 superchat） |
+| #标签 | 打开该标签的 Stream | `r` 从当前节点移除，`c` 更换当前节点的该标签，`R` 全库重命名，`D` 全库删除；全库操作先预览确认 |
+| id 链接 | 打开链接 | `d` 删除当前完整链接（含描述文字），保存并更新投影 |
+| 概念提及 | 打开概念节点 | `l` 将这处提及写成链接 |
+| 节点引用 | 跳转到引用的节点 | `v` 打开 Node View |
+| 可写 Org 选区 | 添加链接 | `l` 添加链接，`t` 给区域内节点添加标签，`p` Promote 所选文字 |
+
+识别对象不会写入 ID。标题上的 #标签优先于标题；其它 Org 链接交给 Embark 的 Org 集成。用 `embark-cycle` 可切换到 Org 原生对象。雏形只覆盖这些位置，完整命令仍通过 `supertag-menu` 和 M-x 使用。
 
 ---
+
+
 
 ## 延伸阅读
 
@@ -592,3 +475,245 @@ link 与用户手写 link 完全同形，因此系统绝不自动删除。先运
 ---
 
 Supertag 以 GPLv3 自由软件协议开发。欢迎在 GitHub 上贡献代码、提交 bug 或功能请求。
+
+
+原 27 篇 doc/ 中 25 篇已加归档说明，ABOUT-QUERY-BLOCK 两篇为现役文档、语法整理留待；另新增 ARCHIVED-ONTOLOGY 两篇归档文档。
+
+## 配置变量
+
+以下表格由加载后的源码生成，用途取自源码 docstring 首句。
+
+;; 108 defcustoms
+
+**supertag-ai.el**
+
+| Variable | Default | Purpose |
+|---|---|---|
+| `supertag-ai-max-body-chars` | `8000` | Maximum number of own-body characters sent for extraction. |
+| `supertag-ai-prompts` | `list of 1 entries, see docstring` | Named extraction prompts. |
+| `supertag-ai-timeout` | `60` | Runtime request timeout in seconds. |
+
+**supertag-automation.el**
+
+| Variable | Default | Purpose |
+|---|---|---|
+| `supertag-automation-verbose` | `nil` | When non-nil, log verbose automation diagnostics. |
+
+**supertag-concept.el**
+
+| Variable | Default | Purpose |
+|---|---|---|
+| `supertag-concept-alias-separator-regexp` | `"[,，;；]"` | Regexp used to split concept aliases stored in SUPERTAG_ALIASES. |
+| `supertag-concept-default-file` | `nil` | Default Org file used for newly created concept nodes. |
+| `supertag-concept-min-term-length` | `2` | Minimum character length for a concept title or alias mention. |
+
+**supertag-core-async.el**
+
+| Variable | Default | Purpose |
+|---|---|---|
+| `supertag-async-batch-size` | `1` | Number of files to process in a single idle cycle. |
+| `supertag-async-idle-delay` | `0.5` | Seconds of idle time to wait before processing the next job in the queue. |
+
+**supertag-core-change.el**
+
+| Variable | Default | Purpose |
+|---|---|---|
+| `supertag-change-bridge-debug` | `nil` | When non-nil, log bounded legacy bridge delivery diagnostics. |
+
+**supertag-core-persistence.el**
+
+| Variable | Default | Purpose |
+|---|---|---|
+| `supertag-db-auto-migrate` | `t` | When non-nil, automatically migrate an out-of-date database after load. |
+| `supertag-db-auto-save-interval` | `300` | Auto-save interval in seconds. |
+| `supertag-db-backup-directory` | `"<data-directory>/backups"` | Directory for database backups. |
+| `supertag-db-backup-interval` | `86400` | Daily backup interval in seconds (default: 24 hours). |
+| `supertag-db-backup-keep-days` | `3` | Number of days to keep daily backups. |
+| `supertag-db-file` | `"<data-directory>/supertag-db.el"` | Database file path. |
+| `supertag-db-lock` | `t` | When non-nil, protect the database from concurrent multi-instance access. |
+| `supertag-db-lock-directory` | `string of 64 chars, see docstring` | Directory for local database advisory lock files. |
+| `supertag-db-verify-after-save` | `t` | When non-nil, verify the database file after saving. |
+| `supertag-presence-enable` | `t` | When non-nil, write and check an advisory presence file for cross-machine awareness. |
+| `supertag-presence-stale-seconds` | `300` | Age in seconds beyond which a foreign presence record is ignored. |
+
+**supertag-discovery.el**
+
+| Variable | Default | Purpose |
+|---|---|---|
+| `supertag-discovery-history-file` | `nil` | File to store Discovery history. |
+| `supertag-discovery-history-max-items` | `100` | Maximum number of keywords to keep in history. |
+| `supertag-discovery-initial-sample-size` | `10` | Number of notes shown when Discovery opens or refreshes its sample. |
+
+**supertag-embark.el**
+
+| Variable | Default | Purpose |
+|---|---|---|
+| `supertag-embark-integration` | `t` | Register Supertag contextual actions when optional Embark is loaded. |
+
+**supertag-git.el**
+
+| Variable | Default | Purpose |
+|---|---|---|
+| `supertag-git-sync-commit-debounce` | `30` | Seconds of quiet after the LAST detected change before `supertag-git-sync-mode' auto-commits. |
+| `supertag-git-sync-focus-pull-min-interval` | `60` | Minimum seconds between two focus-triggered pulls (rate limit). |
+| `supertag-git-sync-pull-interval` | `300` | Seconds between automatic background `git fetch' (+ merge if behind) attempts while `supertag-git-sync-mode' is enabled. |
+
+**supertag-link.el**
+
+| Variable | Default | Purpose |
+|---|---|---|
+| `supertag-reference-context-before` | `72` | Preferred number of characters shown before the matched reference term. |
+| `supertag-reference-context-length` | `220` | Maximum number of characters in one contextual backlink excerpt. |
+| `supertag-reference-shorthand-openers` | `(("[[" . "]]") ("【【" . "】】"))` | Opener/closer pairs that start a create-or-link shorthand. |
+
+**supertag-mention.el**
+
+| Variable | Default | Purpose |
+|---|---|---|
+| `supertag-mention-context-after` | `120` | Maximum source characters shown after an unlinked mention. |
+| `supertag-mention-context-before` | `64` | Maximum source characters shown before an unlinked mention. |
+| `supertag-mention-max-results` | `300` | Maximum unlinked mention candidates returned for one target node. |
+| `supertag-mention-min-term-length` | `2` | Minimum title or alias length considered for unlinked mentions. |
+| `supertag-mention-protected-range-cache-size` | `128` | Maximum ephemeral Org parse results retained by the mention scanner. |
+| `supertag-mention-result-cache-size` | `64` | Maximum target queries retained by the disposable mention result cache. |
+
+**supertag-ops-relation.el**
+
+| Variable | Default | Purpose |
+|---|---|---|
+| `supertag-reference-backlink-include-timestamp` | `nil` | Legacy option retained for compatibility. |
+
+**supertag-semantic.el**
+
+| Variable | Default | Purpose |
+|---|---|---|
+| `supertag-semantic-curl-program` | `"curl"` | Program used for asynchronous embedding HTTP requests. |
+| `supertag-semantic-enabled` | `nil` | Whether to show and compute semantic candidates. |
+| `supertag-semantic-endpoint` | `"http://localhost:11434"` | Base URL of an Ollama-compatible /api/embed endpoint. |
+| `supertag-semantic-max-chars` | `1500` | Maximum own-body characters embedded after the title and outline path. |
+| `supertag-semantic-max-results` | `5` | Maximum similar-note candidates shown. |
+| `supertag-semantic-min-similarity` | `0.4` | Minimum similarity, calibrated only on synthetic notes so far. |
+| `supertag-semantic-model` | `"bge-m3"` | Embedding model available at the endpoint. |
+| `supertag-semantic-preview-lines` | `3` | Maximum lines of a candidate's own-body preview. |
+| `supertag-semantic-request-chars` | `6000` | Approximate text-character budget per request; one longer node may exceed it. |
+| `supertag-semantic-save-interval` | `30` | Minimum seconds between partial side-car saves; a drained queue saves immediately. |
+
+**supertag-service-node-identity.el**
+
+| Variable | Default | Purpose |
+|---|---|---|
+| `supertag-node-location-org-id-fallback` | `t` | When non-nil, use `org-id-find' for nodes absent from the Store. |
+
+**supertag-service-org.el**
+
+| Variable | Default | Purpose |
+|---|---|---|
+| `supertag-org-id-open-link-auto-enable` | `t` | When non-nil, let `org-id-open-link` resolve IDs via Supertag first. |
+
+**supertag-services-capture.el**
+
+Supertag 独立 Capture 引擎已退役。记录统一使用标准 `org-capture`；
+按模板显式启用的 Supertag 接入仍保留，默认不启用。
+
+| Variable | Default | Purpose |
+|---|---|---|
+| `supertag-org-capture-auto-enable` | `nil` | When non-nil, enable Supertag integration with `org-capture'. |
+
+**supertag-services-scheduler.el**
+
+| Variable | Default | Purpose |
+|---|---|---|
+| `supertag-scheduler-check-interval` | `300` | Interval in seconds for master timer to check for pending tasks. |
+
+**supertag-services-sync.el**
+
+| Variable | Default | Purpose |
+|---|---|---|
+| `supertag-sync-auto-create-node` | `nil` | Deprecated compatibility option; sync never invents heading IDs. |
+| `supertag-sync-auto-interval` | `900` | Interval in seconds for automatic synchronization. |
+| `supertag-sync-auto-start` | `t` | Automatically start Supertag auto-sync after Emacs startup. |
+| `supertag-sync-auto-start-initial-delay` | `3` | Seconds to wait after startup before the first auto-start attempt. |
+| `supertag-sync-auto-start-max-retries` | `24` | Maximum number of auto-start retries before giving up. |
+| `supertag-sync-auto-start-retry-interval` | `5` | Seconds between auto-start retry attempts when directories are not yet available. |
+| `supertag-sync-directories` | `nil` | List of directories to monitor for automatic synchronization. |
+| `supertag-sync-directories-mode` | `unified` | How to interpret `supertag-sync-directories`. |
+| `supertag-sync-exclude-directories` | `nil` | List of directories to exclude from synchronization. |
+| `supertag-sync-file-pattern` | `".org$"` | Regular expression for matching files to synchronize. |
+| `supertag-sync-hash-props` | `list of 8 entries, see docstring` | Additional properties to include when calculating node hashes. |
+| `supertag-sync-idle-delay` | `1.0` | Seconds of idle time required before automatic sync runs. |
+| `supertag-sync-legacy-tags-policy` | `read-only` | How to handle legacy org native :tag: found in headlines. |
+| `supertag-sync-max-delete-count` | `1000` | Maximum number of nodes allowed to be deleted in a single GC pass. |
+| `supertag-sync-max-delete-ratio` | `0.5` | Maximum allowed ratio of nodes to delete in a single GC pass. |
+| `supertag-sync-node-creation-level` | `1` | Minimum heading level for automatic node creation. |
+| `supertag-sync-orphan-grace-seconds` | `3600` | Grace period in seconds before deleting orphaned nodes. |
+| `supertag-sync-quiet-when-idle` | `t` | If non-nil, suppress routine sync summary/diagnostic messages when no changes were detected. |
+| `supertag-sync-smart-detection-enabled` | `nil` | If non-nil, enable smart detection to skip unchanged files during sync. |
+| `supertag-sync-smart-detection-verbose` | `nil` | If non-nil, show messages about smart detection decisions during sync. |
+| `supertag-sync-snapshot-guard` | `t` | When non-nil, sync uses snapshot state to guard destructive operations. |
+| `supertag-sync-state-file` | `"<data-directory>/sync-state.el"` | File to store sync state data. |
+| `supertag-tag-style` | `inline` | Style to write tags when generating or inserting Org headlines. |
+| `supertag-text-link-relation-types` | `nil` | Exact non-empty Org link types that project as named relations. |
+
+**supertag-services-template.el**
+
+| Variable | Default | Purpose |
+|---|---|---|
+| `supertag-creation-templates` | `nil` | Creation presets shared by Add Link, Find Node and Promote. |
+
+**supertag-ui-commands.el**
+
+| Variable | Default | Purpose |
+|---|---|---|
+| `supertag-batch-tag-insert-position` | `end` | Where to insert tags when adding tags in batch mode. |
+| `supertag-capture-tag-position` | `end` | Where to place tags when creating a headline via capture. |
+
+**supertag-ui-completion.el**
+
+| Variable | Default | Purpose |
+|---|---|---|
+| `supertag-completion-auto-enable` | `t` | Whether to automatically enable tag completion in org-mode buffers. |
+
+**supertag-view-helper.el**
+
+| Variable | Default | Purpose |
+|---|---|---|
+| `supertag-view-style-auto-enable` | `t` | Whether to automatically enable supertag-view-style-mode in org buffers. |
+| `supertag-view-style-tag-face-properties` | `(:foreground "snow3")` | Face properties for inline supertags. |
+| `supertag-view-style-unresolved-tag-face-properties` | `(:inherit shadow :underline t)` | Face properties for inline tag tokens with no registered tag. |
+
+**supertag-view-node.el**
+
+| Variable | Default | Purpose |
+|---|---|---|
+| `supertag-view-node-auto-show` | `nil` | Whether to automatically show the Node View side window and follow context. |
+| `supertag-view-node-side` | `right` | Side where the Node View side window appears. |
+| `supertag-view-node-side-size` | `0.33` | Default size of the Node View side window. |
+| `supertag-view-node-strip-todo-keywords` | `t` | Whether to strip TODO keywords from node titles in view buffers. |
+| `supertag-view-node-todo-keywords` | `list of 11 entries, see docstring` | List of TODO keywords to strip from node titles. |
+
+**supertag-view-svg-tag.el**
+
+| Variable | Default | Purpose |
+|---|---|---|
+| `supertag-svg-tag-color-alpha` | `1.0` | Opacity of the colored style background (0 = invisible, 1 = opaque). |
+| `supertag-svg-tag-enable` | `t` | When non-nil, render #tags as SVG pill badges. |
+| `supertag-svg-tag-font-family` | `nil` | Explicit SVG font family, or nil to use the default face family. |
+| `supertag-svg-tag-font-scale` | `0.68` | Font size scale factor relative to the frame character height. |
+| `supertag-svg-tag-font-weight` | `"500"` | Font weight used inside SVG tags (e.g. "normal", "500", "bold"). |
+| `supertag-svg-tag-min-column-em` | `0.6` | Minimum width per display column, in units of the SVG font size. |
+| `supertag-svg-tag-padding-x` | `8` | Horizontal padding (px) inside the SVG tag. |
+| `supertag-svg-tag-radius` | `100` | Corner radius (px) of SVG tag badges. |
+| `supertag-svg-tag-show-hash` | `nil` | When non-nil, include the leading '#' in the SVG badge. |
+| `supertag-svg-tag-stroke-width` | `0` | Stroke width for SVG tag borders. |
+| `supertag-svg-tag-style` | `colored` | Visual style of SVG tags. |
+
+**supertag.el**
+
+| Variable | Default | Purpose |
+|---|---|---|
+| `supertag-active-sync-directory` | `nil` | Active vault root directory when `supertag-sync-directories` lists multiple roots. |
+| `supertag-data-directory` | `"<user-emacs-directory>/supertag"` | Directory for storing Supertag data. |
+| `supertag-file-id-source` | `org-roam` | Policy for recognizing stable file node IDs. |
+| `supertag-project-root` | `directory of supertag.el at load time` | The root directory of the supertag project. |
+| `supertag-vault-auto-switch` | `nil` | When non-nil, automatically switch the active vault for Org buffers. |
+| `supertag-vault-modeline-indicator` | `t` | When non-nil, show the matched vault name in the mode line for Org buffers. |

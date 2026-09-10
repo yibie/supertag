@@ -1,3 +1,5 @@
+The legacy schema/table/kanban/search/capture entry points described here are archived; see README for the current workflow.
+
 # Supertag 架构演化：从几个简单事实到复杂系统
 
 > 结论先行：Supertag 的复杂度并不是一次设计出来的。它从“Org 标题 + ID + Tag + Property + Link”这几个简单事实出发，依次补上内存 Store、事务、查询、同步、派生索引、持久化、自动化和 View Runtime。大部分复杂度都有真实需求和演化依据；真正值得警惕的不是模块数量，而是新抽象建立后，旧入口仍可绕过它。

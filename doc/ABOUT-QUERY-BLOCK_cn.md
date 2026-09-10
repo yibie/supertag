@@ -13,13 +13,10 @@
 (tag "work")
 ```
 
-### 向后兼容
+### 已注册语言
 
-旧的 `supertag-query` 语言名称仍然可以使用（向后兼容）：
-
-```supertag-query
-(and (tag "project") (field "priority" "high"))
-```
+仅注册 `supertag-query-block` 作为可执行的 Babel 语言。
+已有 `supertag-query` 动态块仍可刷新；它们是 Org 动态块，并非旧 Babel 语言。
 
 ### 支持的查询语法
 
@@ -186,14 +183,14 @@
 
 1. **S-expression 查询功能**重命名为 **query-block**
 2. **独立查询窗口功能**保持不变，继续提供完整的交互式查询体验
-3. **向后兼容**：旧的语言名称和函数仍然可以使用
-4. **插入函数**：`supertag-insert-query-block` 现在生成新格式的代码块
+3. **退役命令**：`supertag-insert-query-block` 已改名为 `supertag-add-query-block`，不留 alias；`supertag-insert-query-dblock` 已删除。已有动态块仍可刷新。
+4. **插入函数**：`supertag-add-query-block` 现在生成新格式的代码块
 
 ### 实用技巧
 
 #### 快速插入查询块
 
-使用 `M-x supertag-insert-query-block` 命令可以快速插入一个查询块模板。
+使用 `M-x supertag-add-query-block` 命令可以快速插入一个查询块模板。
 
 #### 查询历史
 

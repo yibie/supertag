@@ -1,3 +1,5 @@
+> Notice: legacy entry points described here are archived; see README for the current workflow.
+
 # Supertag Capture System
 
 Note: Legacy Org `:tag:` remain readable during sync/import. New capture writes inline `#tag` as before.
@@ -503,8 +505,8 @@ metadata and field management.
 ```elisp
 ;; Enable org-capture integration (global toggle)
 (setq supertag-org-capture-auto-enable t)
-;; or call interactively:
-;; M-x supertag-enable-org-capture-integration
+;; Apply integration to an already loaded session:
+(supertag-enable-org-capture-integration)
 ```
 
 This adds a post-processing hook to `org-capture-after-finalize-hook`

@@ -1,3 +1,5 @@
+> Notice: legacy entry points described here are archived; see README for the current workflow.
+
 # Query 语法对齐提案（logseq v1 功能水平）
 
 状态：✅ 已全部拍板并落地（phase-query-syntax-alignment-20260813，

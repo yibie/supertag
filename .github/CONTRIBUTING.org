@@ -90,12 +90,38 @@ feat(behavior): Add new behavior trigger
 Closes #123
 #+end_example
 
+* Current development verification
+
+Use the repository root:
+
+#+begin_src bash
+bash test/run-tests.sh
+bash test/run-tests.sh contract compat
+bash test/run-tests.sh transition
+bash test/run-tests.sh --guidance
+bash test/run-tests.sh archive
+#+end_src
+
+The [[file:../test/renovation-suites.el][static manifest]] selects contract,
+compat and named transition tests. The old run-refactor-batch1 pathname delegates
+to the same executor. Logs and temporary data stay in its printed unique directory;
+missing files, zero ERT and failed selectors fail, including through tee.
+Local checks initialize installed dependencies but do not install packages.
+CI retains the Emacs 29.1/29.4 matrix, runs the current entry, checks gitignore
+independently, and uses lightweight guidance checks for documentation changes.
+Board npm/build requires the explicit manual archive option.
+
+The Q leaf loads independently; real public NodeView still has transitional
+aggregate dependencies. Temporary-copy byte compilation and source-first tests
+do not prove fresh-package installation or final Embark integration.
+See [[file:../test/README.md][test guidance]] for classification and limitations.
+
 * Test Guidelines
 
 ** Unit Test
 - Write test cases for new features
 - Use ~ert~ framework
-- Test files are placed in the ~tests~ directory
+- Test files live in ~test/~ and ~tests/~; only explicit manifest selectors are default
 
 ** Test Coverage
 - Ensure main features are covered by tests

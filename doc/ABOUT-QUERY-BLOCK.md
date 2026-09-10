@@ -13,13 +13,11 @@ Date: 2025-08-23
 (tag "work")
 ```
 
-### Backward Compatibility
+### Registered Language
 
-The old `supertag-query` language name can still be used (backward compatible):
-
-```supertag-query
-(and (tag "project") (field "priority" "high"))
-```
+Only `supertag-query-block` is registered as an executable Babel language.
+Existing `supertag-query` dynamic blocks can still be refreshed; these are
+Org dynamic blocks, not the old Babel language.
 
 ### Supported Query Syntax
 
@@ -186,14 +184,14 @@ In addition to S-expression query blocks, there is also a standalone interactive
 
 1. **S-expression query function** renamed to **query-block**
 2. **Standalone query window function** remains unchanged, continuing to provide a complete interactive query experience
-3. **Backward compatibility**: Old language names and functions can still be used
-4. **Insert function**: `supertag-insert-query-block` now generates new format code blocks
+3. **Retired commands**: `supertag-insert-query-block` was renamed to `supertag-add-query-block` without an alias; `supertag-insert-query-dblock` was removed. Existing dynamic blocks remain refreshable.
+4. **Insert function**: `supertag-add-query-block` now generates new format code blocks
 
 ### Practical Tips
 
 #### Quick Insert Query Block
 
-Use the `M-x supertag-insert-query-block` command to quickly insert a query block template.
+Use the `M-x supertag-add-query-block` command to quickly insert a query block template.
 
 #### Query History
 

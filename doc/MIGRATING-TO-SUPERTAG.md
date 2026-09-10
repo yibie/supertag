@@ -1,3 +1,5 @@
+> Notice: legacy entry points described here are archived; see README for the current workflow.
+
 # Migrating from Org-Supertag to Supertag
 
 Supertag 6.0 is a deliberate breaking rename. It does not provide the old
@@ -64,7 +66,7 @@ Replace the retired languages `org-supertag-query-block` and
 
 Restart Emacs, evaluate `(require 'supertag)`, then run:
 
-1. `M-x supertag-doctor`
+1. `M-: (supertag-doctor)` (report in the *Supertag Doctor* buffer)
 2. `M-x supertag-menu`
 3. one representative query or view against the migrated database
 

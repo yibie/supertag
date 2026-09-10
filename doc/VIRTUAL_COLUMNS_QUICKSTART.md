@@ -1,3 +1,7 @@
+> Notice: legacy entry points described here are archived; see README for the current workflow.
+
+The legacy schema/table/kanban/search/capture entry points described here are archived; see README for the current workflow.
+
 # Virtual Columns Quick Start
 
 ## Installation

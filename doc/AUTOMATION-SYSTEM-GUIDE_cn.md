@@ -1,3 +1,5 @@
+本文描述的 schema/table/kanban/search/capture 旧入口已归档，当前入口见 README。
+
 # Automation System 2.0 - 用户指南和示例
 
 ## 🚀 概述
@@ -11,7 +13,7 @@
 - ✅ **自动规则索引**：在后台自动为规则建立高性能索引，无需用户关心性能优化细节。
 - ✅ **多重动作执行**：一条规则可以触发一系列按顺序执行的动作。
 - ✅ **计划任务**：支持基于时间和周期的自动化，由集成的调度器驱动。
-- ✅ **关系与计算**：支持双向关系、属性同步、Rollup 计算等高级功能。
+- ✅ **关系与计算**：支持双向关系与 query 的读时 aggregate。
 - ✅ **公式字段**：在表格视图中实时计算和显示数据，无需持久化存储。
 - ✅ **遗留互操作**：在必要时兼容部分旧存储/事件路径（下文会明确指出）。
 
@@ -126,39 +128,12 @@ graph LR
 | **一对多** | `:one-to-many` | 一个“源”节点可以关联**多个**“目标”节点，但每个“目标”节点只能被一个“源”节点关联。 | 一个 `#Project` 可以包含多个 `#Task`。一本 `#Notebook` 可以包含多篇 `#Note`。 |
 | **多对多** | `:many-to-many` | “源”节点和“目标”节点之间可以任意相互关联，数量不限。 | 一篇 `#Article` 可以有多个 `#Keyword`；一个 `#Keyword` 也可以用于多篇 `#Article`。 |
 
-### 高级功能：汇总 (Rollup)
+### 已退出的关系行为
 
-汇总（Rollup）是关系系统的一项强大功能，它允许“一”端的节点（例如 `#Project`）自动地从所有关联的“多”端节点（例如多个 `#Task`）中收集数据，并进行实时计算。
-
-您可以在定义 `:one-to-many` 或 `:many-to-many` 关系时，通过添加 `:rollup` 属性来配置汇总。
-
-#### **Rollup 配置参数**
-
-`:rollup` 属性本身是一个属性列表（plist），包含以下三个关键参数：
-
-| 参数 | 描述 | 示例 |
-| :--- | :--- | :--- |
-| **`:from-field`** | 指定从“多”端节点（源）的哪个属性收集数据。 | 从所有 `#Task` 节点收集 `:hours` 属性的值。 |
-| **`:to-field`** | 指定将计算结果写入“一”端节点（目标）的哪个属性。 | 将计算结果写入 `#Project` 节点的 `:total_hours` 属性。 |
-| **`:function`** | 指定用哪个函数来处理收集到的数据。 | 使用 `sum` 函数将所有工时加起来。 |
-
-#### **可用的汇总函数 (`:function`)**
-
-系统内置了多种常用的计算函数：
-
-| 函数名 | 描述 | 测试状态 |
-| :--- | :--- | :------- |
-| `sum` | 计算所有数值的总和。 | ✅ 已验证 |
-| `count` | 计算已关联的节点总数。 | ✅ 已验证 |
-| `average` | 计算所有数值的平均值。 | ✅ 已验证 |
-| `min` / `max` | 找出所有数值中的最小值或最大值。 | ✅ 已验证 |
-| `unique-count` | 计算不重复的属性值有多少个。 | ✅ 已验证 |
-| `concat` | 将所有属性值（通常是文本）连接成一个字符串。 | ✅ 已验证 |
-| `first` / `last` | 返回第一个或最后一个值。 | ✅ 支持 |
-
-**计划功能 (未来版本)**:
-| `count-where-filled` | 计算有非空值的节点数量。 | 🔄 计划中 |
-| `percent-done` | 计算完成百分比。 | 🔄 计划中 |
+关系字段同步和可执行 rollup 已退出。新关系不能再请求 `:sync-fields`、rollup
+配置或原来的 `:sync-field`／`:rollup` 关系类型。Store 中已有的相关元数据作为
+惰性历史数据保留：加载或更新不会传播字段、重算值，也不会把它转换为 Org 属性。
+汇总请使用 query 的读时 aggregate；其结果不会作为 rollup 写入持久数据。
 
 ---
 
@@ -193,14 +168,14 @@ graph LR
 - 未知字段取 schema 默认值（未设置时 nil/0）。
 - 旧的 `{{key}}` 占位符前缀公式（如 `"(- 10 {{:progress}})"`）会自动翻译为中缀语法，存量配置无需改动。
 
-### 公式字段与自动化规则/汇总的区别
+### 公式字段与自动化规则的区别
 
-| 特性 | 公式字段 | 自动化规则 | 汇总 |
-| :--- | :--- | :--- | :--- |
-| **目的** | 在**视图中**实时显示计算结果 | 根据事件**修改底层数据库的持久化数据** | 聚合关联节点数据，**持久化存储**结果 |
-| **触发时机** | 表格视图渲染时 | 数据变更事件（如属性变化、标签增删） | 关系或关联节点属性变化时 |
-| **数据持久化** | **不**将结果存储到数据库 | **会**将结果存储到数据库 | **会**将结果存储到数据库 |
-| **适用场景** | 轻量级、即时性的显示计算，不改变原始数据 | 需要持久化数据变更、触发复杂工作流 | 跨节点的数据聚合，需要持久化汇总结果 |
+| 特性 | 公式字段 | 自动化规则 |
+| :--- | :--- | :--- |
+| **目的** | 在**视图中**实时显示计算结果 | 根据事件执行明确的持久化动作 |
+| **触发时机** | 表格视图渲染时 | 数据变更事件（如属性变化、标签增删） |
+| **数据持久化** | **不**存储结果 | 存储明确动作产生的结果 |
+| **适用场景** | 不改变源数据的轻量显示计算 | 明确的事件驱动工作流 |
 
 ---
 
@@ -301,6 +276,7 @@ graph LR
 | :--- | :--- | :--- |
 | **逻辑组合** | `(and ...)` `(or ...)` `(not ...)` | 用于组合多个条件，实现复杂的逻辑判断。 |
 | **拥有标签** | `(has-tag "tag-name")` | 检查当前节点是否拥有指定的标签。 |
+| **Org 本地属性** | `(property "STAGE" "ready")` | 精确匹配已保存并已同步的 Org 属性文本；属性名统一为大写，空字符串与属性缺失不同。 |
 | **属性等于** | `(property-equals :prop-name "value")` | 检查节点的某个属性是否等于一个特定的值。 |
 | **属性已改变**| `(property-changed :prop-name)` | 检查本次事件是否是由指定属性的变化引起的。 |
 | **属性测试**| `(property-test :prop-name #'> 8)` | 使用一个函数来对属性值进行测试。 |
@@ -309,6 +285,13 @@ graph LR
 | **全局字段等于** | `(global-field-equals "field-id" "value")` | 检查全局字段值（field-id 为全局字段的 slug/id）。 |
 | **全局字段发生变化** | `(global-field-changed "field-id")` | 检查本次事件是否改变了该全局字段。 |
 | **全局字段测试** | `(global-field-test "field-id" #'pred ...)` | 使用函数测试全局字段值。 |
+
+`property` 与 `field` 不同：它只读取 Org 属性的投影文本，不解析或回退到旧字段。
+Query 与 Automation 条件读取已同步的数据库快照，不读取尚未保存的 Org 草稿。
+
+真实 Org 变更保存并经增量同步处理后，可以触发一次匹配规则；未变化的投影是
+no-op。`supertag-reindex-org` 则只负责重建投影：它可以刷新 query 结果，但不会
+执行 Automation 动作，也不会把这些动作回写到 Org。
 
 #### `:condition`（规则字段）
 
@@ -337,12 +320,12 @@ graph LR
 
 | 动作类型 (`:action-type`) | `:params` 参数 | 描述 |
 | :--- | :--- | :--- |
-| **`:update-property`** | `(:property :prop-name :value new-value)` | 更新或新增节点属性（存储在节点的 `:properties` plist）。`new-value` 按字面值写入。 |
+| **`:update-property`** | `(:property :prop-name :value new-value)` | 在节点的活 Org 标题中更新属性，或用 `nil` 删除属性；保存成功后再刷新数据库表示。属性名可用 keyword 或 Org 字符串，支持的标量会转成单行文本；拒绝 `ID`、只读特殊属性、多行文本和结构值。 |
 | **`:update-todo-state`** | `(:state "new-state")` | 更新当前节点的 TODO 状态 (例如 "DONE", "TODO")。这会直接修改标题的关键字，与 `:update-property` 不同。 |
 | **`:add-tag`** | `(:tag "tag-name")` | 为当前节点添加一个新标签。 |
 | **`:remove-tag`** | `(:tag "tag-name")` | 从当前节点移除一个标签。 |
 | **`:call-function`** | `(:function #'your-function :args (...))` | 调用一个您自己定义的 Emacs Lisp 函数。这是实现复杂逻辑的“终极武器”。函数会接收 `(node-id context &rest args)` 参数。 |
-| **`:create-node`** | `(:title "..." :tags '("...") ...)` | 创建一个全新的节点。 |
+| **`:create-node`** | `(:title "..." :tags '("...") :target-file "/absolute/path/to/notes.org")` | 在既有本地 Org 文件末尾追加带 ID 的一级标题，保存后再投影。`:tags` 写入 Org Tag Occurrence；只有已存在的 Semantic Tag 才会解析进数据库投影。标题保留 Org 原生语法。必须显式提供绝对目标路径；缺少目标的旧规则会失败，需手动补充。 |
 | **`:update-field`** | `(:tag "tag-id" :field "field-name" :value v)` | 通过 Tag schema 解析字段，并更新该 node 的全局字段值。 |
 | **`:case`** | `(:on (:field "层级") :branches '((:equals "20" :actions ((:action :update-field ...))) (:default t :actions ((:action :call-function ...)))))` | 根据 `:on` 解析出的值执行首个匹配分支。每个分支可使用 `:equals`、`:in`、`:match`（正则/函数）或 `:test` 进行匹配，并包含自己的 `:actions` 列表。通过 `:default t` 指定兜底分支。 |
 
@@ -501,9 +484,9 @@ graph LR
 
 ### 示例2：项目与任务联动
 
-这个例子将展示“关系（Relation）”和“汇总（Rollup）”的强大能力。
+这个例子展示关系（Relation）与一条明确的 Automation 规则。
 
-*(注：此示例假设已预定义了带有 `status`, `total_hours` 字段的 `#Project` 标签，以及一个名为 `tasks` 的从 `Project` 到 `task` 的一对多关系，该关系配置了从 `:hours` 到 `:total_hours` 的 `sum` 汇总。)*
+*(注：此示例假设已预定义带有 `status` 字段的 `#Project` 标签，以及一个名为 `tasks`、从 `Project` 到 `task` 的一对多关系。)*
 
 #### 1. 创建自动化规则
 
@@ -537,11 +520,6 @@ graph LR
 ```
 
 #### 2. 模拟效果
-
-*   **工时自动汇总 (由关系定义驱动)**:
-    *   **操作前**: `#Project` 的 `:total_hours:` 是 `5`。它关联了一个 `:hours:` 为 `5` 的 `#task`。
-    *   **操作**: 为该项目关联一个新的 `#task`，并将其 `:hours:` 设为 `3`。
-    *   **操作后**: `#Project` 的 `:total_hours:` 自动更新为 `8`。
 
 *   **项目自动完成 (由本规则驱动)**:
     *   **操作前**: `#Project` 关联了两个 `#task`，一个是 `Done` 状态，另一个是 `Todo` 状态。
@@ -726,12 +704,6 @@ graph LR
 Automation System 2.0 提供了一系列维护命令来确保系统的健康运行：
 
 ```elisp
-;; 重新计算所有 rollup 值
-(supertag-automation-recalculate-all-rollups)
-
-;; 同步所有字段同步关系
-(supertag-automation-sync-all-fields)
-
 ;; 清理和重建索引
 (supertag-automation-cleanup)
 (supertag-automation-init)
@@ -1052,20 +1024,17 @@ Automation System 2.0 的核心性能优势来自于智能索引系统：
 
 #### 问题 3：数据不一致
 
-**症状**：某些属性值不正确，或者汇总计算结果与预期不符。
+**症状**：某些属性值不正确，或者规则结果与预期不符。
 
 **可能原因**：
 - 并发修改导致的竞态条件
-- 汇总计算中的逻辑错误
+- 规则动作中的逻辑错误
 - 规则执行顺序问题
 
 **诊断步骤**：
 ```elisp
 ;; 检查节点属性
 (supertag-node-get node-id)
-
-;; 手动重新计算汇总
-(supertag-automation-recalculate-all-rollups)
 
 ;; 验证关系数据
 (supertag-relation-get-related-nodes node-id "relation-name")
@@ -1109,9 +1078,6 @@ Automation System 2.0 的核心性能优势来自于智能索引系统：
          (unless (supertag-relation-validate relation-name)
            (push (format "Relation %s has consistency issues" relation-name) issues))))
      (supertag-store-get-collection :relations))
-    
-    ;; 检查汇总计算
-    (supertag-automation-recalculate-all-rollups)
     
     ;; 报告结果
     (if issues

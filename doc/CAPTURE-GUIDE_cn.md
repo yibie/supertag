@@ -1,3 +1,5 @@
+> 说明：本文描述的旧入口已归档，当前工作流请参阅 README。
+
 # Supertag 捕获系统
 
 ## 🚀 什么是捕获系统？
@@ -473,8 +475,8 @@ Supertag 可以作为 `org-capture` 的一个“后处理层”：
 ```elisp
 ;; 全局启用 org-capture 集成
 (setq supertag-org-capture-auto-enable t)
-;; 或交互式调用：
-;; M-x supertag-enable-org-capture-integration
+;; 在已加载的会话中应用集成：
+(supertag-enable-org-capture-integration)
 ```
 
 这会在 `org-capture-after-finalize-hook` 上注册一个钩子，  

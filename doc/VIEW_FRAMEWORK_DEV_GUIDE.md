@@ -1,3 +1,5 @@
+The legacy schema/table/kanban/search/capture entry points described here are archived; see README for the current workflow.
+
 # View Framework Developer Guide
 
 ## Overview
@@ -162,7 +164,7 @@ user data.
 
 ## Implementations to Read
 
-- `supertag-ui-search.el` — fixed result buffer and origin restoration
+- `supertag-discovery.el` — fixed result buffer and origin restoration
 - `supertag-view-table.el` — editable table state and selection
 - `supertag-view-kanban.el` — grouped cards and Store subscription
 - `supertag-view-node.el` — side-window display and follow lifecycle

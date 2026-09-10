@@ -1,3 +1,5 @@
+The legacy schema/table/kanban/search/capture entry points described here are archived; see README for the current workflow.
+
 # SUPERTAG-PLUGIN-GUIDE: Full Plugin Developer Guide
 
 This is the canonical developer guide for building supertag plugins.

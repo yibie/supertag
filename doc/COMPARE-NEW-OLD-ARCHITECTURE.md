@@ -1,3 +1,5 @@
+> Notice: legacy entry points described here are archived; see README for the current workflow.
+
 ## `supertag` Architecture Comparison: New vs Old
 
 ### Code Size Comparison

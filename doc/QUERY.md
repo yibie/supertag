@@ -1,3 +1,5 @@
+The legacy schema/table/kanban/search/capture entry points described here are archived; see README for the current workflow.
+
 # Supertag Query Language
 
 Supertag queries are S-expressions. Public entry points include:

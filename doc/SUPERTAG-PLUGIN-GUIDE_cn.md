@@ -1,3 +1,5 @@
+本文描述的 schema/table/kanban/search/capture 旧入口已归档，当前入口见 README。
+
 # SUPERTAG-PLUGIN-GUIDE（中文版）：完整插件开发文档
 
 这份文档是 supertag 插件开发的事实来源（开发者指南）。

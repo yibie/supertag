@@ -1,3 +1,5 @@
+> Notice: legacy entry points described here are archived; see README for the current workflow.
+
 # Ontology Policy v11
 
 Policy v11 adds fail-closed authorization in front of deployed Ontology

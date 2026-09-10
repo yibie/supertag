@@ -1,3 +1,5 @@
+The legacy schema/table/kanban/search/capture entry points described here are archived; see README for the current workflow.
+
 # Supertag 最终架构：双业务事实与窄 Operational Fact 下的投影系统
 
 > 状态：K3 已实施；C1–C5 与 M2b 完成；Canonical Change 已由
@@ -100,7 +102,7 @@ Semantic Facts 不依赖某个 Tag token 此刻是否出现在文档中。reinde
 |---|---|---|
 | unresolved sync conflict | `:sync-conflicts` | merge 产生确定性冲突记录；conflict resolution 显式解决或丢弃 |
 
-该事实不能从 merge 后的 winner 反推出 ours/theirs/base，因此在解决前不可删除；持久化只负责保存它，不拥有冲突生成或解决语义。具体证据见 [`supertag-merge.el:433`](../../supertag-merge.el#L433)、[`supertag-conflicts.el:431`](../../supertag-conflicts.el#L431) 与 [`supertag-core-persistence.el:1194`](../../supertag-core-persistence.el#L1194)。新增 Operational Fact 必须另行证明同样的“不可重建 + 明确终止生命周期”，不得仅因数据难分类而使用该 authority。
+该事实不能从 merge 后的 winner 反推出 ours/theirs/base，因此在解决前不可删除；持久化只负责保存它，不拥有冲突生成或解决语义。具体证据见 [`supertag-merge.el:433`](../../archive/git/supertag-merge.el#L433)、[`supertag-conflicts.el:431`](../../archive/git/supertag-conflicts.el#L431) 与 [`supertag-core-persistence.el:1194`](../../supertag-core-persistence.el#L1194)。新增 Operational Fact 必须另行证明同样的“不可重建 + 明确终止生命周期”，不得仅因数据难分类而使用该 authority。
 
 ### 4.4 Projections (`P`)
 
@@ -761,8 +763,6 @@ Kernel-managed write
 - 生产 Canonical subscriber：0；
 - byte compile、`check-parens`、`bash -n`、`git diff --check`：通过。
 
-K3 的可执行契约和证据分别见 [Project Kernel](../../KERNEL.md)、
-[E-20260825-009](../../EVIDENCE.md#e-20260825-009--canonical-change-legacy-bridge-and-first-production-writer-verified)
-与 [M2b SPEC](../../.specs/canonical-change-legacy-bridge/SPEC.md)。任何后续
-writer/consumer 迁移都必须重新经过 `plan`；能在 ambient transaction 中运行的
+任何后续
+writer/consumer 迁移都必须重新评估；writer/consumer 迁移都必须重新经过 `plan`；能在 ambient transaction 中运行的
 writer 必须先有单独确认和验证的 after-commit 设计。

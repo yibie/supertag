@@ -1,3 +1,5 @@
+本文描述的 schema/table/kanban/search/capture 旧入口已归档，当前入口见 README。
+
 #+TITLE: Supertag 的一天 — 一个人的完整工作流
 #+AUTHOR: Supertag 社区
 #+EMAIL: yibie@users.noreply.github.com
@@ -240,7 +242,6 @@ Supertag 读取后：
 | 添加新列                         | =M-x supertag-view-table-add-column=   |
 | 保存当前视图为命名视图           | =M-x supertag-view-table-save-current-view-as-named= |
 | 切换命名视图                     | =M-x supertag-view-table-switch-view=  |
-| 导出到 Org 文件                  | =M-x supertag-search-export-results-to-file= |
 
 命名视图是改变游戏规则的功能。我有这些：
 
@@ -401,10 +402,6 @@ Board UI 最适合 /探索/ 和 /理解/——当我想搞清楚想法之间怎�
          (after "-1d")))
 #+end_src
 
-可以把搜索结果保存到文件：
-
-=M-x supertag-search-export-results-to-file= → 生成一个 Org 文件，包含所有匹配的标题及其字段。
-
 ** RAG：向我的笔记提问
 
 有时候我不知道正确的查询方式，我只是有一个问题。这就是 RAG（检索增强生成）功能发光的地方：
@@ -487,7 +484,7 @@ RAG 有三种模式：
 
 #+begin_src emacs-lisp
   ;; 从完整快照重建 Org Projection
-  M-x supertag-reindex-org
+  M-x supertag-sync-full-rescan
 
   ;; 该命令只读 Org 文件并保留数据库中的 Semantic Facts；
   ;; 数据库丢失时必须从备份恢复这些事实。
@@ -607,7 +604,7 @@ Supertag 每天自动保存快照（可配置）：
 | =M-x supertag-rag-ask=                  | "关于 X 我做了哪些决定？"        | 每周   |
 | =M-x supertag-board-open=               | 可视化知识探索                   | 每周   |
 | =M-x supertag-sync-status=              | 健康检查                         | 每周   |
-| =M-x supertag-reindex-org=              | 重建 Org Projection             | 每月   |
+| =M-x supertag-sync-full-rescan=         | 重建 Org Projection              | 每月   |
 | =M-x supertag-sync-cleanup-database=    | 修复不一致                       | 按需   |
 
 * 我实际用的快捷键

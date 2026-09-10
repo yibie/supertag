@@ -1,3 +1,5 @@
+The legacy schema/table/kanban/search/capture entry points described here are archived; see README for the current workflow.
+
 # Automation System 2.0 - User Guide and Examples
 
 ## 🚀 Overview
@@ -11,7 +13,7 @@
 - ✅ **Automatic Rule Indexing**: Automatically builds high-performance indexes for rules in the background, without users needing to worry about performance optimization details.
 - ✅ **Multiple Action Execution**: A single rule can trigger a series of sequentially executed actions.
 - ✅ **Scheduled Tasks**: Supports time-based and periodic automation, driven by an integrated scheduler.
-- ✅ **Relationships and Calculations**: Supports advanced features like bidirectional relationships, property synchronization, and Rollup calculations.
+- ✅ **Relationships and Calculations**: Supports bidirectional relationships and read-time query aggregates.
 - ✅ **Formula Fields**: Calculates and displays data in real-time in table views without persistent storage.
 - ✅ **Legacy Interop**: Some legacy storage/events are still supported where needed (details are called out explicitly below).
 
@@ -125,39 +127,14 @@ When defining relationships, the most important property is `:type`, which deter
 | **One-to-Many** | `:one-to-many` | A "source" node can be associated with **multiple** "target" nodes, but each "target" node can only be associated with one "source" node. | A `#Project` can contain multiple `#Task`s. A `#Notebook` can contain multiple `#Note`s. |
 | **Many-to-Many** | `:many-to-many` | "Source" and "target" nodes can be arbitrarily associated with each other, with no limit on quantity. | An `#Article` can have multiple `#Keyword`s; a `#Keyword` can also be used in multiple `#Article`s. |
 
-### Advanced Feature: Rollup
+### Retired Relationship Behaviors
 
-Rollup is a powerful feature of the relationship system that allows "one" end nodes (such as `#Project`) to automatically collect data from all associated "many" end nodes (such as multiple `#Task`s) and perform real-time calculations.
-
-You can configure rollup by adding a `:rollup` property when defining `:one-to-many` or `:many-to-many` relationships.
-
-#### **Rollup Configuration Parameters**
-
-The `:rollup` property itself is a property list (plist) containing the following three key parameters:
-
-| Parameter | Description | Example |
-| :--- | :--- | :--- |
-| **`:from-field`** | Specifies which property to collect data from on the "many" end nodes (source). | Collect `:hours` property values from all `#Task` nodes. |
-| **`:to-field`** | Specifies which property on the "one" end node (target) to write the calculation result to. | Write the calculation result to the `:total_hours` property of the `#Project` node. |
-| **`:function`** | Specifies which function to use to process the collected data. | Use the `sum` function to add up all the hours. |
-
-#### **Available Rollup Functions (`:function`)**
-
-The system has built-in several commonly used calculation functions:
-
-| Function Name | Description | Test Status |
-| :--- | :--- | :------- |
-| `sum` | Calculate the sum of all numeric values. | ✅ Verified |
-| `count` | Count the total number of associated nodes. | ✅ Verified |
-| `average` | Calculate the average of all numeric values. | ✅ Verified |
-| `min` / `max` | Find the minimum or maximum value among all numeric values. | ✅ Verified |
-| `unique-count` | Count how many unique property values there are. | ✅ Verified |
-| `concat` | Concatenate all property values (usually text) into a string. | ✅ Verified |
-| `first` / `last` | Return the first or last value. | ✅ Supported |
-
-**Planned Features (Future Versions)**:
-| `count-where-filled` | Count nodes with non-empty values. | 🔄 Planned |
-| `percent-done` | Calculate completion percentage. | 🔄 Planned |
+Relation field synchronization and executable rollups are retired. New
+relations cannot request `:sync-fields`, rollup configuration, or the former
+`:sync-field`/`:rollup` relation types. Existing stored relation metadata is
+kept as inert historical data: loading or updating it does not propagate fields,
+recalculate values, or convert it into Org properties. Use query aggregates for
+read-time summaries; they do not persist a rollup result.
 
 ---
 
@@ -198,14 +175,14 @@ are bare field names; arithmetic is `+ - * /` with parentheses, and
   are translated to the infix grammar automatically, so existing
   configurations keep working.
 
-### Differences Between Formula Fields, Automation Rules, and Rollup
+### Differences Between Formula Fields and Automation Rules
 
-| Feature | Formula Fields | Automation Rules | Rollup |
-| :--- | :--- | :--- | :--- |
-| **Purpose** | Display calculation results in real-time **in views** | **Modify persistent data** in the underlying database based on events | Aggregate related node data, **persistently store** results |
-| **Trigger Timing** | When table view is rendered | Data change events (such as property changes, tag additions/removals) | When relationships or related node properties change |
-| **Data Persistence** | **Does not** store results in database | **Will** store results in database | **Will** store results in database |
-| **Use Cases** | Lightweight, instant display calculations without changing original data | Need persistent data changes, trigger complex workflows | Cross-node data aggregation, need persistent rollup results |
+| Feature | Formula Fields | Automation Rules |
+| :--- | :--- | :--- |
+| **Purpose** | Display calculation results in real-time **in views** | **Modify persistent data** based on events |
+| **Trigger Timing** | When table view is rendered | Data change events (such as property changes, tag additions/removals) |
+| **Data Persistence** | **Does not** store results | Stores the result of an explicit action |
+| **Use Cases** | Lightweight display calculations without changing source data | Explicit event-driven workflows |
 
 ---
 
@@ -307,7 +284,8 @@ operators; event conditions are the dedicated forms below.
 
 | Condition Type | Format | Description |
 | :--- | :--- | :--- |
-| **Query grammar** | `(and ...)` `(or ...)` `(not ...)` `(tag ...)` `(field ...)` `(task ...)` `(priority ...)` `(term ...)` + date operators | Full query syntax; the rule matches the same node set a query block would |
+| **Query grammar** | `(and ...)` `(or ...)` `(not ...)` `(tag ...)` `(field ...)` `(property ...)` `(task ...)` `(priority ...)` `(term ...)` + date operators | Full query syntax; the rule matches the same node set a query block would |
+| **Org property** | `(property "STAGE" "ready")` | Exact text match against a saved, synchronized local Org property; names are normalized to uppercase, and an empty value differs from a missing property |
 | **Property Equals (keyword)** | `(property-equals :prop-name "value")` | Node plist property equality (no query equivalent; keyword form only) |
 | **Property Changed** | `(property-changed :prop-name)` | This event changed the specified property |
 | **Property Test** | `(property-test :prop-name #'> 8)` | Test the property value via a function |
@@ -319,6 +297,17 @@ Legacy condition forms (`has-tag`, `has-any-tag`, `has-all-tags`,
 `field-equals`, `global-field-equals`, and `property-equals` with a string
 key) convert deterministically to the query grammar at evaluation time and
 keep working; new rules should write the query grammar directly.
+
+`property` is distinct from `field`: it reads only the Org property's
+projected text and does not resolve or fall back to a legacy field. Queries and
+Automation conditions see the synchronized database snapshot, not unsaved Org
+drafts.
+
+Saving a real Org change and processing it through incremental synchronization
+can trigger a matching rule once. An unchanged projection is a no-op. In
+contrast, `supertag-reindex-org` is a projection rebuild: it may refresh query
+results, but it never runs Automation actions or writes those actions back to
+Org.
 
 #### `:condition` (rule field)
 
@@ -348,12 +337,12 @@ Each action is a `plist` in the format `(:action :action-type :params (...))`.
 
 | Action Type (`:action-type`) | `:params` Parameters | Description |
 | :--- | :--- | :--- |
-| **`:update-property`** | `(:property :prop-name :value new-value)` | Update or add a node property in the datastore (`:properties` plist). `new-value` is treated as a literal value. |
+| **`:update-property`** | `(:property :prop-name :value new-value)` | Update or remove (`nil`) a property in the node's live Org heading, save it, then refresh the database representation. Names may be keywords or Org property strings; supported scalar values become single-line text. `ID`, read-only special properties, multiline text, and structured values are rejected. |
 | **`:update-todo-state`** | `(:state "new-state")` | Update the TODO state of the current node (e.g., to "DONE", "TODO"). This directly changes the headline's keyword, unlike `:update-property`. |
 | **`:add-tag`** | `(:tag "tag-name")` | Add a new tag to the current node. |
 | **`:remove-tag`** | `(:tag "tag-name")` | Remove a tag from the current node. |
 | **`:call-function`** | `(:function #'your-function :args (...))` | Call an Emacs Lisp function you've defined yourself. This is the "ultimate weapon" for implementing complex logic. The function receives `(node-id context &rest args)`. |
-| **`:create-node`** | `(:title "..." :tags '("...") ...)` | Create a completely new node. |
+| **`:create-node`** | `(:title "..." :tags '("...") :target-file "/absolute/path/to/notes.org")` | Append a new identified level-1 heading to an existing local Org file, save it, then project it. `:tags` writes Org tag occurrences; only already-existing Semantic Tags resolve into the DB projection. Org's native title syntax is preserved. The absolute target is required; existing rules without it fail and must be amended manually. |
 | **`:update-field`** | `(:tag "tag-id" :field "field-name" :value v)` | Resolve the Tag schema field and update its global value for the node. |
 | **`:case`** | `(:on (:field "层级") :branches '((:equals "20" :actions ((:action :update-field ...))) (:default t :actions ((:action :call-function ...)))))` | Resolve a value (`:on`) and execute the first matching branch. Each branch can use `:equals`, `:in`, `:match` (regexp/function), or `:test` to match, and runs its own nested `:actions`. Provide `:default t` for a fallback branch. |
 
@@ -514,9 +503,9 @@ Under the hood, `field-equals`/`field-changed` are indexed by the stable global 
 
 ### Example 2: Project-Task Integration
 
-This example will showcase the powerful capabilities of "Relationships" and "Rollup".
+This example showcases relationships and an explicit Automation rule.
 
-*(Note: This example assumes that a `#Project` tag with `status` and `total_hours` fields has been pre-defined, as well as a one-to-many relationship named `tasks` from `Project` to `task`, configured with a `sum` rollup from `:hours` to `:total_hours`.)*
+*(Note: This example assumes that a `#Project` tag with a `status` field and a one-to-many relationship named `tasks` from `Project` to `task` have been pre-defined.)*
 
 #### 1. Creating Automation Rules
 
@@ -550,11 +539,6 @@ When a subtask's status changes, we want to check if all tasks in the parent pro
 ```
 
 #### 2. Simulated Effects
-
-*   **Automatic Hours Rollup (Driven by Relationship Definition)**:
-    *   **Before Operation**: `#Project`'s `:total_hours:` is `5`. It's associated with a `#task` with `:hours:` of `5`.
-    *   **Operation**: Associate a new `#task` with the project and set its `:hours:` to `3`.
-    *   **After Operation**: `#Project`'s `:total_hours:` automatically updates to `8`.
 
 *   **Automatic Project Completion (Driven by This Rule)**:
     *   **Before Operation**: `#Project` is associated with two `#task`s, one with `Done` status and another with `Todo` status.
@@ -739,12 +723,6 @@ You can run these snippets in `*scratch*` after loading `supertag`.
 Automation System 2.0 provides a series of maintenance commands to ensure healthy system operation:
 
 ```elisp
-;; Recalculate all rollup values
-(supertag-automation-recalculate-all-rollups)
-
-;; Synchronize all field-sync relations
-(supertag-automation-sync-all-fields)
-
 ;; Clean up and rebuild index
 (supertag-automation-cleanup)
 (supertag-automation-init)
@@ -1056,20 +1034,17 @@ When processing large numbers of nodes, consider the following optimization stra
 
 #### Issue 3: Data Inconsistency
 
-**Symptoms**: Some property values are incorrect, or rollup calculations don't match expectations.
+**Symptoms**: Some property values are incorrect or rules produce unexpected results.
 
 **Possible Causes**:
 - Race conditions from concurrent modifications
-- Logic errors in rollup calculations
+- Logic errors in rule actions
 - Rule execution order issues
 
 **Diagnostic Steps**:
 ```elisp
 ;; Check node properties
 (supertag-node-get node-id)
-
-;; Manually recalculate rollup
-(supertag-automation-recalculate-all-rollups)
 
 ;; Verify relationship data
 (supertag-relation-get-related-nodes node-id "relation-name")
@@ -1113,9 +1088,6 @@ Run system health checks regularly to ensure data integrity:
          (unless (supertag-relation-validate relation-name)
            (push (format "Relation %s has consistency issues" relation-name) issues))))
      (supertag-store-get-collection :relations))
-    
-    ;; Check rollup calculations
-    (supertag-automation-recalculate-all-rollups)
     
     ;; Report results
     (if issues

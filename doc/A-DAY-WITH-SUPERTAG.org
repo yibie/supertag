@@ -1,3 +1,5 @@
+The legacy schema/table/kanban/search/capture entry points described here are archived; see README for the current workflow.
+
 #+TITLE: A Day with Supertag — One Person's Complete Workflow
 #+AUTHOR: Supertag Community
 #+EMAIL: yibie@users.noreply.github.com
@@ -261,7 +263,6 @@ Things I do regularly:
 | Add a new column                | =M-x supertag-view-table-add-column=   |
 | Save this view as a named view  | =M-x supertag-view-table-save-current-view-as-named= |
 | Switch between named views      | =M-x supertag-view-table-switch-view=  |
-| Export to Org file              | =M-x supertag-search-export-results-to-file= |
 
 Named views are a game-changer.  I have:
 
@@ -435,11 +436,6 @@ trivial:
          (after "-1d")))
 #+end_src
 
-I can save search results to a file:
-
-=M-x supertag-search-export-results-to-file= → produces an Org file with all matching
-headings and their fields.
-
 ** RAG: Ask Questions About My Notes
 
 Sometimes I don't know the right query.  I just have a question.  That's where the
@@ -524,7 +520,7 @@ If anything looks off:
 
 #+begin_src emacs-lisp
   ;; Rebuild Org projections from a complete snapshot
-  M-x supertag-reindex-org
+  M-x supertag-sync-full-rescan
 
   ;; This only reads your Org files.  Semantic Facts in the database
   ;; are preserved; restore them from backup if the DB itself was lost.
@@ -646,7 +642,7 @@ README.
 | =M-x supertag-rag-ask=                  | "What did I decide about X?"                   | Weekly    |
 | =M-x supertag-board-open=               | Visual knowledge exploration                   | Weekly    |
 | =M-x supertag-sync-status=              | Health check                                   | Weekly    |
-| =M-x supertag-reindex-org=              | Rebuild Org projections                       | Monthly   |
+| =M-x supertag-sync-full-rescan=         | Rebuild Org projections                        | Monthly   |
 | =M-x supertag-sync-cleanup-database=    | Fix inconsistencies                            | As needed |
 
 * Key Bindings I Actually Use

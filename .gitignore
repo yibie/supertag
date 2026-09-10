@@ -83,10 +83,6 @@ CLAUDE.md
 /.claude/
 /commands/
 /docs/*
-!/docs/spec-agents/
-!/docs/spec-agents/**
-!/docs/protocols/
-!/docs/protocols/**
 /hooks/
 /logs/
 /qoder/
@@ -103,3 +99,6 @@ reasonix.toml
 
 # pictures
 picture/
+
+# Local backup directory is not a source delivery.
+/sueprtag-backup/

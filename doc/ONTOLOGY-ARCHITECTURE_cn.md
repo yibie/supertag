@@ -1,3 +1,5 @@
+本文描述的 schema/table/kanban/search/capture 旧入口已归档，当前入口见 README。
+
 # Supertag 本体三层架构视图（数据 / 逻辑 / 行为）
 
 > supertag is an ontological system where data defines what exists, logic defines what it means, and behavior defines what can be done.
@@ -166,7 +168,7 @@ Semantic command -> Semantic transaction -> 使相关 Projection 失效
 如果你认可“逻辑层≈查询/视图”，那么落地其实就是把“查询”变成用户能持续使用的三个入口：
 
 1. **Query-Block（推荐，最符合逻辑层）**：把逻辑写进 Org 文档，结果可重复计算、可分享、可版本化。  
-   - 入口：`M-x supertag-insert-query-block`（实现见 `supertag-ui-query-block.el`）  
+   - 入口：`M-x supertag-add-query-block`（实现见 `supertag-query-block.el`）
    - 用法：在插入的 `supertag-query-block` 代码块里写查询 S-expression，`C-c C-c` 执行，得到表格结果。
 
 2. **交互式视图（Table / Search）**：把逻辑作为“视图条件”来用，体验更爽快，但默认不持久化。  

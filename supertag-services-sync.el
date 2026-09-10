@@ -1511,20 +1511,6 @@ check on its own schedule."
 
 ;;; --- Enhanced Hash Table Traversal Utilities ---
 
-(defun supertag-traverse-collection (collection-path callback)
-  "Traverse a collection in the nested hash table at COLLECTION-PATH.
-CALLBACK is a function that receives (id value) pairs.
-Returns a list of results from CALLBACK."
-  (let* ((path (if (listp collection-path) collection_path (list collection_path)))
-         (key (car path))
-         (collection (and key (supertag-store-get-collection key)))
-        (results '()))
-    (when (hash-table-p collection)
-      (maphash (lambda (id value)
-                 (push (funcall callback id value) results))
-               collection))
-    (nreverse results)))
-
 (defun supertag-traverse-nodes (callback)
   "Traverse all nodes in the store.
 CALLBACK is a function that receives (id node-data) pairs.

@@ -1,4 +1,0 @@
-interface:
-  display_name: "Learn"
-  short_description: "Promote verified learning into durable context"
-  default_prompt: "Use $learn to record the verified evidence and decide what knowledge should persist."

@@ -1,4 +1,0 @@
-interface:
-  display_name: "Plan"
-  short_description: "Question a proposed change before execution"
-  default_prompt: "Use $plan to question this change, preserve the current contract, and choose the smallest safe next step."

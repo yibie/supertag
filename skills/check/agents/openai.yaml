@@ -1,4 +1,0 @@
-interface:
-  display_name: "Check"
-  short_description: "Check code against design and engineering rules"
-  default_prompt: "Use $check to inspect this change against its SPEC, context, protocols, and engineering standards."

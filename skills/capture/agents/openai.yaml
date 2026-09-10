@@ -1,4 +1,0 @@
-interface:
-  display_name: "Capture"
-  short_description: "Record confirmed design as a living SPEC"
-  default_prompt: "Use $capture to record this confirmed multi-context design as a living SPEC."

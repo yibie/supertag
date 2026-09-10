@@ -1,4 +1,0 @@
-interface:
-  display_name: "Do"
-  short_description: "Execute one approved work slice and verify it"
-  default_prompt: "Use $do to execute this approved, unblocked work slice and run its required checks."

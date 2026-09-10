@@ -1,4 +1,0 @@
-interface:
-  display_name: "Arrange"
-  short_description: "Arrange a design into verifiable work slices"
-  default_prompt: "Use $arrange to split this confirmed SPEC into independently verifiable work slices."

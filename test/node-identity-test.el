@@ -258,7 +258,7 @@
     (let ((file (expand-file-name "lookalike.org" tmp)))
       (with-temp-file file
         (insert "* Parent\n#+begin_src org\n:ID: child\n#+end_src\n"
-                "* Child\n:PROPERTIES:\n:ID: child\n:END:\n"
+                "** Child\n:PROPERTIES:\n:ID: child\n:END:\n"
                 "* Other\nSome text.\n:ID: ghost\n"))
       (supertag-store-put-entity
        :nodes "child" `(:id "child" :title "Child" :file ,file :position 99999 :level 1))

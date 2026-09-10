@@ -202,17 +202,25 @@ that value and reject a conflicting existing ID."
             node-id)))))
 
 (defun supertag-node-location--id-property-position (node-id)
-  "Return NODE-ID's property position in the widened current buffer."
+  "Return NODE-ID's property position in the widened current buffer.
+
+A matching `:ID: NODE-ID' line is accepted only when it lives inside a
+real property drawer; a lookalike line in body text or a source block
+keeps the search going."
   (save-excursion
     (save-restriction
       (widen)
       (goto-char (point-min))
-      (when (re-search-forward
-             (concat "^[ \t]*:ID:[ \t]*"
-                     (regexp-quote node-id)
-                     "[ \t]*$")
-             nil t)
-        (point)))))
+      (let ((regexp (concat "^[ \t]*:ID:[ \t]*"
+                            (regexp-quote node-id)
+                            "[ \t]*$")))
+        (catch 'found
+          (while (re-search-forward regexp nil t)
+            (save-excursion
+              (beginning-of-line)
+              (when (org-at-property-p)
+                (throw 'found (point)))))
+          nil)))))
 
 (defun supertag-node-location--heading-position (node-id)
   "Return NODE-ID's heading position in the widened current buffer."

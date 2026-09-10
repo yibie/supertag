@@ -447,7 +447,7 @@
                (setq prompt actual-prompt
                      choices (mapcar #'car collection))
                "Rename tag...")))
-        (cl-letf (((symbol-function 'supertag-rename-tag)
+        (cl-letf (((symbol-function 'supertag-tag-rename)
                    (lambda (tag-id) (setq renamed tag-id))))
           (supertag-act)
           (should (string-match-p "#paper" prompt))

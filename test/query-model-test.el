@@ -24,13 +24,13 @@
 (ert-deftest supertag-query-model-exposes-concrete-node-and-tag-reads ()
   "Concrete node and Tag reads preserve the View API contract."
   (supertag-ownership-test-with-vault
-    (let ((paths (supertag-query-tag-paths)))
+    (let ((descriptors (supertag-query-tag-descriptors)))
       (should (equal '("Project" "Reference")
-                     (mapcar (lambda (entry) (plist-get entry :display-path))
-                             paths)))
-      (should (equal (mapcar (lambda (entry) (plist-get entry :name)) paths)
+                     (mapcar (lambda (entry) (plist-get entry :display))
+                             descriptors)))
+      (should (equal (mapcar (lambda (entry) (plist-get entry :name)) descriptors)
                      (supertag-view-api-list-tags)))
-      (should (equal (sort (mapcar (lambda (entry) (plist-get entry :id)) paths)
+      (should (equal (sort (mapcar (lambda (entry) (plist-get entry :id)) descriptors)
                            #'string<)
                      (supertag-view-api-list-tag-ids))))
     (let ((node-ids (supertag-query-node-ids-by-tag "project")))
@@ -122,13 +122,13 @@
                     (append (alist-get 'edges sent-data) nil)))))))
 
 (ert-deftest supertag-query-model-completion-consumes-concrete-reads ()
-  "Completion helpers consume Tag paths and occurrence projections."
+  "Completion helpers consume Tag descriptors and occurrence projections."
   (supertag-ownership-test-with-vault
     (should (equal (supertag-completion--get-all-tags)
                    (cl-remove-if-not
                     #'supertag-transform-inline-tag-name-p
                     (mapcar (lambda (entry) (plist-get entry :id))
-                            (supertag-query-tag-paths)))))
+                            (supertag-query-tag-descriptors)))))
     (should (equal (supertag-completion--get-all-tag-occurrences)
                    (cl-remove-if-not
                     #'supertag-transform-inline-tag-name-p

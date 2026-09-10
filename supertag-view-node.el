@@ -434,12 +434,12 @@ Only strips keywords if `supertag-view-node-strip-todo-keywords' is non-nil."
 
 (defun supertag-view-node--tag-display-name (tag-id)
   "Return the human-readable name for TAG-ID.
-Prefer the canonical display path, then the stored `:name', and fall back
+Prefer the canonical hierarchy display name, then the stored `:name', and fall back
 to TAG-ID itself only when no Tag record is available."
   (let ((tag-data (supertag-tag-get tag-id)))
     (or (and tag-data
-             (let ((path (ignore-errors (supertag-tag-display-path tag-id))))
-               (and (stringp path) (not (string-empty-p path)) path)))
+             (let ((name (ignore-errors (supertag-tag-display-name tag-id))))
+               (and (stringp name) (not (string-empty-p name)) name)))
         (and tag-data (plist-get tag-data :name))
         tag-id)))
 

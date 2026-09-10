@@ -1,10 +1,10 @@
-;;; supertag-tag.el --- Tag entities and slash-path rules -*- lexical-binding: t; -*-
+;;; supertag-tag.el --- Tag entities and :extends hierarchy -*- lexical-binding: t; -*-
 
 ;;; Commentary:
 ;; Semantic Tag IDs identify entities independently of their display names.
-;; Slash-path rules derive namespaces from names without creating parent tags.
+;; Tag hierarchy comes solely from explicit `:extends' parent IDs.
 ;; Org write formats, stable token merging and membership reads share this owner.
-;; Entity operations, indexes, path rules, merge and namespace rename share
+;; Entity operations, indexes, hierarchy rules, merge and rename share
 ;; this feature, including their Org text rewrite and snapshot recovery code.
 ;; Ordinary face styling and SVG rendering share this feature and parser.
 ;; Canonical Tag input, Org placement and the raw-membership node selector
@@ -18,7 +18,7 @@
 ;;
 ;; Commands: supertag-view-style-mode, supertag-toggle-tag-style,
 ;; supertag-ui-completion-mode, global-supertag-ui-completion-mode,
-;; supertag-add-tag, supertag-remove-tag-from-node, supertag-rename-tag,
+;; supertag-add-tag, supertag-remove-tag-from-node, supertag-tag-rename,
 ;; supertag-delete-tag-everywhere,
 ;; supertag-cleanup-orphaned-tags.
 ;; Hooks: org-mode-hook, enable-theme-functions (when available).
@@ -28,14 +28,13 @@
 ;; supertag-view--resolve-node-tags, supertag-view-helper-format-tag-value,
 ;; supertag-tag-create, supertag-tag-get, supertag-tag-update,
 ;; supertag-tag-delete, supertag-tag-resolve-occurrence,
-;; supertag-tag-display-path, supertag-tag-descendants,
+;; supertag-tag-display-name, supertag-tag-parent, supertag-tag-ancestors,
+;; supertag-tag-descendants,
 ;; supertag-tag-index-clear, supertag-tag-index-rebuild,
 ;; supertag-tag-orphaned-ids, supertag-tag-delete-orphans,
 ;; supertag-ops-add-tag-to-node, supertag-sanitize-tag-name,
-;; supertag-tag-path-valid-p, supertag-tag-path-parent,
-;; supertag-tag-path-leaf, supertag-tag-path-descendant-p,
-;; supertag-tag-path-rebase, supertag-tag-merge-plan, supertag-tag-merge-execute,
-;; supertag-tag-path-rename-plan, supertag-tag-path-rename-execute,
+;; supertag-tag-merge-plan, supertag-tag-merge-execute,
+;; supertag-tag-rename-plan, supertag-tag-rename-execute,
 ;; supertag-view-helper-rename-tag-text-in-buffer,
 ;; supertag-view-helper-rename-tag-text-in-files, supertag-ui-read-tag,
 ;; supertag-ui-read-tags, supertag-ui--read-tag-field, supertag-ui-select-tag-on-node,
@@ -46,7 +45,7 @@
 ;; supertag-core-store, supertag-link (ordinary providers),
 ;; supertag-node, supertag-service-org (via Node); lazy
 ;; supertag-service-org providers load Sync before FILETAGS callbacks;
-;; supertag-query lazily supplies Tag paths, membership and occurrences;
+;; supertag-query lazily supplies Tag descriptors, membership and occurrences;
 ;; supertag-view-framework lazily supplies shared colors for Tag value display;
 ;; its first use loads the existing Query/Tag/Sync dependency closure;
 ;; supertag-query lazily supplies node membership reads for Tag management;
@@ -91,8 +90,8 @@
 (declare-function supertag-node-tag-occurrences-at-point "supertag-services-sync" ())
 
 ;; Tag input reads Query only on first use, never while loading this feature.
-(autoload 'supertag-query-tag-paths "supertag-query")
-(declare-function supertag-query-tag-paths "supertag-query" ())
+(autoload 'supertag-query-tag-descriptors "supertag-query")
+(declare-function supertag-query-tag-descriptors "supertag-query" ())
 (autoload 'supertag-query-node-tags "supertag-query")
 (autoload 'supertag-query-tag-occurrences "supertag-query")
 (declare-function supertag-query-node-tags "supertag-query" (node-id))
@@ -293,45 +292,6 @@ region is parsed as secondary Org text using RESTRICTION."
               (push tag tags))))))
     (nreverse tags)))
 
-;;; Pure slash-path rules
-
-(defun supertag-tag-path-valid-p (path)
-  "Return non-nil when PATH has no empty slash-delimited segment."
-  (and (stringp path)
-       (not (string-empty-p path))
-       (not (string-prefix-p "/" path))
-       (not (string-suffix-p "/" path))
-       (not (string-match-p "//" path))))
-
-(defun supertag-tag-path-parent (path)
-  "Return PATH's namespace parent, or nil for a root or malformed path."
-  (when (supertag-tag-path-valid-p path)
-    (when-let* ((slash (string-match "/[^/]+\\'" path)))
-      (substring path 0 slash))))
-
-(defun supertag-tag-path-leaf (path)
-  "Return PATH's final segment, preserving malformed historical IDs."
-  (if-let* ((parent (supertag-tag-path-parent path)))
-      (substring path (1+ (length parent)))
-    path))
-
-(defun supertag-tag-path-descendant-p (candidate parent)
-  "Return non-nil when CANDIDATE is a strict path descendant of PARENT."
-  (and (supertag-tag-path-valid-p candidate)
-       (supertag-tag-path-valid-p parent)
-       (> (length candidate) (length parent))
-       (string-prefix-p (concat parent "/") candidate)))
-
-(defun supertag-tag-path-rebase (path old-root new-root)
-  "Move PATH from OLD-ROOT to NEW-ROOT while preserving its suffix."
-  (unless (and (supertag-tag-path-valid-p old-root)
-               (supertag-tag-path-valid-p new-root)
-               (or (equal path old-root)
-                   (supertag-tag-path-descendant-p path old-root)))
-    (error "Cannot rebase tag path '%s' from '%s' to '%s'"
-           path old-root new-root))
-  (concat new-root (substring path (length old-root))))
-
 ;;; Tag entities, indexes and operations
 
 ;;; --- Internal Helper ---
@@ -346,6 +306,11 @@ Implements immediate error reporting as preferred by the user."
   (when-let* ((aliases (plist-get data :aliases)))
     (unless (and (proper-list-p aliases) (cl-every #'stringp aliases))
       (error "Tag :aliases must be a list of strings, got: %S" aliases)))
+  (when (plist-member data :extends)
+    (unless (or (null (plist-get data :extends))
+                (stringp (plist-get data :extends)))
+      (error "Tag :extends must be a string or nil, got: %S"
+             (plist-get data :extends))))
   ;; Validate time format compliance (Emacs native format)
   (when-let ((created-at (plist-get data :created-at)))
     (unless (condition-case nil
@@ -414,9 +379,6 @@ This ensures that modifications to the copy do not affect the original."
 (defvar supertag-tag--token-index (make-hash-table :test 'equal)
   "Index: normalized occurrence token -> sorted Semantic Tag IDs.")
 
-(defvar supertag-tag--display-path-index (make-hash-table :test 'equal)
-  "Index: Semantic Tag ID -> canonical display path.")
-
 (defvar supertag-tag--descendants-index (make-hash-table :test 'equal)
   "Index: Semantic Tag ID -> transitive descendant IDs.")
 
@@ -426,63 +388,51 @@ This ensures that modifications to the copy do not affect the original."
 (defun supertag-tag-index-clear ()
   "Clear every Semantic Tag lookup index."
   (setq supertag-tag--token-index (make-hash-table :test 'equal)
-        supertag-tag--display-path-index (make-hash-table :test 'equal)
         supertag-tag--descendants-index (make-hash-table :test 'equal)
         supertag-tag--index-source-token nil))
 
-(defun supertag-tag--compute-display-path (tag-id tags)
-  "Return TAG-ID's name as its display path in TAGS."
-  (let ((tag (supertag--ensure-plist (gethash tag-id tags))))
-    (if tag
-        (supertag-sanitize-tag-name (or (plist-get tag :name) tag-id))
-      tag-id)))
-
-(defun supertag-tag--descendant-p (candidate parent tags)
-  "Return non-nil when CANDIDATE is below PARENT's slash path in TAGS."
-  (supertag-tag-path-descendant-p
-   (supertag-tag--compute-display-path candidate tags)
-   (supertag-tag--compute-display-path parent tags)))
-
 (defun supertag-tag-index-rebuild ()
-  "Cold rebuild token, display-path and descendant indexes from Store."
+  "Cold rebuild token and `:extends' descendant indexes from Store."
   (supertag-tag-index-clear)
   (condition-case err
       (let ((tags (supertag-store-get-collection :tags)))
         (when (hash-table-p tags)
-          (maphash
-           (lambda (tag-id _tag)
-             (puthash tag-id
-                      (supertag-tag--compute-display-path tag-id tags)
-                      supertag-tag--display-path-index))
-           tags)
-          (maphash
-           (lambda (tag-id raw-tag)
-             (dolist (token (supertag-tag--tokens
-                             tag-id (supertag--ensure-plist raw-tag)))
-               (puthash token
-                        (cons tag-id (gethash token supertag-tag--token-index))
-                        supertag-tag--token-index)))
-           tags)
-          (maphash
-           (lambda (token owners)
-             (puthash token (sort (delete-dups owners) #'string<)
-                      supertag-tag--token-index))
-           supertag-tag--token-index)
-          ;; ponytail: O(T²) only during cold rebuild; use a child adjacency
-          ;; walk if measured Vault startup time makes this material.
-          (maphash
-           (lambda (parent-id _parent)
-             (let (descendants)
-               (maphash
-                (lambda (candidate-id _candidate)
-                  (when (and (not (equal candidate-id parent-id))
-                             (supertag-tag--descendant-p
-                              candidate-id parent-id tags))
-                    (push candidate-id descendants)))
-                tags)
-               (puthash parent-id (nreverse descendants)
-                        supertag-tag--descendants-index)))
-           tags))
+          (let ((children (make-hash-table :test 'equal)))
+            (maphash
+             (lambda (tag-id raw-tag)
+               (let ((tag (supertag--ensure-plist raw-tag)))
+                 (dolist (token (supertag-tag--tokens tag-id tag))
+                   (puthash token
+                            (cons tag-id (gethash token supertag-tag--token-index))
+                            supertag-tag--token-index))
+                 (let ((parent (plist-get tag :extends)))
+                   (when (and (stringp parent)
+                              (not (equal parent tag-id))
+                              (gethash parent tags))
+                     (puthash parent (cons tag-id (gethash parent children))
+                              children)))))
+             tags)
+            (maphash
+             (lambda (token owners)
+               (puthash token (sort (delete-dups owners) #'string<)
+                        supertag-tag--token-index))
+             supertag-tag--token-index)
+            (maphash
+             (lambda (tag-id _tag)
+               (let ((queue (copy-sequence (gethash tag-id children)))
+                     (seen (make-hash-table :test 'equal))
+                     descendants)
+                 (while queue
+                   (let ((child (pop queue)))
+                     (unless (gethash child seen)
+                       (puthash child t seen)
+                       (push child descendants)
+                       (setq queue
+                             (nconc queue
+                                    (copy-sequence (gethash child children)))))))
+                 (puthash tag-id (sort descendants #'string<)
+                          supertag-tag--descendants-index)))
+             tags)))
         (setq supertag-tag--index-source-token
               (supertag-index-source-token '(:tags))))
     (error
@@ -506,10 +456,7 @@ This ensures that modifications to the copy do not affect the original."
 (defun supertag-tag--tokens (tag-id tag)
   "Return every token that identifies TAG-ID and TAG."
   (supertag-tag--normalize-aliases
-   (append (list tag-id
-                 (plist-get tag :name)
-                 (supertag-tag--compute-display-path
-                  tag-id (supertag-store-get-collection :tags)))
+   (append (list tag-id (plist-get tag :name))
            (plist-get tag :aliases))))
 
 (cl-defun supertag-tag--matching-ids
@@ -561,10 +508,6 @@ Returns the created tag data."
   (when (plist-get props :fields)
     (user-error
      "Tag :fields is retired; fields are Org properties on document headings"))
-  (when (plist-get props :extends)
-    (user-error
-     (concat "Tag :extends is retired; hierarchy comes from "
-             "the slash path in the tag name")))
   (let* ((raw-name (plist-get props :name))
          (name (and (stringp raw-name)
                     (supertag-sanitize-tag-name raw-name)))
@@ -572,17 +515,15 @@ Returns the created tag data."
          (existing-id (and (not requested-id) name
                            (supertag-tag-resolve-occurrence name)))
          (id (or requested-id existing-id (supertag-tag--new-stable-id)))
+         (extends (plist-get props :extends))
          (existing-tag (supertag-tag-get id)))
-    ;; Check if tag exists
     (if existing-tag
         (progn
           (message "Tag '%s' already exists, returning existing tag." id)
           existing-tag)
       (unless (and (stringp name) (not (string-empty-p name)))
         (user-error "Tag name cannot be empty"))
-      (unless (supertag-tag-path-valid-p name)
-        (user-error "Tag name '%s' has an empty path segment" name))
-      ;; If tag does not exist, create it
+      (supertag-tag--validate-extends id extends)
       (let* ((aliases
               (supertag-tag--normalize-aliases
                (append (list id name)
@@ -591,10 +532,11 @@ Returns the created tag data."
                              :name ,name
                              :aliases ,aliases
                              :type :tag
+                             :extends ,extends
                              :created-at ,(current-time)
                              :modified-at ,(current-time))))
+        (supertag--validate-tag-data final-props)
         (supertag-tag--assert-tokens-unique id aliases)
-        ;; Use unified commit system
         (supertag-ops-commit
          :operation :create
          :collection :tags
@@ -602,7 +544,6 @@ Returns the created tag data."
          :new final-props
          :perform (lambda ()
                     (supertag-store-put-entity :tags id final-props)
-
                     final-props))))))
 
 (defun supertag-tag-get (id)
@@ -610,6 +551,26 @@ Returns the created tag data."
 ID is the unique identifier of the tag.
 Returns tag data, or nil if it does not exist."
   (supertag-store-get-entity :tags id))
+
+(defun supertag-tag--validate-extends (tag-id parent-id)
+  "Signal `user-error' when TAG-ID cannot extend PARENT-ID."
+  (unless (or (null parent-id) (stringp parent-id))
+    (user-error "Tag :extends must be a string or nil"))
+  (when parent-id
+    (unless (supertag-tag-get parent-id)
+      (user-error "Parent tag '%s' does not exist" parent-id))
+    (when (equal tag-id parent-id)
+      (user-error "Tag '%s' cannot extend itself" tag-id))
+    (let ((current parent-id)
+          (seen (make-hash-table :test 'equal)))
+      (puthash tag-id t seen)
+      (while current
+        (when (gethash current seen)
+          (user-error "Tag :extends would create a cycle involving '%s'" tag-id))
+        (puthash current t seen)
+        (setq current
+              (plist-get (supertag--ensure-plist (supertag-tag-get current))
+                         :extends))))))
 
 (defun supertag-tag-find-ghosts ()
   "Return Tag IDs whose stored value is nil (ghost entries)."
@@ -621,25 +582,37 @@ Returns tag data, or nil if it does not exist."
      (supertag-store-get-collection :tags))
     ghosts))
 
-(defun supertag-tag-display-path (tag-id)
-  "Return TAG-ID's canonical occurrence path from its tag name."
-  (supertag-tag--ensure-index)
-  (or (gethash tag-id supertag-tag--display-path-index)
-      (supertag-tag--compute-display-path
-       tag-id (supertag-store-get-collection :tags))))
+(defun supertag-tag-parent (tag-id)
+  "Return TAG-ID's direct `:extends' parent ID, or nil."
+  (when-let* ((tag (supertag--ensure-plist (supertag-tag-get tag-id))))
+    (plist-get tag :extends)))
+
+(defun supertag-tag-ancestors (tag-id)
+  "Return TAG-ID's ancestors from nearest to farthest.
+Stop when a malformed stored parent cycle is encountered."
+  (let ((parent (supertag-tag-parent tag-id))
+        (seen (make-hash-table :test 'equal))
+        ancestors)
+    (puthash tag-id t seen)
+    (while (and parent (not (gethash parent seen)))
+      (puthash parent t seen)
+      (push parent ancestors)
+      (setq parent (supertag-tag-parent parent)))
+    (nreverse ancestors)))
+
+(defun supertag-tag-display-name (tag-id)
+  "Return TAG-ID's ancestor-name chain joined with ` › '."
+  (let (names)
+    (dolist (id (append (nreverse (supertag-tag-ancestors tag-id))
+                        (list tag-id)))
+      (let ((tag (supertag--ensure-plist (supertag-tag-get id))))
+        (push (or (plist-get tag :name) id) names)))
+    (string-join (nreverse names) " › ")))
 
 (defun supertag-tag-descendants (tag-id)
   "Return cached transitive descendants of Semantic TAG-ID."
   (supertag-tag--ensure-index)
   (copy-sequence (gethash tag-id supertag-tag--descendants-index)))
-
-(cl-defun supertag-tag-resolve-display-path
-    (path &optional (tag-ids nil tag-ids-supplied-p))
-  "Return the real Tag ID displayed as PATH.
-Limit the search to TAG-IDS when supplied."
-  (if tag-ids-supplied-p
-      (supertag-tag-resolve-occurrence path tag-ids)
-    (supertag-tag-resolve-occurrence path)))
 
 (cl-defun supertag-tag-resolve-occurrence
     (token &optional (tag-ids nil tag-ids-supplied-p))
@@ -657,15 +630,14 @@ modifies Tag entities."
                token (string-join matches ", "))))))
 
 (defun supertag-tag-affixate-candidates (candidates)
-  "Display CANDIDATES with parent paths without changing their Tag IDs."
+  "Display CANDIDATES with their `:extends' display names."
   (mapcar
    (lambda (candidate)
      (let* ((new-name (get-text-property 0 'new-tag-name candidate))
             (id (or new-name
                     (get-text-property 0 'supertag-tag-id candidate)
                     (substring-no-properties candidate)))
-            (path (or (get-text-property 0 'new-tag-display-path candidate)
-                      (supertag-tag-display-path id)))
+            (display (supertag-tag-display-name id))
             (suffix
              (cond
               ((get-text-property 0 'supertag-tag-conflict candidate)
@@ -675,7 +647,7 @@ modifies Tag entities."
               ((get-text-property 0 'supertag-tag-occurrence candidate)
                (propertize "  [Unresolved]" 'face 'shadow))
               (t ""))))
-       (list path "" suffix)))
+       (list display "" suffix)))
    candidates))
 
 (defun supertag-tag-update (id updater)
@@ -712,6 +684,8 @@ Returns the updated tag data."
                                 (plist-put updated-tag :aliases aliases))
                                (final-tag (plist-put normalized-tag :modified-at (current-time))))
                           (supertag-tag--assert-tokens-unique id aliases)
+                          (supertag-tag--validate-extends
+                           id (plist-get final-tag :extends))
                           (supertag--validate-tag-data final-tag)
                             (supertag-store-put-entity :tags id final-tag)
                             (supertag-tag--assert-all-tokens-unique)
@@ -1371,49 +1345,49 @@ are restored from snapshots if any later step fails."
       (unless keep-snapshot
         (supertag-tag-merge--delete-snapshot snapshot)))))
 
-;;; --- Namespace branch rename ---
+;;; --- Tag rekey ---
 
-(defun supertag-tag-path-rename--mapped (value mapping)
+(defun supertag-tag-rename--mapped (value mapping)
   "Return VALUE's replacement from MAPPING, or VALUE when unchanged."
   (or (cdr (assoc value mapping)) value))
 
-(defun supertag-tag-path-rename--rewrite-values (value mapping)
+(defun supertag-tag-rename--rewrite-values (value mapping)
   "Recursively rewrite exact tag identifiers in VALUE using MAPPING."
   (cond
    ((stringp value)
-    (supertag-tag-path-rename--mapped value mapping))
+    (supertag-tag-rename--mapped value mapping))
    ((hash-table-p value)
     (let ((copy (make-hash-table :test (hash-table-test value))))
       (maphash
        (lambda (key item)
          (puthash key
-                  (supertag-tag-path-rename--rewrite-values item mapping)
+                  (supertag-tag-rename--rewrite-values item mapping)
                   copy))
        value)
       copy))
    ((consp value)
     (mapcar
      (lambda (item)
-       (supertag-tag-path-rename--rewrite-values item mapping))
+       (supertag-tag-rename--rewrite-values item mapping))
      value))
    (t value)))
 
-(defun supertag-tag-path-rename--rewrite-structured (form mapping)
+(defun supertag-tag-rename--rewrite-structured (form mapping)
   "Rewrite tag identifiers in structured FORM according to MAPPING."
   (cond
    ((atom form) form)
    ((memq (car form) '(has-tag tag))
     (cons (car form)
-          (cons (supertag-tag-path-rename--mapped (cadr form) mapping)
+          (cons (supertag-tag-rename--mapped (cadr form) mapping)
                 (mapcar
                  (lambda (item)
-                   (supertag-tag-path-rename--rewrite-structured item mapping))
+                   (supertag-tag-rename--rewrite-structured item mapping))
                  (cddr form)))))
    ((memq (car form) '(has-any-tag has-all-tags))
     (cons (car form)
           (mapcar
            (lambda (item)
-             (supertag-tag-path-rename--mapped item mapping))
+             (supertag-tag-rename--mapped item mapping))
            (cdr form))))
    ((supertag-tag-merge--plist-p form)
     (let (result)
@@ -1428,23 +1402,23 @@ are restored from snapshots if any later step fails."
                   (if (memq key supertag-tag-merge--tag-slot-keys)
                       (cond
                        ((stringp value)
-                        (supertag-tag-path-rename--mapped value mapping))
+                        (supertag-tag-rename--mapped value mapping))
                        ((listp value)
                         (mapcar
                          (lambda (item)
-                           (supertag-tag-path-rename--mapped item mapping))
+                           (supertag-tag-rename--mapped item mapping))
                          value))
                        (t value))
-                    (supertag-tag-path-rename--rewrite-structured
+                    (supertag-tag-rename--rewrite-structured
                      value mapping)))))))
       result))
    (t
     (mapcar
      (lambda (item)
-       (supertag-tag-path-rename--rewrite-structured item mapping))
+       (supertag-tag-rename--rewrite-structured item mapping))
      form))))
 
-(defun supertag-tag-path-rename--saved-query-changes (mapping)
+(defun supertag-tag-rename--saved-query-changes (mapping)
   "Return (UPDATES . CONFLICTS) for saved queries touched by MAPPING."
   (let ((sources (mapcar #'car mapping))
         updates conflicts)
@@ -1459,7 +1433,7 @@ are restored from snapshots if any later step fails."
                 (pcase-let* ((`(,form . ,end) (read-from-string text))
                              (tail (substring text end))
                              (rewritten
-                              (supertag-tag-path-rename--rewrite-structured
+                              (supertag-tag-rename--rewrite-structured
                                form mapping)))
                   (if (string-match-p "\\`[[:space:]]*\\'" tail)
                       (unless (equal form rewritten)
@@ -1476,72 +1450,55 @@ are restored from snapshots if any later step fails."
                      conflicts)))))))
     (cons (nreverse updates) (nreverse conflicts))))
 
-(cl-defun supertag-tag-path-rename-plan (old-root new-root)
-  "Build a conflict-checked rename plan for OLD-ROOT and its descendants."
-  (let* ((old (supertag-sanitize-tag-name old-root))
-         (new (supertag-sanitize-tag-name new-root)))
-    (unless (and (supertag-tag-path-valid-p old)
-                 (supertag-tag-path-valid-p new))
-      (error "Tag paths cannot contain empty segments"))
+(cl-defun supertag-tag-rename-plan (old-id new-id)
+  "Build a conflict-checked rekey plan for OLD-ID as NEW-ID."
+  (let* ((old (supertag-sanitize-tag-name old-id))
+         (new (supertag-sanitize-tag-name new-id)))
     (unless (supertag-tag-get old)
       (error "Tag '%s' not found" old))
-    (when (or (equal old new)
-              (supertag-tag-path-descendant-p new old))
-      (error "Cannot move tag path '%s' into its own namespace '%s'"
-             old new))
-    (let (sources)
-      (maphash
-       (lambda (tag-id _tag)
-         (when (or (equal tag-id old)
-                   (supertag-tag-path-descendant-p tag-id old))
-           (push tag-id sources)))
-       (supertag-store-get-collection :tags))
-      (setq sources (sort sources #'string<))
-      (let* ((mapping
-              (mapcar
-               (lambda (source)
-                 (cons source
-                       (supertag-tag-path-rebase source old new)))
-               sources))
-             (source-set sources)
-             (collision-conflicts
-              (cl-loop
-               for (_source . target) in mapping
-               when (and (supertag-tag-get target)
-                         (not (member target source-set)))
-               collect (list :kind :tag-id-collision :target-id target)))
-             (nodes (supertag-tag-merge--affected-nodes sources))
-             (file-backed-nodes
-              (cl-remove-if-not
-               (lambda (node) (stringp (plist-get node :file)))
-               nodes))
-             (files
-              (supertag-tag-merge--unique
-               (mapcar (lambda (node) (plist-get node :file))
-                       file-backed-nodes)))
-             (query-result
-              (supertag-tag-path-rename--saved-query-changes mapping)))
-        (list :old-root old
-              :target-id new
-              :mapping mapping
-              :nodes nodes
-              :files files
-              :saved-query-updates (car query-result)
-              :conflicts
-              (append collision-conflicts
-                      (supertag-tag-merge--file-conflicts file-backed-nodes)
-                      (cdr query-result)))))))
+    (when (equal old new)
+      (error "Tag '%s' already has that name" old))
+    (let* ((sources (list old))
+           (mapping (list (cons old new)))
+           (collision-conflicts
+            (when (supertag-tag-get new)
+              (list (list :kind :tag-id-collision :target-id new))))
+           (nodes (supertag-tag-merge--affected-nodes sources))
+           (file-backed-nodes
+            (cl-remove-if-not
+             (lambda (node) (stringp (plist-get node :file)))
+             nodes))
+           (files
+            (supertag-tag-merge--unique
+             (mapcar (lambda (node) (plist-get node :file))
+                     file-backed-nodes)))
+           (query-result
+            (supertag-tag-rename--saved-query-changes mapping)))
+      (list :old-id old
+            :target-id new
+            :mapping mapping
+            :nodes nodes
+            :files files
+            :saved-query-updates (car query-result)
+            :conflicts
+            (append collision-conflicts
+                    (supertag-tag-merge--file-conflicts file-backed-nodes)
+                    (cdr query-result))))))
 
-(defun supertag-tag-path-rename--rewrite-tags (mapping)
+(defun supertag-tag-rename--rewrite-tags (mapping)
   "Rekey tag entities using MAPPING."
   (let ((result (make-hash-table :test 'equal)))
     (maphash
      (lambda (tag-id raw-tag)
-       (let* ((new-id (supertag-tag-path-rename--mapped tag-id mapping))
+       (let* ((new-id (supertag-tag-rename--mapped tag-id mapping))
               (tag
-               (supertag-tag-path-rename--rewrite-structured
+               (supertag-tag-rename--rewrite-structured
                 (copy-tree (supertag--ensure-plist raw-tag))
                 mapping)))
+         (setq tag
+               (plist-put tag :extends
+                          (supertag-tag-rename--mapped
+                           (plist-get tag :extends) mapping)))
          (when (assoc tag-id mapping)
            (setq tag (plist-put tag :id new-id))
            (setq tag (plist-put tag :name new-id)))
@@ -1552,7 +1509,7 @@ are restored from snapshots if any later step fails."
      (supertag-store-get-collection :tags))
     (supertag-update '(:tags) result)))
 
-(defun supertag-tag-path-rename--rewrite-nodes (mapping)
+(defun supertag-tag-rename--rewrite-nodes (mapping)
   "Rewrite node tag lists using MAPPING."
   (let* ((nodes (supertag-store-get-collection :nodes))
          (result (copy-hash-table nodes)))
@@ -1563,7 +1520,7 @@ are restored from snapshots if any later step fails."
               (rewritten
                (mapcar
                 (lambda (tag-id)
-                  (supertag-tag-path-rename--mapped tag-id mapping))
+                  (supertag-tag-rename--mapped tag-id mapping))
                 tags)))
          (unless (equal tags rewritten)
            (puthash node-id
@@ -1573,17 +1530,17 @@ are restored from snapshots if any later step fails."
      nodes)
     (supertag-update '(:nodes) result)))
 
-(defun supertag-tag-path-rename--rewrite-relations (mapping)
+(defun supertag-tag-rename--rewrite-relations (mapping)
   "Rewrite relation endpoints and deterministic IDs using MAPPING."
   (let ((result (make-hash-table :test 'equal)))
     (maphash
      (lambda (_relation-id raw-relation)
        (let* ((relation
-               (supertag-tag-path-rename--rewrite-structured
+               (supertag-tag-rename--rewrite-structured
                 (copy-tree raw-relation) mapping))
-              (from (supertag-tag-path-rename--mapped
+              (from (supertag-tag-rename--mapped
                      (plist-get relation :from) mapping))
-              (to (supertag-tag-path-rename--mapped
+              (to (supertag-tag-rename--mapped
                    (plist-get relation :to) mapping))
               (type (plist-get relation :type))
               (new-id
@@ -1602,7 +1559,7 @@ are restored from snapshots if any later step fails."
     (supertag-update '(:relations) result)))
 
 
-(defun supertag-tag-path-rename--rewrite-store-configs (mapping)
+(defun supertag-tag-rename--rewrite-store-configs (mapping)
   "Rewrite structured tag references in Store configuration collections."
   (dolist (collection '(:automations :boards))
     (let ((bucket (supertag-store-get-collection collection))
@@ -1610,26 +1567,26 @@ are restored from snapshots if any later step fails."
       (maphash
        (lambda (id value)
          (puthash id
-                  (supertag-tag-path-rename--rewrite-structured
+                  (supertag-tag-rename--rewrite-structured
                    value mapping)
                   result))
        bucket)
       (supertag-update (list collection) result))))
 
-(defun supertag-tag-path-rename--rewrite-view-configs (mapping)
+(defun supertag-tag-rename--rewrite-view-configs (mapping)
   "Rewrite tag references in loaded view configurations."
   (when (and (boundp 'supertag--view-configs)
              (hash-table-p supertag--view-configs))
     (maphash
      (lambda (id config)
        (puthash id
-                (supertag-tag-path-rename--rewrite-structured
+                (supertag-tag-rename--rewrite-structured
                  config mapping)
                 supertag--view-configs))
      supertag--view-configs)))
 
-(defun supertag-tag-path-rename--rewrite-files (plan)
-  "Apply PLAN's complete path mapping to its Org files."
+(defun supertag-tag-rename--rewrite-files (plan)
+  "Apply PLAN's tag mapping to its Org files."
   (let ((total 0)
         (files (plist-get plan :files)))
     (dolist (entry (plist-get plan :mapping) total)
@@ -1638,10 +1595,10 @@ are restored from snapshots if any later step fails."
                (supertag-view-helper-rename-tag-text-in-files
                 (car entry) (cdr entry) files))))))
 
-(defun supertag-tag-path-rename-execute (plan)
-  "Execute conflict-free namespace rename PLAN with rollback."
+(defun supertag-tag-rename-execute (plan)
+  "Execute conflict-free tag rename PLAN with rollback."
   (when (plist-get plan :conflicts)
-    (error "Tag path rename has %d conflict(s): %S"
+    (error "Tag rename has %d conflict(s): %S"
            (length (plist-get plan :conflicts))
            (plist-get plan :conflicts)))
   (when-let* ((fresh-conflicts
@@ -1649,7 +1606,7 @@ are restored from snapshots if any later step fails."
                 (cl-remove-if-not
                  (lambda (node) (stringp (plist-get node :file)))
                  (plist-get plan :nodes)))))
-    (error "Tag path rename file preflight failed: %S" fresh-conflicts))
+    (error "Tag rename file preflight failed: %S" fresh-conflicts))
   (let* ((mapping (plist-get plan :mapping))
          (query-before (and (boundp 'supertag-query-saved)
                             (copy-tree supertag-query-saved)))
@@ -1661,17 +1618,17 @@ are restored from snapshots if any later step fails."
         (condition-case err
             (let ((file-changes
                    (supertag-with-transaction
-                     (supertag-tag-path-rename--rewrite-tags mapping)
-                     (supertag-tag-path-rename--rewrite-nodes mapping)
-                     (supertag-tag-path-rename--rewrite-relations mapping)
+                     (supertag-tag-rename--rewrite-tags mapping)
+                     (supertag-tag-rename--rewrite-nodes mapping)
+                     (supertag-tag-rename--rewrite-relations mapping)
 
 
-                     (supertag-tag-path-rename--rewrite-store-configs mapping)
-                     (supertag-tag-path-rename--rewrite-view-configs mapping)
+                     (supertag-tag-rename--rewrite-store-configs mapping)
+                     (supertag-tag-rename--rewrite-view-configs mapping)
                      (supertag-tag-merge--apply-query-updates
                       (plist-get plan :saved-query-updates))
                      (let ((count
-                            (supertag-tag-path-rename--rewrite-files plan)))
+                            (supertag-tag-rename--rewrite-files plan)))
                        (supertag-tag-merge--rebuild-derived-state)
                        count))))
               (list :status :renamed
@@ -1694,7 +1651,7 @@ are restored from snapshots if any later step fails."
              (ignore-errors (supertag-tag-merge--rebuild-derived-state))
              (if restore-error
                  (error
-                  "Tag path rename failed (%s), file recovery failed (%s); backups kept at %s"
+                  "Tag rename failed (%s), file recovery failed (%s); backups kept at %s"
                   (error-message-string err)
                   (error-message-string restore-error)
                   (plist-get snapshot :dir))
@@ -1722,7 +1679,7 @@ are restored from snapshots if any later step fails."
   "Character class used to detect inline tags.
 This string is spliced directly into [] expressions, so \"^\" negates the set.
 Anything except whitespace-like characters and another # counts as part of the tag,
-allowing hierarchies (/) and arbitrary unicode/emoji symbols.")
+allowing slashes (as ordinary name characters) and arbitrary unicode/emoji symbols.")
 
 ;; Always refresh the value so reloading this file picks up updates.
 ;; Full-width hash and CJK punctuation terminate a tag name, matching
@@ -2648,26 +2605,25 @@ TAG-NAME is the tag name to remove."
 (cl-defun supertag-ui-read-tag
     (prompt &optional (tag-ids nil tag-ids-supplied-p) allow-new allow-empty
             allow-namespace)
-  "Read one Tag ID with parent paths shown as completion prefixes.
+  "Read one Tag ID with hierarchy display names in completion.
 PROMPT is the minibuffer prompt.  TAG-IDS defaults to every stored Tag
 ID.  When ALLOW-NEW is non-nil, a valid new ID may be returned.  When
 ALLOW-EMPTY is non-nil, empty input returns nil.  ALLOW-NAMESPACE is
 accepted for backward compatibility but no longer creates virtual IDs."
   (ignore allow-namespace)
-  (let* ((paths (supertag-query-tag-paths))
-         (name-by-id (make-hash-table :test 'equal)))
-    (dolist (entry paths)
-      (puthash (plist-get entry :id) (plist-get entry :name) name-by-id))
+  (let* ((descriptors (supertag-query-tag-descriptors))
+         (display-by-id (make-hash-table :test 'equal)))
+    (dolist (entry descriptors)
+      (puthash (plist-get entry :id) (plist-get entry :display) display-by-id))
     (let* ((known-tags
             (if tag-ids-supplied-p
                 (sort (delete-dups (copy-sequence tag-ids)) #'string<)
-              (mapcar (lambda (entry) (plist-get entry :id)) paths)))
+              (mapcar (lambda (entry) (plist-get entry :id)) descriptors)))
            (candidate-map
             (mapcar
              (lambda (id)
                (cons (propertize
-                      (supertag-sanitize-tag-name
-                       (or (gethash id name-by-id) id))
+                      (or (gethash id display-by-id) id)
                       'supertag-tag-id id)
                      id))
              known-tags))
@@ -2681,8 +2637,6 @@ accepted for backward compatibility but no longer creates virtual IDs."
       (cond
        ((string-empty-p answer)
         (if allow-empty nil (user-error "A tag is required")))
-       ((not (supertag-tag-path-valid-p answer))
-        (user-error "Tag paths cannot contain empty segments"))
        ((or (get-text-property 0 'supertag-tag-id answer)
             (assoc answer candidate-map))
         (or (get-text-property 0 'supertag-tag-id answer)
@@ -2768,7 +2722,7 @@ Returns a comma-separated string of selected tags."
 (defun supertag-view-api-list-tag-ids ()
   "Return canonical tag IDs (sorted)."
   (sort (mapcar (lambda (tag) (plist-get tag :id))
-                (supertag-query-tag-paths))
+                (supertag-query-tag-descriptors))
         #'string<))
 
 (defun supertag-view-helper-find-tag-insertion-point ()
@@ -2901,7 +2855,7 @@ boundary character typed after the same token.")
   (condition-case err
       (cl-remove-if-not #'supertag-transform-inline-tag-name-p
                         (mapcar (lambda (entry) (plist-get entry :id))
-                                (supertag-query-tag-paths)))
+                                (supertag-query-tag-descriptors)))
     (error
      (message "supertag-completion: Failed to get tags: %S" err)
      '())))
@@ -2956,12 +2910,12 @@ Handles edge cases: cursor right after # (empty prefix), mid-word, etc."
                 (or (plist-get tag :name) candidate))))
     (propertize name 'supertag-tag-id candidate)))
 
-(defun supertag-completion--restore-display-path (path)
-  "Replace the current completion token with PATH."
-  (when-let* ((bounds (and path (supertag-completion--get-prefix-bounds))))
+(defun supertag-completion--restore-prefix (prefix)
+  "Replace the current completion token with PREFIX."
+  (when-let* ((bounds (and prefix (supertag-completion--get-prefix-bounds))))
     (delete-region (car bounds) (cdr bounds))
     (goto-char (car bounds))
-    (insert path)))
+    (insert prefix)))
 
 (defun supertag-completion--display-sort (candidates)
   "Place `[New]' after the first existing item in CANDIDATES."
@@ -2978,7 +2932,7 @@ Handles edge cases: cursor right after # (empty prefix), mid-word, etc."
 
 (defun supertag-completion--get-completion-table (prefix)
   "Return real Tag candidates and an explicit new-Tag action for PREFIX.
-The entire slash path is the tag name; no parent entity is required.
+Slashes are ordinary tag-name characters and create no parent entity.
 Selecting an existing candidate preserves its stable Tag ID.  New actions
 carry a hidden final marker so unfinished input is not an exact match."
   (let* ((safe-prefix (or prefix ""))
@@ -3006,15 +2960,13 @@ carry a hidden final marker so unfinished input is not an exact match."
          (new-name safe-prefix)
          (should-add-new
           (and (not (string-empty-p safe-prefix))
-               (supertag-tag-path-valid-p safe-prefix)
                (supertag-transform-inline-tag-name-p new-name)
                (not (supertag-tag-resolve-occurrence new-name semantic-tags)))))
     (if should-add-new
         (let ((candidate (concat safe-prefix "\u200b")))
           (add-text-properties
            0 (length candidate)
-           (list 'is-new-tag t 'new-tag-name new-name
-                 'new-tag-display-path safe-prefix)
+           (list 'is-new-tag t 'new-tag-name new-name)
            candidate)
           (put-text-property (1- (length candidate)) (length candidate)
                              'display "" candidate)
@@ -3025,7 +2977,7 @@ carry a hidden final marker so unfinished input is not an exact match."
   "Post-completion action invoked after the UI inserts SELECTED-STRING.
 Display aliases are replaced with their canonical Org token before writing."
   (let* ((is-new (get-text-property 0 'is-new-tag selected-string))
-         (display-path (get-text-property 0 'new-tag-display-path selected-string))
+         (prefix (get-text-property 0 'new-tag-name selected-string))
          (selected-name
           (replace-regexp-in-string
            "\u200b\\'" "" (substring-no-properties selected-string)))
@@ -3039,7 +2991,7 @@ Display aliases are replaced with their canonical Org token before writing."
               (copy-marker (point))))))
 
     (condition-case err
-        (when-let* ((node-id (and (supertag-tag-path-valid-p selected-name)
+        (when-let* ((node-id (and (supertag-transform-inline-tag-name-p selected-name)
                                   (or original-node-id
                                       (supertag-node-identity-ensure-at-point)))))
           ;; Semantic Tag creation may precede the write, but membership never does.
@@ -3073,7 +3025,7 @@ Display aliases are replaced with their canonical Org token before writing."
               (message "Tag '%s' added to node %s" occurrence-token node-id))))
       (error
        (unless normalized-token-p
-         (supertag-completion--restore-display-path display-path))
+         (supertag-completion--restore-prefix prefix))
        (when (and (not original-node-id) heading-position
                   (not normalized-token-p))
          (save-excursion
@@ -3227,7 +3179,7 @@ CAPF `[New]' candidate."
       (when-let* ((bounds (supertag-completion--get-prefix-bounds))
                   (prefix (buffer-substring-no-properties
                            (car bounds) (cdr bounds)))
-                  (_ (supertag-tag-path-valid-p prefix)))
+                  (_ (supertag-transform-inline-tag-name-p prefix)))
         (let ((tag-id (ignore-errors
                         (supertag-tag-resolve-occurrence prefix))))
           (if (null tag-id)
@@ -3456,7 +3408,7 @@ Return the grouped collection used to render the preview."
     (when display (pop-to-buffer buffer))
     groups))
 
-(defun supertag-rename-tag (&optional old-id new-name)
+(defun supertag-tag-rename (&optional old-id new-name)
   "Preview and confirm renaming OLD-ID in Org, then update its projection.
 NEW-NAME supplies the proposed name; confirmation is still required.
 On failure, earlier nodes remain committed; preview and confirm again to resume.
@@ -3719,7 +3671,7 @@ Result includes a leading space when non-empty, else an empty string."
 
 (defun supertag-view-api-nodes-by-tag (tag-name &optional include-descendants)
   "Return node IDs that have TAG-NAME.
-When INCLUDE-DESCENDANTS is non-nil, include transitive path descendants."
+When INCLUDE-DESCENDANTS is non-nil, include transitive `:extends' descendants."
   (supertag-query-node-ids-by-tag tag-name include-descendants))
 
 ;;; Tag directory, identity and display adapters
@@ -3728,7 +3680,7 @@ When INCLUDE-DESCENDANTS is non-nil, include transitive path descendants."
   "Return tag names (sorted)."
   (sort (delete-dups
          (mapcar (lambda (tag) (plist-get tag :name))
-                 (supertag-query-tag-paths)))
+                 (supertag-query-tag-descriptors)))
         #'string<))
 
 (defun supertag-view-api-tag-id (tag-name)
@@ -3760,7 +3712,7 @@ When INCLUDE-DESCENDANTS is non-nil, include transitive path descendants."
 ;;; Tag entity ensure and hierarchy adapters
 
 (defun supertag--normalize-tag-id (name)
-    "Return NAME's resolved Tag ID or its sanitized slash path."
+    "Return NAME's resolved Tag ID or its sanitized tag name."
     (let ((sanitized (supertag-sanitize-tag-name name)))
       (or (supertag-tag-resolve-occurrence sanitized) sanitized)))
 
@@ -3782,22 +3734,22 @@ IMPORTANT: This function NEVER modifies existing tags - it only creates new ones
     (nreverse tag-ids)))
 
 (defun supertag-find-tag-descendants (tag-name)
-  "Return stored tag IDs that are path descendants of TAG-NAME."
+  "Return stored tag IDs that are `:extends' descendants of TAG-NAME."
   (let ((tag-id (or (and (supertag-tag-get tag-name) tag-name)
                     (supertag-tag-resolve-occurrence tag-name)
                     tag-name)))
     (supertag-tag-descendants tag-id)))
 
 (defun supertag-query-tag-children (tag-id)
-  "Return Tag IDs immediately below TAG-ID's display path."
-  (let ((parent-path (supertag-tag-display-path tag-id)) result)
+  "Return Tag IDs whose `:extends' parent is TAG-ID."
+  (let (result)
     (maphash
-     (lambda (id _tag)
-       (when (equal (supertag-tag-path-parent (supertag-tag-display-path id))
-                    parent-path)
+     (lambda (id raw-tag)
+       (when (equal (plist-get (supertag--ensure-plist raw-tag) :extends)
+                    tag-id)
          (push id result)))
      (supertag-store-get-collection :tags))
-    result))
+    (sort result #'string<)))
 
 ;;; Display lifecycle: all definitions above are complete before activation.
 

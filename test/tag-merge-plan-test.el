@@ -80,12 +80,13 @@
   (declare (indent 1))
   `(supertag-merge-plan-test--with-store
      (let* ((operation ,operation)
-            (sources (if (eq operation 'rename) '("old" "old/child") '("old" "other")))
-            (targets (if (eq operation 'rename) '("new" "new/child") '("new")))
+            (sources (if (eq operation 'rename) '("old") '("old" "other")))
+            (targets '("new"))
+            (second-source (or (cadr sources) (car sources)))
             (files (list (expand-file-name "one.org" tmp)
                          (expand-file-name "two.org" tmp)))
             (supertag-query-saved
-             (list (cons "retained" (prin1-to-string (list 'has-any-tag (car sources) (cadr sources))))))
+             (list (cons "retained" (prin1-to-string (cons 'has-any-tag sources)))))
             (supertag--view-configs (make-hash-table :test 'eq))
             (org-mode-hook nil) (find-file-hook nil) (after-save-hook nil)
             (org-id-locations-file (expand-file-name "ids" tmp))
@@ -95,14 +96,16 @@
        (unwind-protect
            (progn
              (dolist (id sources) (supertag-tag-create (list :id id :name id)))
+             (when (eq operation 'rename)
+               (supertag-tag-create '(:id "child" :name "child" :extends "old")))
              (puthash 'retained (list :id 'retained :tag (car sources) :tags (copy-sequence sources))
                       supertag--view-configs)
              (cl-loop for file in files for index from 1 do
                       (let ((id (format "merge-node-%s" index)))
                         (with-temp-file file
                           (insert (format "#+FILETAGS: :%s:%s:\n* Note\n:PROPERTIES:\n:ID: %s\n:END:\nBody #%s #%s\n#+CAPTION: #%s\n#+begin_src text\n#%s\n#+end_src\n"
-                                          (car sources) (cadr sources) id
-                                          (car sources) (cadr sources)
+                                          (car sources) second-source id
+                                          (car sources) second-source
                                           (car sources) (car sources))))
                         (supertag-store-put-entity
                          :nodes id (list :id id :title "Note" :type :node :file file
@@ -116,17 +119,20 @@
 
 (defun supertag-merge-plan-test--plan (operation sources)
   (if (eq operation 'rename)
-      (supertag-tag-path-rename-plan "old" "new")
+      (supertag-tag-rename-plan "old" "new")
     (supertag-tag-merge-plan sources "new")))
 
 (defun supertag-merge-plan-test--execute (operation plan)
   (if (eq operation 'rename)
-      (supertag-tag-path-rename-execute plan)
+      (supertag-tag-rename-execute plan)
     (supertag-tag-merge-execute plan)))
 
 (defun supertag-merge-plan-test--assert-success (operation sources targets files)
   (dolist (source sources) (should-not (supertag-tag-get source)))
   (dolist (target targets) (should (supertag-tag-get target)))
+  (when (eq operation 'rename)
+    (should (equal "new" (supertag-tag-parent "child")))
+    (should (equal '("child") (supertag-query-tag-children "new"))))
   (dolist (id '("merge-node-1" "merge-node-2"))
     (should (equal targets (plist-get (supertag-node-get id) :tags))))
   (should (equal (cons 'has-any-tag targets)
@@ -134,7 +140,7 @@
   (should (equal "new" (plist-get (gethash 'retained supertag--view-configs) :tag)))
   (should (equal targets (plist-get (gethash 'retained supertag--view-configs) :tags)))
   (dolist (file files)
-    (let* ((second (if (eq operation 'rename) "new/child" "new"))
+    (let* ((second "new")
            (disk (supertag-merge-plan-test--disk file)))
       (should (string-match-p (regexp-quote (format "#+FILETAGS: :new:%s:" second)) disk))
       (should (string-match-p (regexp-quote (format "Body #new #%s" second)) disk))
@@ -172,20 +178,33 @@
              (plan (supertag-merge-plan-test--plan operation sources))
              (original (symbol-function 'supertag-view-helper-rename-tag-text-in-files))
              (calls 0) wrote-first-pass)
-        (cl-letf (((symbol-function 'supertag-view-helper-rename-tag-text-in-files)
-                   (lambda (&rest args)
-                     (cl-incf calls)
-                     (if (= calls 1)
-                         (prog1 (apply original args)
-                           (setq wrote-first-pass
-                                 (not (equal (caaar before)
-                                             (supertag-merge-plan-test--disk (car files))))))
-                       (error "injected later file pass")))))
+        (cl-letf
+            (((symbol-function 'supertag-view-helper-rename-tag-text-in-files)
+              (lambda (&rest args)
+                (cl-incf calls)
+                (cond
+                 ((and (eq operation 'rename) (= calls 1))
+                  ;; Rename now has one mapping.  Fail after its first file
+                  ;; was written, not in a removed descendant-mapping pass.
+                  (funcall original (nth 0 args) (nth 1 args)
+                           (list (car files)))
+                  (setq wrote-first-pass
+                        (not (equal (caaar before)
+                                    (supertag-merge-plan-test--disk
+                                     (car files)))))
+                  (error "injected later file pass"))
+                 ((= calls 1)
+                  (prog1 (apply original args)
+                    (setq wrote-first-pass
+                          (not (equal (caaar before)
+                                      (supertag-merge-plan-test--disk
+                                       (car files)))))))
+                 (t (error "injected later file pass"))))))
           (should (equal "injected later file pass"
                          (error-message-string
                           (should-error (supertag-merge-plan-test--execute operation plan))))))
         (should wrote-first-pass)
-        (should (= calls 2))
+        (should (= calls (if (eq operation 'rename) 1 2)))
         (should (equal before (supertag-merge-plan-test--snapshot files)))))))
 
 (ert-deftest supertag-tag-merge-current-api-restores-after-derived-index-error ()

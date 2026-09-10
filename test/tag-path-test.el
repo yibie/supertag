@@ -1023,8 +1023,8 @@
             (puthash 'packages
                      '(:id packages :tag "emacs/package")
                      supertag--view-configs)
-            (supertag-tag-path-rename-execute
-             (supertag-tag-path-rename-plan "emacs/package" "package"))
+            (supertag-tag-rename-execute
+             (supertag-tag-rename-plan "emacs/package" "package"))
             (should-not (supertag-tag-get "emacs/package"))
             (should (supertag-tag-get "package"))
             (should (equal '("package")

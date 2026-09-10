@@ -31,10 +31,10 @@
    (list :id id :type :node :title title :tags tags :content content
          :created-at created-at :file file :level (or level 1))))
 
-(defun supertag-view-stream-test--put-tag (id)
-  "Put a Stream fixture Tag ID whose name is its path."
+(defun supertag-view-stream-test--put-tag (id &optional parent)
+  "Put a Stream fixture Tag ID with an optional `:extends' PARENT."
   (supertag-store-put-entity
-   :tags id (list :id id :name id :type :tag)))
+   :tags id (list :id id :name id :type :tag :extends parent)))
 
 (defun supertag-view-stream-test--kill-buffers ()
   "Kill Stream test buffers without prompting."
@@ -48,15 +48,14 @@
       (kill-buffer buffer))))
 
 (ert-deftest supertag-view-stream-state-includes-real-descendants-and-sorts ()
-  "Stream uses transitive path descendants only; persisted :extends is inert."
+  "Stream uses transitive `:extends' descendants only."
   (supertag-view-stream-test--with-store
     (supertag-view-stream-test--put-tag "diary")
-    (supertag-view-stream-test--put-tag "diary/happy")
-    (supertag-view-stream-test--put-tag "diary/private")
-    (supertag-view-stream-test--put-tag "diary/private/day")
+    (supertag-view-stream-test--put-tag "diary/happy" "diary")
+    (supertag-view-stream-test--put-tag "diary/private" "diary")
+    (supertag-view-stream-test--put-tag "diary/private/day" "diary/private")
     (supertag-view-stream-test--put-tag "diaryx")
-    (supertag-store-put-entity :tags "legacy"
-                               '(:id "legacy" :name "legacy" :type :tag :extends "diary"))
+    (supertag-view-stream-test--put-tag "legacy" "diary")
     (supertag-view-stream-test--put-node
      "late" "Late" '("diary") "late" '(0 30 0 0))
     (supertag-view-stream-test--put-node
@@ -64,7 +63,7 @@
     (supertag-view-stream-test--put-node
      "lookalike" "Wrong" '("diaryx") "wrong" '(0 1 0 0))
     (supertag-view-stream-test--put-node
-     "flat-extends" "Wrong" '("legacy") "wrong" '(0 2 0 0))
+     "flat-extends" "Inherited" '("legacy") "inherited" '(0 2 0 0))
     (supertag-view-stream-test--put-node
      "untimed-b" "B" '("diary/private/day") "b" nil)
     (supertag-view-stream-test--put-node
@@ -73,8 +72,8 @@
       (should-not (plist-member state :layout))
       (should
        (equal (mapcar (lambda (node) (plist-get node :id))
-                      (plist-get state :nodes))
-              '("early" "late" "untimed-a" "untimed-b")))
+              (plist-get state :nodes))
+              '("flat-extends" "early" "late" "untimed-a" "untimed-b")))
       (let ((undated
              (car (last (supertag-view-stream--group-nodes-by-date
                          (plist-get state :nodes))))))
@@ -194,7 +193,7 @@
     (unwind-protect
         (save-window-excursion
           (supertag-view-stream-test--put-tag "diary")
-          (supertag-view-stream-test--put-tag "diary/happy")
+          (supertag-view-stream-test--put-tag "diary/happy" "diary")
           (supertag-view-stream-test--put-node
            "node-1" "First title" '("diary")
            "First body"

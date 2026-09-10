@@ -288,7 +288,7 @@ Delegates to the single physical-link writer in supertag-link."
 
 (defun supertag-embark-tag-rename (&optional _target)
   "Preview and rename this tag throughout the managed documents."
-  (supertag-rename-tag
+  (supertag-tag-rename
    (plist-get (supertag-embark--require-target :tag) :tag-id)))
 
 (defun supertag-embark-tag-delete (&optional _target)

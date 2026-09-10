@@ -1,4 +1,4 @@
-;;; tag-path-hierarchy-test.el --- Name-derived Tag hierarchy -*- lexical-binding: t; -*-
+;;; tag-path-hierarchy-test.el --- Explicit Tag hierarchy -*- lexical-binding: t; -*-
 (require 'ert)
 (require 'cl-lib)
 (require 'supertag-api)
@@ -17,22 +17,44 @@
          (progn (supertag--ensure-store) ,@body)
        (delete-directory tmp t))))
 
-(ert-deftest supertag-path-hierarchy-is-name-derived ()
+(ert-deftest supertag-path-hierarchy-comes-from-extends ()
   (supertag-path-test--with-store
     (let* ((media (plist-get (supertag-tag-create '(:name "media")) :id))
            (other (plist-get (supertag-tag-create '(:name "mediax")) :id))
-           (book (plist-get (supertag-tag-create '(:name "media/book")) :id)))
-      (should (equal "media/book" (supertag-tag-display-path book)))
+           (book (plist-get (supertag-tag-create `(:name "book" :extends ,media)) :id))
+           (note (plist-get (supertag-tag-create '(:name "note")) :id))
+           (ref (plist-get (supertag-tag-create `(:name "ref" :extends ,note)) :id))
+           (paper (plist-get (supertag-tag-create `(:name "paper" :extends ,ref)) :id)))
+      (should (equal media (supertag-tag-parent book)))
+      (should (equal (list media) (supertag-tag-ancestors book)))
+      (should (equal "media › book" (supertag-tag-display-name book)))
       (should (member book (supertag-tag-descendants media)))
       (should (member book (supertag-find-tag-descendants media)))
       (should-not (member book (supertag-tag-descendants other)))
       (should-not (member book (supertag-find-tag-descendants other)))
+      (should (equal (list ref note) (supertag-tag-ancestors paper)))
+      (should (equal "note › ref › paper" (supertag-tag-display-name paper)))
+      (should (equal (sort (list paper ref) #'string<)
+                     (supertag-tag-descendants note)))
       (should (equal (list book) (supertag-query-tag-children media))))))
 
-(ert-deftest supertag-path-rejects-new-inheritance ()
+(ert-deftest supertag-path-validates-explicit-inheritance ()
   (supertag-path-test--with-store
-    (should-error (supertag-tag-create '(:name "book" :extends "media")) :type 'user-error)
-    (should-error (supertag-tag-create '(:name "media//book")) :type 'user-error)))
+    (let* ((media (plist-get (supertag-tag-create '(:name "media")) :id))
+           (book (plist-get (supertag-tag-create `(:name "book" :extends ,media)) :id))
+           (slash (plist-get (supertag-tag-create '(:name "#media/book")) :id)))
+      (should-error (supertag-tag-create '(:name "orphan" :extends "missing"))
+                    :type 'user-error)
+      (should-error (supertag-tag-create '(:name "wrong-type" :extends 42))
+                    :type 'user-error)
+      (should-error (supertag-tag-update media
+                                         (lambda (tag) (plist-put tag :extends book)))
+                    :type 'user-error)
+      (should-error (supertag-tag-update book
+                                         (lambda (tag) (plist-put tag :extends 42)))
+                    :type 'user-error)
+      (should (equal "media/book" (plist-get (supertag-tag-get slash) :name)))
+      (should-not (supertag-tag-parent slash)))))
 
 (ert-deftest supertag-path-import-does-not-require-parent ()
   (supertag-path-test--with-store
@@ -49,15 +71,15 @@
       (should (equal "media/book" (plist-get (supertag-tag-get id) :name)))
       (should (member id (plist-get (supertag-node-get "node") :tags))))))
 
-(ert-deftest supertag-path-legacy-inheritance-is-inert ()
+(ert-deftest supertag-path-stored-inheritance-is-active ()
   (supertag-path-test--with-store
     (let ((media (plist-get (supertag-tag-create '(:name "media")) :id)))
       (supertag-store-put-entity :tags "legacy"
                                 (list :id "legacy" :name "legacy" :type :tag
                                       :extends media :aliases '("media/book")))
       (supertag-tag-index-rebuild)
-      (should-not (member "legacy" (supertag-tag-descendants media)))
-      (should-not (supertag-query-tag-children media))
+      (should (member "legacy" (supertag-tag-descendants media)))
+      (should (equal '("legacy") (supertag-query-tag-children media)))
       (should (equal "legacy" (supertag-tag-resolve-occurrence "media/book")))
       (should (equal media (plist-get (supertag-tag-get "legacy") :extends)))
       (should-not (plist-member (supertag-api-schema "legacy") :extends)))))
@@ -359,18 +381,18 @@
     supertag-tag-merge--rebuild-derived-state
     supertag-tag-merge--rewrite-files
     supertag-tag-merge-execute
-    supertag-tag-path-rename--mapped
-    supertag-tag-path-rename--rewrite-values
-    supertag-tag-path-rename--rewrite-structured
-    supertag-tag-path-rename--saved-query-changes
-    supertag-tag-path-rename-plan
-    supertag-tag-path-rename--rewrite-tags
-    supertag-tag-path-rename--rewrite-nodes
-    supertag-tag-path-rename--rewrite-relations
-    supertag-tag-path-rename--rewrite-store-configs
-    supertag-tag-path-rename--rewrite-view-configs
-    supertag-tag-path-rename--rewrite-files
-    supertag-tag-path-rename-execute
+    supertag-tag-rename--mapped
+    supertag-tag-rename--rewrite-values
+    supertag-tag-rename--rewrite-structured
+    supertag-tag-rename--saved-query-changes
+    supertag-tag-rename-plan
+    supertag-tag-rename--rewrite-tags
+    supertag-tag-rename--rewrite-nodes
+    supertag-tag-rename--rewrite-relations
+    supertag-tag-rename--rewrite-store-configs
+    supertag-tag-rename--rewrite-view-configs
+    supertag-tag-rename--rewrite-files
+    supertag-tag-rename-execute
     supertag-view-helper-rename-tag-text-in-buffer
     supertag-view-helper-rename-tag-text-in-files))
 
@@ -447,17 +469,13 @@
                                        ,(expand-file-name "supertag-tag.el" root)))
                      (error "Merged function owner is not Tag: %s (%S)"
                             symbol (symbol-file symbol 'defun))))
-                 (dolist (symbol '(supertag-tag-path-valid-p supertag-tag-path-parent
-                                   supertag-tag-path-leaf supertag-tag-path-descendant-p
-                                   supertag-tag-path-rebase supertag-tag-create
+                 (dolist (symbol '(supertag-tag-parent supertag-tag-ancestors
+                                   supertag-tag-display-name supertag-tag-create
                                    supertag-tag-get supertag-tag-update supertag-tag-delete
                                    supertag-tag-resolve-occurrence supertag-tag-index-rebuild
                                    supertag-ops-add-tag-to-node supertag-sanitize-tag-name))
                    (unless (fboundp symbol) (error "Retained Tag operation missing: %s" symbol)))
-                 (unless (and (equal (supertag-tag-path-parent "media/book") "media")
-                              (equal (supertag-tag-path-rebase "media/book" "media" "work")
-                                     "work/book")
-                              (equal (supertag-sanitize-tag-name "#my tag") "my_tag"))
+                 (unless (equal (supertag-sanitize-tag-name "#my tag") "my_tag")
                    (error "Retained pure Tag operations changed"))
                  (when (eq ',entry 'supertag-tag)
                    (dolist (unexpected '(supertag supertag-services-sync supertag-services-ui
@@ -566,7 +584,7 @@
     (cl-letf (((symbol-function 'completing-read) (lambda (&rest _) "reading")))
       (should-error (supertag-ui-read-tag "Tag: ") :type 'user-error))))
 
-(ert-deftest supertag-path-input-supplied-nil-new-empty-and-invalid-path ()
+(ert-deftest supertag-path-input-supplied-nil-new-empty-and-slash-names ()
   (supertag-path-test--input-store
     (let ((calls 0))
       (cl-letf (((symbol-function 'completing-read)
@@ -581,7 +599,7 @@
       (should-not (supertag-ui-read-tag "Optional: " nil t t))
       (should-error (supertag-ui-read-tag "Required: " nil t nil) :type 'user-error))
     (cl-letf (((symbol-function 'completing-read) (lambda (&rest _) "bad//path")))
-      (should-error (supertag-ui-read-tag "New: " nil t) :type 'user-error))))
+      (should (equal "bad//path" (supertag-ui-read-tag "New: " nil t))))))
 
 (ert-deftest supertag-path-input-multiple-and-capture-initial-preserved ()
   (supertag-path-test--input-store
@@ -738,7 +756,7 @@
                      (should (equal "stable" (supertag-ui-read-tag "Tag: "))))
                    (should (= calls 1))
                    (should (featurep 'supertag-query))
-                   (should (equal (symbol-file 'supertag-query-tag-paths 'defun)
+                   (should (equal (symbol-file 'supertag-query-tag-descriptors 'defun)
                                   ,(expand-file-name "supertag-query.el" root)))
                    (should (equal facts (prin1-to-string supertag--store)))
                    (should-not (file-exists-p supertag-db-file)))
@@ -1075,7 +1093,8 @@
 (defun supertag-path-test--d4-cold (entry)
   (supertag-document-test-with-vault
     (supertag-tag-create '(:id "old-id" :name "old"))
-    (supertag-tag-create '(:id "child-id" :name "old/child"))
+    (supertag-tag-create
+     '(:id "child-id" :name "old/child" :extends "old-id"))
     (with-current-buffer (find-file-noselect file)
       (goto-char (point-max)) (insert "#old\n") (save-buffer))
     (should (eq 'complete (plist-get (supertag-reindex-org) :status)))
@@ -1107,7 +1126,7 @@
                    (cl-labels
                        ((owners ()
                           (dolist (name '(supertag-tag-change--collect supertag-tag-change-preview
-                                          supertag-rename-tag supertag-delete-tag-everywhere
+                                          supertag-tag-rename supertag-delete-tag-everywhere
                                           supertag-cleanup-orphaned-tags supertag-view--read-tag
                                           supertag-view-api-tag-descendants))
                             (unless (equal (symbol-file name 'defun) ,(expand-file-name "supertag-tag.el" root))
@@ -1171,7 +1190,7 @@
                                      ((symbol-function 'read-string) (lambda (&rest _) "renamed"))
                                      ((symbol-function 'yes-or-no-p) (lambda (&rest _) nil)))
                              (if (eq ',entry 'menu) (call-interactively #'supertag-menu--rename-tag)
-                               (supertag-rename-tag "old-id" "renamed"))
+                               (supertag-tag-rename "old-id" "renamed"))
                              (should (equal before (facts)))
                              (if (eq ',entry 'menu) (call-interactively #'supertag-menu--delete-tag)
                                (supertag-delete-tag-everywhere "old-id"))
@@ -1186,7 +1205,7 @@
                                    ((symbol-function 'read-string) (lambda (&rest _) "renamed"))
                                    ((symbol-function 'yes-or-no-p) (lambda (&rest _) t)))
                            (if (eq ',entry 'menu) (call-interactively #'supertag-menu--rename-tag)
-                             (supertag-rename-tag "old-id" "renamed")))
+                             (supertag-tag-rename "old-id" "renamed")))
                          (let ((new (supertag-tag-resolve-occurrence "renamed")))
                            (should new) (should-not (supertag-tag-get "old-id"))
                            (should (equal (list new) (plist-get (supertag-node-get "document-node") :tags)))
@@ -1823,11 +1842,12 @@
 ;;; D7 configuration and Query first-use in separate real processes.
 (defun supertag-path-test--d7-cold (entry preset)
   (supertag-document-test-with-vault
-    (dolist (pair '(("parent-id" . "topic") ("child-id" . "topic/child")
-                    ("grand-id" . "topic/child/grand")))
-      (supertag-tag-create (list :id (car pair) :name (cdr pair))))
+    (dolist (props '((:id "parent-id" :name "topic")
+                     (:id "child-id" :name "child" :extends "parent-id")
+                     (:id "grand-id" :name "grand" :extends "child-id")))
+      (supertag-tag-create props))
     (with-temp-file file
-      (insert "* Parent #topic\n:PROPERTIES:\n:ID: p\n:END:\nP\n* Child #topic/child\n:PROPERTIES:\n:ID: c\n:END:\nC\n* Grand #topic/child/grand\n:PROPERTIES:\n:ID: g\n:END:\nG\n"))
+      (insert "* Parent #topic\n:PROPERTIES:\n:ID: p\n:END:\nP\n* Child #child\n:PROPERTIES:\n:ID: c\n:END:\nC\n* Grand #grand\n:PROPERTIES:\n:ID: g\n:END:\nG\n"))
     (supertag-reindex-org)
     (let* ((snapshot (expand-file-name "d7-projection.el" tmp))
            (root supertag-path-test--source-root)
@@ -1933,16 +1953,16 @@
     (supertag-tag-create '(:id "a-id" :name "alpha"))
     (let ((facts (prin1-to-string supertag--store)))
       (should (equal (sort (delete-dups (mapcar (lambda (row) (plist-get row :name))
-                                               (supertag-query-tag-paths))) #'string<)
+                                               (supertag-query-tag-descriptors))) #'string<)
                      (supertag-view-api-list-tags)))
       (should (member "alpha" (supertag-view-api-list-tags)))
       (should-not (member "z-id" (supertag-view-api-list-tags)))
       (should-not (member "z-alias" (supertag-view-api-list-tags)))
       (should (equal facts (prin1-to-string supertag--store)))))
   ;; Deliberate provider descriptor seam: not a claim about normal Tag data.
-  (cl-letf (((symbol-function 'supertag-query-tag-paths)
-             (lambda () '((:name "z" :display-path "a")
-                          (:name "a" :display-path "z") (:name "z" :display-path "b")))))
+  (cl-letf (((symbol-function 'supertag-query-tag-descriptors)
+             (lambda () '((:name "z" :display "a")
+                          (:name "a" :display "z") (:name "z" :display "b")))))
     (should (equal '("a" "z") (supertag-view-api-list-tags)))))
 
 (ert-deftest supertag-path-adapter-tag-id-real-resolution-and-priority ()
@@ -2095,7 +2115,7 @@
                             (should (equal '("canonical") (supertag-view-api-list-tags)))
                             (should (equal '("stable") (supertag-view--resolve-node-tags "d8-node")))
                             (should (equal "stable" (supertag-view-api-tag-id "alias")))
-                            (dolist (symbol '(supertag-query-tag-paths supertag-query-node-tags))
+                            (dolist (symbol '(supertag-query-tag-descriptors supertag-query-node-tags))
                               (should-not (autoloadp (symbol-function symbol)))
                               (should (equal (symbol-file symbol 'defun)
                                              ,(expand-file-name "supertag-query.el" root))))
@@ -2196,20 +2216,24 @@
         (should-error (supertag--normalize-tag-id token) :type 'error))
       (should (equal facts (prin1-to-string supertag--store))))))
 
-(ert-deftest supertag-path-hierarchy-adapters-real-order-and-virtual-parent-difference ()
+(ert-deftest supertag-path-hierarchy-adapters-use-explicit-parents ()
   (supertag-path-test--with-store
     (supertag-tag-create '(:id "parent" :name "root" :aliases ("root-alias")))
-    (dolist (pair '(("child-a" . "root/a") ("grand" . "root/a/g")
-                    ("child-b" . "root/b") ("other" . "rootx")
-                    ("virtual-child" . "virtual/child") ("virtual-grand" . "virtual/child/grand")))
-      (supertag-tag-create (list :id (car pair) :name (cdr pair))))
+    (dolist (props '((:id "child-a" :name "book" :extends "parent")
+                     (:id "grand" :name "paper" :extends "child-a")
+                     (:id "child-b" :name "article" :extends "parent")
+                     (:id "other" :name "rootx")
+                     (:id "slash" :name "virtual/child")))
+      (supertag-tag-create props))
     (let ((facts (prin1-to-string supertag--store)))
       (dolist (token '("parent" "root" "root-alias"))
-        (should (equal '("child-a" "grand" "child-b") (supertag-find-tag-descendants token))))
-      (should (equal '("child-b" "child-a") (supertag-query-tag-children "parent")))
-      ;; children takes a Tag ID/path fallback, not the alias resolver used by descendants.
+        (should (equal '("child-a" "child-b" "grand")
+                       (supertag-find-tag-descendants token))))
+      (should (equal '("child-a" "child-b") (supertag-query-tag-children "parent")))
       (should-not (supertag-query-tag-children "root-alias"))
-      (should (equal '("virtual-child") (supertag-query-tag-children "virtual")))
+      (should (equal "root › book › paper" (supertag-tag-display-name "grand")))
+      (should-not (supertag-tag-parent "slash"))
+      (should-not (supertag-query-tag-children "virtual"))
       (should-not (supertag-find-tag-descendants "virtual"))
       (should-not (supertag-tag-get "virtual"))
       (dolist (id '("missing" "child-b"))
@@ -2221,10 +2245,10 @@
 (defun supertag-path-test--d9-cold (entry)
   (supertag-document-test-with-vault
     (supertag-tag-create '(:id "parent" :name "root" :aliases ("root-alias")))
-    (supertag-tag-create '(:id "child" :name "root/child"))
-    (supertag-tag-create '(:id "grand" :name "root/child/grand"))
+    (supertag-tag-create '(:id "child" :name "child" :extends "parent"))
+    (supertag-tag-create '(:id "grand" :name "grand" :extends "child"))
     (with-temp-file file
-      (insert "* Parent #root\n:PROPERTIES:\n:ID: p\n:END:\nP\n* Child #root/child\n:PROPERTIES:\n:ID: c\n:END:\nC\n* Grand #root/child/grand\n:PROPERTIES:\n:ID: g\n:END:\nG\n"))
+      (insert "* Parent #root\n:PROPERTIES:\n:ID: p\n:END:\nP\n* Child #child\n:PROPERTIES:\n:ID: c\n:END:\nC\n* Grand #grand\n:PROPERTIES:\n:ID: g\n:END:\nG\n"))
     (supertag-reindex-org)
     (let* ((snapshot (expand-file-name "d9-projection.el" tmp))
            (root supertag-path-test--source-root)
@@ -2307,7 +2331,7 @@
                              (created (supertag-tag-resolve-occurrence "virtual/child")))
                         (should created)
                         (should (equal (list created created) ids))
-                        (should (equal (list created) (supertag-query-tag-children "virtual")))
+                        (should-not (supertag-query-tag-children "virtual"))
                         (should-not (supertag-find-tag-descendants "virtual"))
                         (should-not (supertag-tag-get "virtual")))
                       (should (equal original (supertag-tag-get "parent")))

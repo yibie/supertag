@@ -47,7 +47,7 @@
   (supertag-tag-change-test--vault
     (cl-letf (((symbol-function 'read-string) (lambda (&rest _) "new"))
               ((symbol-function 'yes-or-no-p) (lambda (&rest _) t)))
-      (supertag-rename-tag "old"))
+      (supertag-tag-rename "old"))
     (let ((new (supertag-tag-resolve-occurrence "new")))
       (should (supertag-tag-get new))
       (should-not (supertag-tag-get "old"))
@@ -79,7 +79,7 @@
     (let ((before (supertag-tag-change-test--snapshot (list file plain))))
       (cl-letf (((symbol-function 'read-string) (lambda (&rest _) "new"))
                 ((symbol-function 'yes-or-no-p) (lambda (&rest _) nil)))
-        (should-not (supertag-rename-tag "old"))
+        (should-not (supertag-tag-rename "old"))
         (should (equal before (supertag-tag-change-test--snapshot (list file plain))))
         (should-not (supertag-delete-tag-everywhere "old"))
         (should (equal before (supertag-tag-change-test--snapshot (list file plain))))))))
@@ -90,7 +90,7 @@
     (let ((before (supertag-tag-change-test--snapshot (list file plain))) prompt)
       (cl-letf (((symbol-function 'read-string) (lambda (&rest _) "destination"))
                 ((symbol-function 'yes-or-no-p) (lambda (text) (setq prompt text) nil)))
-        (should-not (supertag-rename-tag "old")))
+        (should-not (supertag-tag-rename "old")))
       (dolist (part '("Merge" "other" "Canonical")) (should (string-match-p part prompt)))
       (with-current-buffer "*Supertag Tag Change*"
         (should (string-prefix-p "并入已有标签 other（token Canonical）" (buffer-string)))
@@ -98,7 +98,7 @@
       (should (equal before (supertag-tag-change-test--snapshot (list file plain))))
       (cl-letf (((symbol-function 'read-string) (lambda (&rest _) "destination"))
                 ((symbol-function 'yes-or-no-p) (lambda (&rest _) t)))
-        (should (equal "other" (supertag-rename-tag "old"))))
+        (should (equal "other" (supertag-tag-rename "old"))))
       (dolist (id '("file-node" "alias-node" "path-node"))
         (should (equal '("other") (plist-get (supertag-node-get id) :tags))))
       (dolist (path (list file plain))
@@ -114,7 +114,7 @@
     (let ((before (supertag-tag-change-test--snapshot (list file plain))))
       (cl-letf (((symbol-function 'read-string) (lambda (&rest _) "alias"))
                 ((symbol-function 'yes-or-no-p) (lambda (&rest _) (ert-fail "Own alias must reject before confirmation"))))
-        (should-error (supertag-rename-tag "old") :type 'user-error))
+        (should-error (supertag-tag-rename "old") :type 'user-error))
       (should (equal before (supertag-tag-change-test--snapshot (list file plain)))))))
 
 (ert-deftest supertag-tag-change-resolution-change-rejects-before-writing ()
@@ -126,7 +126,7 @@
                    (supertag-tag-create '(:name "new"))
                    (setq after-external-change (supertag-tag-change-test--snapshot (list file plain)))
                    t)))
-        (let ((error (should-error (supertag-rename-tag "old") :type 'user-error)))
+        (let ((error (should-error (supertag-tag-rename "old") :type 'user-error)))
           (should (string-match-p "resolution changed" (error-message-string error)))))
       ;; The simulated external creation is preserved; this command adds no writes.
       (should (equal after-external-change (supertag-tag-change-test--snapshot (list file plain)))))))
@@ -145,7 +145,7 @@
 
 
 (ert-deftest supertag-tag-change-old-writers-absent ()
-  (should-not (fboundp 'supertag-tag-rename))
+  (should-not (fboundp 'supertag-rename-tag))
   (should-not (fboundp 'supertag-ops-delete-tag-everywhere)))
 
 (ert-deftest supertag-tag-change-retry-after-save-failure ()
@@ -167,7 +167,7 @@
                      (if (and (equal (buffer-file-name) plain) (not failed))
                          (progn (setq failed t) (error "Second file save fails once"))
                        (funcall save)))))
-          (cl-flet ((run () (if (eq operation 'rename) (supertag-rename-tag "old")
+          (cl-flet ((run () (if (eq operation 'rename) (supertag-tag-rename "old")
                              (supertag-delete-tag-everywhere "old"))))
             (should-error (run))
             (when (eq operation 'rename)
@@ -206,7 +206,7 @@
                   ((symbol-function 'supertag-service-org--update-buffer-and-resync)
                    (lambda (id function &optional repair)
                      (should-not repair) (cl-incf calls) (funcall writer id function repair))))
-          (if (eq operation 'rename) (supertag-rename-tag "old")
+          (if (eq operation 'rename) (supertag-tag-rename "old")
             (supertag-delete-tag-everywhere "old")))
         (should (= calls 3))))))
 
@@ -217,7 +217,7 @@
           new-id)
       (cl-letf (((symbol-function 'read-string) (lambda (&rest _) "new-lonely"))
                 ((symbol-function 'yes-or-no-p) (lambda (&rest _) t)))
-        (setq new-id (supertag-rename-tag id))
+        (setq new-id (supertag-tag-rename id))
         (should-not (supertag-tag-get id))
         (should (equal "new-lonely" (plist-get (supertag-tag-get new-id) :name)))
         (supertag-delete-tag-everywhere new-id))
@@ -238,7 +238,7 @@
                    (should (equal "other" (supertag-tag-resolve-occurrence "destination")))
                    (setq after-external-change (supertag-tag-change-test--snapshot (list file plain)))
                    t)))
-        (let ((error (should-error (supertag-rename-tag "old") :type 'user-error)))
+        (let ((error (should-error (supertag-tag-rename "old") :type 'user-error)))
           (should (equal "Tag resolution changed; preview again" (error-message-string error)))))
       (should (equal after-external-change
                      (supertag-tag-change-test--snapshot (list file plain)))))))

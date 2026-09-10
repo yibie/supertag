@@ -32,8 +32,8 @@
 (declare-function supertag-node-get "supertag-node" (id))
 (autoload 'supertag--ensure-plist "supertag-tag")
 (declare-function supertag--ensure-plist "supertag-tag" (data))
-(autoload 'supertag-tag-display-path "supertag-tag")
-(declare-function supertag-tag-display-path "supertag-tag" (tag-id))
+(autoload 'supertag-tag-display-name "supertag-tag")
+(declare-function supertag-tag-display-name "supertag-tag" (tag-id))
 (autoload 'supertag-relation-find-by-from "supertag-link")
 (declare-function supertag-relation-find-by-from "supertag-link" (from-id &optional type kind))
 (autoload 'supertag-relation-find-by-to "supertag-link")
@@ -190,25 +190,25 @@ RECURSIVE-PARSER parses the nested query."
   "Return the Document Projection node for NODE-ID, or nil."
   (supertag-node-get node-id))
 
-(defun supertag-query-tag-paths ()
-  "Return sorted Semantic Tag path descriptors.
-Each descriptor contains :id, :name, and :display-path."
+(defun supertag-query-tag-descriptors ()
+  "Return sorted Semantic Tag descriptors.
+Each descriptor contains :id, :name, and :display."
   (let (result)
     (maphash
      (lambda (tag-id tag)
        (let ((tag (supertag--ensure-plist tag)))
          (push (list :id tag-id
                      :name (or (plist-get tag :name) tag-id)
-                     :display-path (supertag-tag-display-path tag-id))
+                     :display (supertag-tag-display-name tag-id))
                result)))
      (supertag-store-get-collection :tags))
     (sort result
           (lambda (left right)
-            (let ((left-path (plist-get left :display-path))
-                  (right-path (plist-get right :display-path)))
-              (if (equal left-path right-path)
+            (let ((left-display (plist-get left :display))
+                  (right-display (plist-get right :display)))
+              (if (equal left-display right-display)
                   (string< (plist-get left :id) (plist-get right :id))
-                (string< left-path right-path)))))))
+                (string< left-display right-display)))))))
 
 (defun supertag-query-tags ()
   "Return Semantic Tags as (id . tag-plist) pairs."
@@ -221,7 +221,7 @@ Each descriptor contains :id, :name, and :display-path."
 
 (defun supertag-query-node-ids-by-tag (tag-name &optional include-descendants)
   "Return node IDs tagged with TAG-NAME.
-When INCLUDE-DESCENDANTS is non-nil, include transitive path descendants."
+When INCLUDE-DESCENDANTS is non-nil, include transitive `:extends' descendants."
   (supertag-index-get-nodes-by-tag tag-name include-descendants))
 
 (defun supertag-query-automations (&optional filter)

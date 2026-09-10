@@ -12,7 +12,7 @@
 (require 'supertag-tag)
 (declare-function supertag-tag-stable-id-p "supertag-tag" (value))
 
-(autoload 'supertag-rename-tag "supertag-tag" nil t)
+(autoload 'supertag-tag-rename "supertag-tag" nil t)
 
 (defconst supertag-migrate--field-roots
   '(:fields :field-definitions :tag-field-associations :field-values :field-provenance))
@@ -494,7 +494,7 @@
                ;; A prior bookkeeping failure leaves this marker durable.  The
                ;; Org rename has already completed, so retry only persists the
                ;; metadata and never invokes the destructive rename flow again.
-               (new (or renamed-to (if same old (supertag-rename-tag old path)))))
+               (new (or renamed-to (if same old (supertag-tag-rename old path)))))
           (unless new (throw 'cancel nil))
           (if renamed-to
             ;; The prior attempt already performed the writer and rekeyed

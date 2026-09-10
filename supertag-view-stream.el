@@ -3,7 +3,7 @@
 ;;; Commentary:
 
 ;; Stream View presents every node carrying a tag (or one of its transitive
-;; path descendants) as a chronological title list.  The buffer is a
+;; `:extends` descendants) as a chronological title list.  The buffer is a
 ;; normal View Runtime instance rendered through the existing Widget DSL.
 
 
@@ -326,7 +326,7 @@
 
 ;;;###autoload
 (defun supertag-view-stream (&optional tag)
-  "Open a title Stream for TAG and all path descendants."
+  "Open a title Stream for TAG and all `:extends` descendants."
   (interactive
    (list (plist-get (supertag-view--read-tag) :value)))
   (unless (and (stringp tag) (not (string-empty-p tag)))

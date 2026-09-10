@@ -184,7 +184,7 @@
       (supertag-store-put-entity :nodes (car row)
         (plist-put (copy-tree (cdr row)) :created-at (encode-time 0 0 0 2 1 2020))))
     (supertag-store-put-entity :tags "parent" '(:id "parent" :name "root"))
-    (supertag-store-put-entity :tags "child" '(:id "child" :name "root/child"))
+    (supertag-store-put-entity :tags "child" '(:id "child" :name "child" :extends "parent"))
     (supertag-store-put-entity :relations "named" '(:id "named" :from "p" :to "c" :type :reference :kind :document-link :origin :org :relation-name "knows"))
     (supertag-store-put-entity :relations "plain" '(:id "plain" :from "p" :to "m" :type :reference :kind :document-link :origin :org)))
   (let* ((file (expand-file-name "input.org" qa-tmp))
@@ -244,12 +244,12 @@
          (should (= 2 (supertag-query-property-value "p" "score")))
          (qa-provider 'supertag-node-get "supertag-node.el"))
         ('tag
-         (should (equal '((:id "parent" :name "root" :display-path "root")
-                          (:id "child" :name "root/child" :display-path "root/child"))
-                        (supertag-query-tag-paths)))
+         (should (equal '((:id "parent" :name "root" :display "root")
+                          (:id "child" :name "child" :display "root › child"))
+                        (supertag-query-tag-descriptors)))
          (should (= 2 (length (supertag-query-tags))))
          (qa-provider 'supertag--ensure-plist "supertag-tag.el")
-         (qa-provider 'supertag-tag-display-path "supertag-tag.el"))
+         (qa-provider 'supertag-tag-display-name "supertag-tag.el"))
         ('scan
          (should (equal '("p") (supertag-query-node-ids-by-tag "parent")))
          (should (equal '("c" "p") (sort (copy-sequence (supertag-query-node-ids-by-tag "parent" t)) #'string<)))
@@ -305,7 +305,7 @@
           (with-temp-file script
             (insert ";;; -*- lexical-binding: t; -*-\n")
             (prin1 `(setq qa-root ,root qa-tmp ,tmp qa-stage ',stage qa-case ',scenario
-                          qa-symbols '(supertag-note-query-normalize-property-key supertag-note-query-read-node supertag-query-link--relation-name supertag-query-link--parse-binary supertag-query-link--parse-unary supertag-query-link--unique supertag-query-link--execute-forward supertag-query-link--execute-reverse supertag-query-link--execute-has-out supertag-query-link--execute-has-in supertag-query-normalize-property-key supertag-query-node supertag-query-tag-paths supertag-query-tags supertag-query-node-ids-by-tag supertag-query-automations supertag-query-tag-occurrences supertag-query-relations supertag-query-resolved-fields supertag-query-field-value supertag-query-property-value supertag-query-relations-from supertag-query-relations-to supertag-query-named-links-from supertag-query-named-links-to supertag-query-ordinary-references-from supertag-query-ordinary-references-to supertag-query-relations-among supertag-query-node-tags supertag-query-node-properties supertag-query-node-detail supertag-query supertag-query-nodes supertag-query-node-ids supertag-query-evaluate supertag-query-sexp supertag-query-fields supertag-query-validate supertag-query-date-valid-p supertag-query-expand supertag-query--date-arg supertag-query--modifier-ast-p supertag-query--parse-sexp supertag-query--execute-ast supertag-query--get-all-node-ids supertag-query--ast-modifiers supertag-query--numeric supertag-query--value< supertag-query--sort-value supertag-query--sort-node-ids supertag-query--aggregate-values supertag-query--group-values supertag-query--apply-modifiers supertag-query-modifiers supertag-query--find-nodes-by-field-indexed supertag-query--resolve-date-string supertag-query--get-fields-from-ast)) (current-buffer))
+                          qa-symbols '(supertag-note-query-normalize-property-key supertag-note-query-read-node supertag-query-link--relation-name supertag-query-link--parse-binary supertag-query-link--parse-unary supertag-query-link--unique supertag-query-link--execute-forward supertag-query-link--execute-reverse supertag-query-link--execute-has-out supertag-query-link--execute-has-in supertag-query-normalize-property-key supertag-query-node supertag-query-tag-descriptors supertag-query-tags supertag-query-node-ids-by-tag supertag-query-automations supertag-query-tag-occurrences supertag-query-relations supertag-query-resolved-fields supertag-query-field-value supertag-query-property-value supertag-query-relations-from supertag-query-relations-to supertag-query-named-links-from supertag-query-named-links-to supertag-query-ordinary-references-from supertag-query-ordinary-references-to supertag-query-relations-among supertag-query-node-tags supertag-query-node-properties supertag-query-node-detail supertag-query supertag-query-nodes supertag-query-node-ids supertag-query-evaluate supertag-query-sexp supertag-query-fields supertag-query-validate supertag-query-date-valid-p supertag-query-expand supertag-query--date-arg supertag-query--modifier-ast-p supertag-query--parse-sexp supertag-query--execute-ast supertag-query--get-all-node-ids supertag-query--ast-modifiers supertag-query--numeric supertag-query--value< supertag-query--sort-value supertag-query--sort-node-ids supertag-query--aggregate-values supertag-query--group-values supertag-query--apply-modifiers supertag-query-modifiers supertag-query--find-nodes-by-field-indexed supertag-query--resolve-date-string supertag-query--get-fields-from-ast)) (current-buffer))
             (insert "\n")
             (let ((print-length nil) (print-level nil))
               (prin1 `(condition-case err
@@ -637,7 +637,7 @@
      ('tags
       (supertag--ensure-store)
       (dolist (row '(("p" :id "p" :name "root" :aliases ("alias"))
-                     ("c" :id "c" :name "root/child")
+                     ("c" :id "c" :name "root/child" :extends "p")
                      ("v" :id "v" :name "virtual/child")))
         (supertag-store-put-entity :tags (car row) (cdr row)))
       (dolist (row '(("n1" :id "n1" :tags ("p" "p")) ("n2" :id "n2" :tags ("c"))
@@ -1170,7 +1170,7 @@
                 (t
                  ;; Direct Store seeds; saved-property control uses real Org projection.
                  (dolist (entry '(("parent" :id "parent" :name "Parent" :aliases ("alias"))
-                                  ("parent/child" :id "parent/child" :name "Parent/Child")))
+                                  ("parent/child" :id "parent/child" :name "Parent/Child" :extends "parent")))
                    (supertag-store-put-entity :tags (car entry) (cdr entry)))
                  (dolist (entry '(("a" :id "a" :title "Alpha" :tags ("parent"))
                                   ("b" :id "b" :title "Beta" :tags ("parent/child"))))

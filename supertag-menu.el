@@ -59,7 +59,7 @@
 (declare-function supertag-add-tag "supertag-tag" (&optional beg end))
 (declare-function supertag-remove-tag-from-node "supertag-tag" ())
 ;; Tag management is loaded lazily from its feature.
-(declare-function supertag-rename-tag "supertag-tag" (&optional old-id new-name))
+(declare-function supertag-tag-rename "supertag-tag" (&optional old-id new-name))
 (declare-function supertag-delete-tag-everywhere "supertag-tag" (&optional tag-name))
 (declare-function supertag-find-node "supertag-node" (&optional other-window))
 (declare-function supertag-add-link "supertag-link"
@@ -139,8 +139,8 @@ errors propagate unchanged. DOC is the generated wrapper's docstring."
   "Run `supertag-remove-tag-from-node', loading its feature first if needed.")
 
 (supertag-menu--defwrapper supertag-menu--rename-tag
-  supertag-tag supertag-rename-tag
-  "Run `supertag-rename-tag', loading its feature first if needed.")
+  supertag-tag supertag-tag-rename
+  "Run `supertag-tag-rename', loading its feature first if needed.")
 
 (supertag-menu--defwrapper supertag-menu--delete-tag
   supertag-tag supertag-delete-tag-everywhere

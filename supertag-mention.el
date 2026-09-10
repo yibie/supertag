@@ -1,22 +1,22 @@
-;;; supertag-services-mention.el --- Read model for unlinked mentions -*- lexical-binding: t; -*-
-
-;; This file is part of org-supertag.
-
-;;; Commentary:
-;;
-;; Unlinked mentions are candidates, not facts.  This module scans the direct
-;; content already projected on Store nodes and returns disposable UI records.
-;; It never writes Org source and never creates another mention index.
+;;; supertag-mention.el --- Mention feature -*- lexical-binding: t; -*-
+;; Commands: supertag-mention-link, supertag-mention-link-all-in-node
+;; Dependencies: button, cl-lib, org, org-id, org-element, subr-x, supertag-core-store, supertag-node, supertag-services-sync, supertag-link, supertag-view-framework
 
 ;;; Code:
 
+(require 'button)
 (require 'cl-lib)
 (require 'org)
+(require 'org-id)
 (require 'org-element)
 (require 'subr-x)
-(require 'supertag-core-index)
 (require 'supertag-core-store)
-(require 'supertag-services-reference)
+(require 'supertag-node)
+(require 'supertag-services-sync)
+(require 'supertag-link)
+(require 'supertag-view-framework)
+
+;;; 候选扫描
 
 (defgroup supertag-mention nil
   "Unlinked mention discovery for Supertag."
@@ -120,9 +120,23 @@ protected.  Mentions inside these ranges must never be rewritten."
         (insert content)
         (org-mode)
         (let ((ast (org-element-parse-buffer))
-              ranges)
+              (ranges
+               ;; Reuse the generated-Embed exclusion boundary, on scratch text.
+               ;; Its deletions proceed forwards; accumulate original offsets.
+               (with-temp-buffer
+                 (insert content)
+                 (let ((removed 0) excluded
+                       (inhibit-modification-hooks nil))
+                   (setq-local before-change-functions
+                               (list (lambda (beg end)
+                               (push (cons (+ removed (1- beg))
+                                           (+ removed (1- end))) excluded)
+                               (cl-incf removed (- end beg)))))
+                   (supertag-sync--strip-embed-block-contents "mention scratch")
+                   excluded))))
           (org-element-map
-              ast '(link src-block example-block fixed-width code verbatim)
+              ast '(link src-block example-block fixed-width code verbatim
+                    drawer property-drawer comment comment-block dynamic-block table keyword)
             (lambda (element)
               (let ((begin (org-element-property :begin element))
                     (end (org-element-property :end element)))
@@ -151,7 +165,6 @@ protected.  Mentions inside these ranges must never be rewritten."
 
 (defun supertag-mention-service-clear-cache ()
   "Clear disposable parse and result caches used by mention discovery."
-  (interactive)
   (clrhash supertag-mention-service--protected-range-cache)
   (clrhash supertag-mention-service--result-cache))
 
@@ -413,5 +426,261 @@ cached read model."
                    supertag-mention-service--result-cache)
           results)))))
 
-(provide 'supertag-services-mention)
-;;; supertag-services-mention.el ends here
+;;; 命令
+
+(defun supertag-mention--source-buffer-and-position (candidate)
+  "Return (BUFFER . POSITION) for CANDIDATE's source heading."
+  (let* ((source-id (plist-get candidate :source-id))
+         (source (supertag-store-get-entity :nodes source-id))
+         (file (or (plist-get candidate :source-file)
+                   (plist-get source :file)))
+         (fallback (or (plist-get candidate :source-position)
+                       (plist-get source :position)
+                       (plist-get source :pos)
+                       1)))
+    (unless (and file (file-readable-p file))
+      (user-error "Source file is unavailable for node %s" source-id))
+    (let ((buffer (find-file-noselect file)))
+      (with-current-buffer buffer
+        (org-with-wide-buffer
+          (goto-char (min (point-max) (max (point-min) fallback)))
+          (unless (and (derived-mode-p 'org-mode)
+                       (ignore-errors
+                         (org-back-to-heading t)
+                         (equal source-id (org-entry-get nil "ID"))))
+            (goto-char (point-min))
+            (unless (re-search-forward
+                     (concat "^[ \t]*:ID:[ \t]*"
+                             (regexp-quote source-id) "[ \t]*$") nil t)
+              (user-error "Source node %s is not present in %s"
+                          source-id file))
+            (org-back-to-heading t))
+          (cons buffer (point)))))))
+
+(defun supertag-mention--live-matches (candidate)
+  "Return live source bounds and matches corresponding to CANDIDATE.
+Signal when the source projection changed after the candidate was rendered."
+  (let* ((source-id (plist-get candidate :source-id))
+         (target-id (plist-get candidate :target-id))
+         (target (or (supertag-store-get-entity :nodes target-id)
+                     (user-error "Target node %s no longer exists" target-id)))
+         (terms (supertag-reference-service-node-terms target))
+         (location (supertag-mention--source-buffer-and-position candidate))
+         (buffer (car location))
+         (position (cdr location)))
+    (with-current-buffer buffer
+      (org-with-wide-buffer
+        (goto-char position)
+        (let* ((fresh (supertag--parse-node-at-point))
+               (fresh-content (or (plist-get fresh :content) ""))
+               (expected-hash (plist-get candidate :source-content-hash)))
+          (unless (equal expected-hash (secure-hash 'sha256 fresh-content))
+            (user-error
+             "Source node %s changed; refresh the Node View before linking"
+             source-id))
+          (let* ((bounds (supertag-ui--document-link-bounds source-id))
+                 (raw (buffer-substring-no-properties
+                       (car bounds) (cdr bounds)))
+                 (matches (supertag-mention-service-scan-content raw terms)))
+            (list :buffer buffer :position position :bounds bounds
+                  :raw raw :matches matches)))))))
+
+(defun supertag-mention--find-live-match (candidate matches)
+  "Return the live match corresponding exactly to CANDIDATE.
+
+The source-content hash already proves that offsets did not move.  Matching by
+the rendered :start/:end pair is stricter than relying on an ordinal that could
+change when a target title or alias is edited after the Node View was rendered."
+  (cl-find-if
+   (lambda (match)
+     (and (= (plist-get candidate :start) (plist-get match :start))
+          (= (plist-get candidate :end) (plist-get match :end))))
+   matches))
+
+(defun supertag-mention--link-at-match (bounds match target-id &optional title)
+  "Replace MATCH inside BOUNDS with a canonical Org link.
+Use MATCH's exact source term as the visible description unless TITLE is
+provided explicitly.  This preserves aliases and sentence wording."
+  (let* ((start (+ (car bounds) (plist-get match :start)))
+         (end (+ (car bounds) (plist-get match :end)))
+         (description
+          (or title
+              (buffer-substring-no-properties start end)
+              (plist-get match :term)
+              target-id))
+         (beg-marker (copy-marker start))
+         (end-marker (copy-marker end t)))
+    (unwind-protect
+        (supertag-reference-materialize
+         beg-marker end-marker target-id description)
+      (set-marker beg-marker nil)
+      (set-marker end-marker nil))))
+
+(defun supertag-mention--finish-source-edit (source-id)
+  "Save and reproject SOURCE-ID after a source-owned edit."
+  (save-buffer)
+  (supertag-ui--reproject-containing-node source-id))
+
+(defun supertag-mention-link (candidate)
+  "Convert one unlinked mention CANDIDATE into a canonical Org ID link."
+  (interactive)
+  (let* ((live (supertag-mention--live-matches candidate))
+         (matches (plist-get live :matches))
+         (match (supertag-mention--find-live-match candidate matches))
+         (target-id (plist-get candidate :target-id))
+         (title (or (plist-get candidate :target-title) target-id)))
+    (unless match
+      (user-error "Mention candidate is stale; refresh the Node View"))
+    (with-current-buffer (plist-get live :buffer)
+      (org-with-wide-buffer
+        (goto-char (plist-get live :position))
+        (supertag-mention--link-at-match
+         (plist-get live :bounds) match target-id)))
+    (message "Linked mention to %s" title)))
+
+(defun supertag-mention-link-all-in-node (candidate)
+  "Link every mention of CANDIDATE's target in its source node."
+  (interactive)
+  (let* ((live (supertag-mention--live-matches candidate))
+         (matches (plist-get live :matches))
+         (target-id (plist-get candidate :target-id))
+         (title (or (plist-get candidate :target-title) target-id)))
+    (unless matches
+      (user-error "No live unlinked mentions remain in the source node"))
+    (with-current-buffer (plist-get live :buffer)
+      (org-with-wide-buffer
+        (goto-char (plist-get live :position))
+        ;; Back-to-front replacement preserves every earlier offset.
+        (dolist (match (reverse (copy-sequence matches)))
+          (supertag-mention--link-at-match
+           (plist-get live :bounds) match target-id))))
+    (message "Linked %d mention(s) to %s" (length matches) title)))
+
+(defun supertag-mention--ignore-value (ids)
+  "Return stable Org property text for ignored target IDS."
+  (string-join (sort (cl-delete-duplicates (copy-sequence ids) :test #'equal)
+                     #'string<)
+               " "))
+
+;;; 节点视图段
+
+(declare-function supertag-goto-node "supertag-node"
+                  (node-id &optional other-window))
+
+(defun supertag-view-mention--jump (button)
+  "Jump to BUTTON's source node."
+  (supertag-goto-node (button-get button 'supertag-source-id)))
+
+(defun supertag-view-mention--link (button)
+  "Link BUTTON's mention candidate."
+  (supertag-mention-link (button-get button 'supertag-mention)))
+
+(defun supertag-view-mention--link-all (button)
+  "Link all mentions represented by BUTTON's source candidate."
+  (supertag-mention-link-all-in-node
+   (button-get button 'supertag-mention)))
+
+(defun supertag-view-mention--ignore (button)
+  "Ignore BUTTON's target throughout its source node."
+  (let* ((candidate (button-get button 'supertag-mention))
+         (source-id (plist-get candidate :source-id))
+         (target-id (plist-get candidate :target-id))
+         (location (supertag-mention--source-buffer-and-position candidate)))
+    (with-current-buffer (car location)
+      (org-with-wide-buffer
+        (goto-char (cdr location))
+        (let* ((source (supertag-store-get-entity :nodes source-id))
+               (ignored (supertag-mention-service-ignored-targets source)))
+          (org-set-property
+           (substring (symbol-name supertag-mention-ignore-property) 1)
+           (supertag-mention--ignore-value (cons target-id ignored))))
+        (supertag-mention--finish-source-edit source-id)))
+    (message "Ignored mentions of %s in %s"
+             (or (plist-get candidate :target-title) target-id)
+             (or (plist-get candidate :source-title) source-id))))
+
+(defun supertag-view-mention--wrapped-lines (text)
+  "Return display lines for excerpt TEXT, preserving its text properties.
+Mirrors the wrapping used by contextual reference cards so both sections
+render excerpts with identical width and prefixing."
+  (when (and text (not (string-empty-p text)))
+    (with-temp-buffer
+      (insert text)
+      (setq-local fill-column
+                  (max 48 (min 92 (- (or (ignore-errors (window-body-width)) 80)
+                                      8))))
+      (fill-region (point-min) (point-max))
+      (split-string (buffer-string) "\n" t))))
+
+(defun supertag-view-mention--context-text (candidate)
+  "Return CANDIDATE's excerpt with the exact match highlighted."
+  (concat (propertize (or (plist-get candidate :before) "")
+                      'face 'font-lock-comment-face)
+          (propertize (or (plist-get candidate :match) "")
+                      'face 'match)
+          (propertize (or (plist-get candidate :after) "")
+                      'face 'font-lock-comment-face)))
+
+(defun supertag-view-mention--insert-context (candidate)
+  "Insert context excerpt for CANDIDATE with exact match highlighting.
+Every wrapped line carries the same \"    > \" prefix as reference cards."
+  (if-let* ((lines (supertag-view-mention--wrapped-lines
+                    (supertag-view-mention--context-text candidate))))
+      (dolist (line lines)
+        (insert (propertize "    > " 'face 'font-lock-comment-face))
+        (insert (string-trim line))
+        (insert "\n"))
+    (insert (propertize "    > No direct source text is available.\n"
+                        'face `(:foreground ,(supertag-view-helper-get-muted-color)
+                                            :slant italic)))))
+
+(defun supertag-view-mention--insert-card (candidate)
+  "Insert one unlinked mention CANDIDATE."
+  (let ((source-id (plist-get candidate :source-id))
+        (source-title (or (plist-get candidate :source-title)
+                          (plist-get candidate :source-id)))
+        (location (or (plist-get candidate :source-location) "Store node")))
+    (insert "  ")
+    (insert-text-button
+     source-title
+     'action #'supertag-view-mention--jump
+     'follow-link t
+     'help-echo (format "Jump to %s" source-title)
+     'supertag-source-id source-id)
+    (insert "\n")
+    (insert (propertize (format "    %s\n" location)
+                        'face `(:foreground
+                                ,(supertag-view-helper-get-muted-color)
+                                :height 0.9)))
+    (supertag-view-mention--insert-context candidate)
+    (insert "    ")
+    (supertag-view-helper-insert-action-button
+     "[Link]" #'supertag-view-mention--link candidate
+     "Turn this occurrence into a canonical Org ID link" 'supertag-mention)
+    (insert " ")
+    (supertag-view-helper-insert-action-button
+     "[Link all in node]" #'supertag-view-mention--link-all candidate
+     "Link every unlinked occurrence in this source node" 'supertag-mention)
+    (insert " ")
+    (supertag-view-helper-insert-action-button
+     "[Ignore in node]" #'supertag-view-mention--ignore candidate
+     "Suppress mentions of this target in this source node" 'supertag-mention)
+    ;; One blank line between cards, matching contextual reference cards.
+    (insert "\n\n")))
+
+(defun supertag-view-mention-insert-section (target-id)
+  "Insert unlinked mention candidates for TARGET-ID."
+  (let ((mentions (supertag-mention-service-find target-id)))
+    (supertag-view-helper-insert-section-title
+     (if mentions
+         (format "Unlinked Mentions (%d)" (length mentions))
+       "Unlinked Mentions")
+     "")
+    (if mentions
+        (dolist (candidate mentions)
+          (supertag-view-mention--insert-card candidate))
+      (supertag-view-helper-insert-simple-empty-state
+       "No unlinked mentions."))))
+
+(provide 'supertag-mention)
+;;; supertag-mention.el ends here

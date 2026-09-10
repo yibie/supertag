@@ -1,20 +1,157 @@
-;;; supertag/store.el --- Core data storage and atomic update for Supertag -*- lexical-binding: t; -*-
+;;; supertag-core-store.el --- Core data storage and atomic update for Supertag -*- lexical-binding: t; -*-
 
 ;;; Commentary:
 ;; This file implements the physical Store for Supertag.  The Store holds
 ;; Semantic Facts, Document Projections, and derived state; ownership is defined
 ;; by doc/OWNERSHIP-CONSTITUTION_cn.md, not by physical residence here.
 
+
+;; Commands: none; Lisp entrypoints include supertag-get, supertag-set,
+;; supertag-store-get-entity, supertag-store-put-entity, supertag-with-transaction,
+;; supertag-subscribe, supertag-change-commit, supertag-index-rebuild-all.
+;; Dependencies: cl-lib, ht; guarded supertag-core-persistence dirty marking, supertag-tag and
+;; supertag-automation index callbacks. Legacy schema cache callbacks remain optional
+;; capabilities, not a required module.
+;; Transaction execution, rollback and shared notification state are owned here.
+;; Former State/Notify carrier names in preserved API documentation are historical.
 ;;; Code:
 
 (require 'cl-lib)
 (require 'ht) ; Ensures `ht` API availability
-(require 'supertag-core-notify) ; For supertag-core-notify-handle-change and supertag-emit-event
-(require 'supertag-core-state) ; For supertag--transaction-record-old-value
+;;; --- Shared Core State Variables ---
+
+(defvar supertag--suppress-notifications nil
+  "If non-nil, suppress change notifications. Used for batch operations and transactions.")
+
+(defvar supertag--pending-changes nil
+  "List of changes to be notified when notifications are unsuppressed.
+Each element is a list: (path old-value new-value).")
+
+(defvar supertag--transaction-active nil
+  "Flag indicating if a transaction is currently active.")
+
+(defvar supertag--transaction-log nil
+  "Log of changes made within the active transaction, for rollback.
+Each element is a list: (PATH EXISTED-P OLD-VALUE), recorded the *first*
+time PATH is touched during the transaction (see
+`supertag--transaction-record-old-value'), and pushed so the head of the
+list is always the most recently touched path. EXISTED-P is nil when PATH
+had no entity before the transaction (so rollback must delete PATH again
+rather than restore a value); otherwise OLD-VALUE is the pre-transaction
+value to restore verbatim.")
+
+(defvar supertag--transaction-seen nil
+  "Hash table (equal-keyed) of paths already recorded in the current
+transaction's rollback log, or nil when no transaction is active. Ensures
+`supertag--transaction-record-old-value' only records the *original*
+pre-transaction value the first time a path is touched — later writes to
+the same path within the same transaction must not overwrite that snapshot
+with an intermediate value.")
+
+(defun supertag--transaction-record-old-value (path existed-p old-value)
+  "Record OLD-VALUE for PATH the first time it is touched in this transaction.
+No-op unless `supertag--transaction-active' is non-nil. Meant to be called
+by the low-level store mutation primitives (`supertag-core-store.el') right
+before they mutate PATH, so `supertag-with-transaction' can restore every
+touched path to its true pre-transaction value on error.
+
+EXISTED-P distinguishes an update (PATH already had OLD-VALUE, so rollback
+restores it) from a creation (PATH did not exist, so rollback deletes it
+again). OLD-VALUE is deep-copied with `copy-tree' so later in-place mutation
+of the live entity plist cannot corrupt the recorded snapshot."
+  (when supertag--transaction-active
+    (unless (hash-table-p supertag--transaction-seen)
+      (setq supertag--transaction-seen (make-hash-table :test 'equal)))
+    (unless (gethash path supertag--transaction-seen)
+      (puthash path t supertag--transaction-seen)
+      (push (list path existed-p (copy-tree old-value)) supertag--transaction-log))))
+
+;;; --- Macro for Managing Suppressed Notifications ---
+
+(defmacro supertag-core-state-with-suppressed-notifications (&rest body)
+  "Execute BODY with notifications suppressed.
+Ensures proper cleanup of notification state even if an error occurs."
+  (declare (indent 0))
+  `(let ((supertag--suppress-notifications t)
+         (supertag--pending-changes '()))
+     (unwind-protect
+         (progn ,@body)
+       ;; Ensure notifications are re-enabled and pending changes cleared
+       (setq supertag--suppress-notifications nil)
+       (setq supertag--pending-changes '()))))
+
+
+
+;;; --- Change Notification System ---
+
+(defvar supertag--subscribers (ht-create)
+  "Hash table to store subscribers for data path changes.
+Key: data path (list of keys)
+Value: list of callback functions")
+
+(defun supertag-subscribe (event-type callback)
+  "Subscribe to a specific EVENT-TYPE.
+EVENT-TYPE can be a data path (list of keys) or a generic keyword (e.g., :store-changed).
+CALLBACK will be called with arguments relevant to the event.
+Returns a function to unsubscribe."
+  (when (and (eq event-type :store-changed)
+             (fboundp 'supertag-change--assert-legacy-topic-available))
+    (supertag-change--assert-legacy-topic-available callback))
+  (let ((callbacks (gethash event-type supertag--subscribers)))
+    (puthash event-type (cons callback callbacks) supertag--subscribers)
+    ;; Return an unsubscribe function
+    (lambda ()
+      (puthash event-type (cl-delete callback (gethash event-type supertag--subscribers)) supertag--subscribers))))
+
+(defun supertag-emit-event (event-type &rest args)
+  "Emit a generic event.
+EVENT-TYPE is a keyword (e.g., :store-changed).
+ARGS are the arguments to pass to the event handlers."
+  (unless (and (eq event-type :store-changed)
+               (bound-and-true-p
+                supertag-change--suppress-legacy-store-changed))
+    (let ((callbacks (gethash event-type supertag--subscribers)))
+      (when callbacks
+        (dolist (callback callbacks)
+          ;; 直接调用回调函数，不捕获错误
+          (apply callback args))))))
+
+(defun supertag-notify (event-type &rest args)
+  "Notify subscribers about an event.
+This is a wrapper around supertag-emit-event for backward compatibility."
+  (apply 'supertag-emit-event event-type args))
+
+;;; --- Core Change Handler (called by supertag-store) ---
+
+(defun supertag-core-notify-handle-change (path old-value new-value)
+  "Handle a single data change notification.
+This function is called by `supertag-store` after an update.
+It manages pending changes for batch operations and dispatches notifications."
+  (when (and (not (bound-and-true-p supertag--suppress-notifications))
+             (not (equal old-value new-value))) ; Only notify if value actually changed
+    (let ((callbacks (gethash path supertag--subscribers)))
+      (when callbacks
+        (dolist (callback callbacks)
+          (funcall callback path old-value new-value)))))
+  (when (bound-and-true-p supertag--suppress-notifications)
+    (push (list path old-value new-value) supertag--pending-changes)))
+
+;;; --- Batch Notification ---
+
+(defun supertag--notify-batch-changes ()
+  "Notify all pending changes in a batch.
+This function is called after a batch operation or transaction commits.
+It iterates through supertag--pending-changes and dispatches notifications."
+  (setq supertag--suppress-notifications nil) ; Ensure notifications are re-enabled
+  (dolist (change (nreverse supertag--pending-changes)) ; Notify in order
+    (let ((path (nth 0 change))
+          (old-value (nth 1 change))
+          (new-value (nth 2 change)))
+      (supertag-core-notify-handle-change path old-value new-value)))
+  (setq supertag--pending-changes '())) ; Clear pending changes after notification
+
 
 (declare-function supertag-mark-dirty "supertag-core-persistence")
-(declare-function supertag-index-note-store-change "supertag-core-index"
-                  (collection))
 
 ;;; --- Core Data Store ---
 
@@ -45,29 +182,23 @@ OPERATION is included in the diagnostic when supplied."
     :ontology-actions        ; deployed Action contracts
     :ontology-policies       ; deployed Action authorization contracts
     :ontology-action-executions ; successful Action audit ledger
-    ;; Legacy nested field values (node -> tag -> field); read-only migration
-    ;; source, no production writer remains (task014).
-    :fields
-    ;; Global field model (new)
-    :field-definitions          ; field-id -> field plist
-    :tag-field-associations     ; tag-id -> ordered list of association plists
-    :field-values               ; node-id -> field-id -> value
-    :field-provenance           ; node-id -> field-id -> provenance plist (supertag-ops-field)
     :boards                     ; board-id -> board plist (whiteboard layouts)
-    :queries                    ; query-name -> saved query plist
     :views                      ; view-id -> persisted view config plist
     :automations                ; automation-id -> durable rule plist
     :sync-conflicts             ; conflict-id -> durable unresolved conflict plist
     :meta)
   "Durable root collections maintained in `supertag--store'.
-Every collection written to the database must be declared here so Store
-initialization and save/read verification share one contract.
+Declared collections are initialized and verified. Unknown roots are retained
+on load/save; the version migration explicitly retires legacy field roots
+only after preserving their contents as pending migration records.
 `:embeds' was removed (2026-08-13, task028): no production code reads or
 writes it, and old files still load their `:embeds' lines via the loader's
-normalization arms; the data is simply not persisted on the next save.")
+normalization arms; the loaded data stays in memory and is written back
+on the next save.  `:queries' was retired on 2026-09-06: the loader
+`supertag--persistence--canonicalize-store-root' discards that root.")
 
 (defconst supertag--canonical-collections
-  '(:nodes :tags :relations :link-definitions :field-definitions
+  '(:nodes :tags :relations :link-definitions
     :ontology-bindings :ontology-modules :ontology-migrations
     :ontology-functions :ontology-actions :ontology-policies
     :ontology-action-executions
@@ -218,260 +349,6 @@ When EMIT-EVENT-P is non-nil, emit :store-changed notification."
        bucket))
     bucket))
 
-;;; --- Global Field Collections (opt-in scaffolding) ---
-
-(defun supertag-store-put-field-definition (field-id data &optional emit-event-p)
-  "Store global field definition DATA under FIELD-ID."
-  (let ((result (supertag-store--put-and-notify :field-definitions field-id data emit-event-p)))
-    (when (fboundp 'supertag--maybe-rebuild-global-field-caches)
-      (supertag--maybe-rebuild-global-field-caches))
-    result))
-
-(defun supertag-store-get-field-definition (field-id)
-  "Fetch global field definition for FIELD-ID."
-  (gethash field-id (supertag-store-get-collection :field-definitions)))
-
-(defun supertag-store-remove-field-definition (field-id)
-  "Remove global field definition FIELD-ID."
-  (let ((old (supertag-store-remove-entity :field-definitions field-id)))
-    (when (and old (fboundp 'supertag--maybe-rebuild-global-field-caches))
-      (supertag--maybe-rebuild-global-field-caches))
-    old))
-
-(defun supertag-store-put-tag-field-associations (tag-id associations &optional emit-event-p)
-  "Store ASSOCIATIONS (ordered list) for TAG-ID."
-  (let ((result (supertag-store--put-and-notify :tag-field-associations tag-id associations emit-event-p)))
-    (when (fboundp 'supertag--maybe-rebuild-global-field-caches)
-      (supertag--maybe-rebuild-global-field-caches))
-    result))
-
-(defun supertag-store-get-tag-field-associations (tag-id)
-  "Fetch field association list for TAG-ID."
-  (gethash tag-id (supertag-store-get-collection :tag-field-associations)))
-
-(defun supertag-store-remove-tag-field-associations (tag-id)
-  "Remove field associations for TAG-ID."
-  (let ((old (supertag-store-remove-entity :tag-field-associations tag-id)))
-    (when (and old (fboundp 'supertag--maybe-rebuild-global-field-caches))
-      (supertag--maybe-rebuild-global-field-caches))
-    old))
-
-(defun supertag-store-put-field-value (node-id field-id value &optional emit-event-p)
-  "Set VALUE for FIELD-ID on NODE-ID."
-  (supertag-store-assert-mutable (list :put-field-value node-id field-id))
-  (let* ((root (supertag-store-get-collection :field-values))
-         (node-table (gethash node-id root)))
-    (unless (hash-table-p node-table)
-      ;; This node's field-value bucket doesn't exist yet. Record that fact
-      ;; *before* creating it so a rollback that undoes every field written
-      ;; under it also removes the whole bucket again, instead of leaving an
-      ;; empty shell that would inflate the :field-values entity count.
-      (supertag--transaction-record-old-value (list :field-values node-id) nil nil)
-      (setq node-table (ht-create))
-      (puthash node-id node-table root))
-    (let* ((had-value (ht-contains? node-table field-id))
-           (old-value (and had-value (gethash field-id node-table))))
-      (supertag--transaction-record-old-value
-       (list :field-values node-id field-id) had-value old-value))
-    (puthash field-id value node-table)
-    (when (fboundp 'supertag-index-note-store-change)
-      (supertag-index-note-store-change :field-values))
-    (when emit-event-p
-      (supertag-emit-event :store-changed (list :field-values node-id field-id) nil value))
-    value))
-
-(defun supertag-store-get-field-value (node-id field-id &optional default)
-  "Get VALUE for FIELD-ID on NODE-ID, or DEFAULT if missing."
-  (let* ((root (supertag-store-get-collection :field-values))
-         (node-table (and (hash-table-p root) (gethash node-id root))))
-    (if (and (hash-table-p node-table)
-             (ht-contains? node-table field-id))
-        (gethash field-id node-table)
-      default)))
-
-(defun supertag-store-remove-field-value (node-id field-id)
-  "Remove FIELD-ID value for NODE-ID. Returns removed value or nil."
-  (supertag-store-assert-mutable (list :remove-field-value node-id field-id))
-  (let* ((root (supertag-store-get-collection :field-values))
-         (node-table (and (hash-table-p root) (gethash node-id root))))
-    (when (and (hash-table-p node-table)
-               (ht-contains? node-table field-id))
-      (let ((old (gethash field-id node-table)))
-        (supertag--transaction-record-old-value (list :field-values node-id field-id) t old)
-        (remhash field-id node-table)
-        (when (fboundp 'supertag-index-note-store-change)
-          (supertag-index-note-store-change :field-values))
-        (supertag-emit-event :store-changed (list :field-values node-id field-id) old nil)
-        old))))
-
-;;; --- Field Provenance (sidecar of :field-values) ---
-
-;; `:field-provenance' mirrors the node -> field nesting of `:field-values'.
-;; An entry records who asserted the value (`supertag-field-set' in
-;; supertag-ops-field.el owns the record shape); the value itself is never
-;; stored here, so readers of `:field-values' are unaffected.
-
-(defun supertag-store-put-field-provenance (node-id field-id record)
-  "Store provenance RECORD for FIELD-ID on NODE-ID."
-  (supertag-store-assert-mutable (list :put-field-provenance node-id field-id))
-  (let* ((root (supertag-store-get-collection :field-provenance))
-         (node-table (gethash node-id root)))
-    (unless (hash-table-p node-table)
-      ;; Record the bucket's absence first so a rollback removes it again
-      ;; instead of leaving an empty shell (see `supertag-store-put-field-value').
-      (supertag--transaction-record-old-value (list :field-provenance node-id) nil nil)
-      (setq node-table (ht-create))
-      (puthash node-id node-table root))
-    (let* ((had-value (ht-contains? node-table field-id))
-           (old-value (and had-value (gethash field-id node-table))))
-      (supertag--transaction-record-old-value
-       (list :field-provenance node-id field-id) had-value old-value))
-    (puthash field-id record node-table)
-    (when (fboundp 'supertag-index-note-store-change)
-      (supertag-index-note-store-change :field-provenance))
-    (supertag-emit-event :store-changed (list :field-provenance node-id field-id) nil record)
-    record))
-
-(defun supertag-store-get-field-provenance (node-id field-id &optional default)
-  "Return the provenance record for FIELD-ID on NODE-ID, or DEFAULT."
-  (let* ((root (supertag-store-get-collection :field-provenance))
-         (node-table (and (hash-table-p root) (gethash node-id root))))
-    (if (and (hash-table-p node-table)
-             (ht-contains? node-table field-id))
-        (gethash field-id node-table)
-      default)))
-
-(defun supertag-store-remove-field-provenance (node-id field-id)
-  "Remove the provenance record for FIELD-ID on NODE-ID.
-Returns the removed record or nil."
-  (supertag-store-assert-mutable (list :remove-field-provenance node-id field-id))
-  (let* ((root (supertag-store-get-collection :field-provenance))
-         (node-table (and (hash-table-p root) (gethash node-id root))))
-    (when (and (hash-table-p node-table)
-               (ht-contains? node-table field-id))
-      (let ((old (gethash field-id node-table)))
-        (supertag--transaction-record-old-value (list :field-provenance node-id field-id) t old)
-        (remhash field-id node-table)
-        (when (fboundp 'supertag-index-note-store-change)
-          (supertag-index-note-store-change :field-provenance))
-        (supertag-emit-event :store-changed (list :field-provenance node-id field-id) old nil)
-        old))))
-
-;;; --- Legacy Nested Field Collection (:fields) ---
-;;
-;; `:fields' stores node-id -> tag-id -> field-name -> value as three
-;; levels of nested (real, `equal'-test) hash tables — never plists. This
-;; is the one collection shape `supertag--normalize-entity' must NEVER be
-;; allowed to touch: it unconditionally flattens a hash-table VALUE into a
-;; plist, which is exactly correct for the ordinary entity collections it
-;; was designed for (:nodes, :tags, ...) but would corrupt a per-node field
-;; table. The functions below are the transactional seam for this
-;; collection, mirroring `supertag-store-put-field-value'/
-;; `supertag-store-remove-field-value' for `:field-values': they record a
-;; rollback marker the first time each level (node table, tag table, field
-;; slot) is touched in an active transaction, using path shapes
-;; `(:fields NODE-ID)', `(:fields NODE-ID TAG-ID)', and
-;; `(:fields NODE-ID TAG-ID FIELD-NAME)' — all understood by dedicated
-;; arms in `supertag--transaction-restore-entry' (supertag-core-transform.el)
-;; that restore by direct `puthash'/`remhash' on the live hash tables,
-;; bypassing `supertag-store-put-entity'/`supertag--normalize-entity'
-;; entirely.
-
-(defun supertag--legacy-field-coerce-table (data)
-  "Coerce DATA into a hash table for the legacy `:fields' collection.
-Handles the shapes that may still linger from older on-disk formats:
-hash tables (returned as-is), alists, flat plist-style key/value lists,
-and nil. Anything else is stored under a `:value' key so data is never
-silently dropped."
-  (cond
-   ((hash-table-p data) data)
-   ((null data) (ht-create))
-   ((and (listp data) (consp (car data)))
-    (let ((table (ht-create)))
-      (dolist (cell data table)
-        (puthash (car cell) (cdr cell) table))))
-   ((and (listp data) (zerop (% (length data) 2)))
-    (let ((table (ht-create))
-          (cursor data))
-      (while cursor
-        (let ((key (pop cursor))
-              (value (pop cursor)))
-          (puthash key value table)))
-      table))
-   (t
-    (let ((table (ht-create)))
-      (puthash :value data table)
-      table))))
-
-(defun supertag-store-put-legacy-field (node-id tag-id field-name value)
-  "Set VALUE for FIELD-NAME under TAG-ID for NODE-ID in the legacy
-nested `:fields' collection, creating the per-node and per-tag hash
-tables on demand. Records a rollback marker at each level the first
-time it is touched in an active transaction (see the Commentary above
-this section). Returns VALUE."
-  (supertag-store-assert-mutable
-   (list :put-legacy-field node-id tag-id field-name))
-  (let* ((fields-root (supertag-store-get-collection :fields))
-         (raw-node (gethash node-id fields-root))
-         (node-table
-          (cond
-           ((hash-table-p raw-node) raw-node)
-           (raw-node
-            ;; Legacy list-shaped data: migrate to a hash table, recording
-            ;; the original value so a rollback restores it verbatim.
-            (supertag--transaction-record-old-value (list :fields node-id) t raw-node)
-            (let ((table (supertag--legacy-field-coerce-table raw-node)))
-              (puthash node-id table fields-root)
-              table))
-           (t
-            (supertag--transaction-record-old-value (list :fields node-id) nil nil)
-            (let ((table (ht-create)))
-              (puthash node-id table fields-root)
-              table)))))
-    (let* ((raw-tag (gethash tag-id node-table))
-           (tag-table
-            (cond
-             ((hash-table-p raw-tag) raw-tag)
-             (raw-tag
-              (supertag--transaction-record-old-value (list :fields node-id tag-id) t raw-tag)
-              (let ((table (supertag--legacy-field-coerce-table raw-tag)))
-                (puthash tag-id table node-table)
-                table))
-             (t
-              (supertag--transaction-record-old-value (list :fields node-id tag-id) nil nil)
-              (let ((table (ht-create)))
-                (puthash tag-id table node-table)
-                table)))))
-      (let* ((had-value (ht-contains? tag-table field-name))
-             (old-value (and had-value (gethash field-name tag-table))))
-        (supertag--transaction-record-old-value
-         (list :fields node-id tag-id field-name) had-value old-value))
-      (puthash field-name value tag-table)
-      value)))
-
-(defun supertag-store-remove-legacy-field (node-id tag-id field-name)
-  "Remove FIELD-NAME under TAG-ID for NODE-ID from the legacy nested
-`:fields' collection. Returns the removed value, or nil when absent.
-Records a rollback marker before mutating, mirroring
-`supertag-store-put-legacy-field'. Never creates node/tag tables that
-do not already exist."
-  (supertag-store-assert-mutable
-   (list :remove-legacy-field node-id tag-id field-name))
-  (let* ((fields-root (supertag-store-get-collection :fields))
-         (raw-node (gethash node-id fields-root))
-         (node-table (cond ((hash-table-p raw-node) raw-node)
-                            (raw-node (supertag--legacy-field-coerce-table raw-node)))))
-    (when node-table
-      (let* ((raw-tag (gethash tag-id node-table))
-             (tag-table (cond ((hash-table-p raw-tag) raw-tag)
-                               (raw-tag (supertag--legacy-field-coerce-table raw-tag)))))
-        (when (and tag-table (ht-contains? tag-table field-name))
-          (let ((old (gethash field-name tag-table)))
-            (supertag--transaction-record-old-value
-             (list :fields node-id tag-id field-name) t old)
-            (remhash field-name tag-table)
-            old))))))
-
 ;;; --- Canonical Path Resolution ---
 
 (defun supertag--resolve-path (container path)
@@ -533,9 +410,8 @@ CONTAINER may be a hash table, plist, or alist. PATH is a list of keys."
 
 (defun supertag--notify-change (path old-value new-value)
   "Trigger a change notification for PATH with OLD-VALUE and NEW-VALUE.
-This function acts as a bridge to the actual notification system in `supertag-core-notify.el`."
-  ;; This function assumes `supertag-core-notify-handle-change` is defined elsewhere.
-  ;; It's a forward declaration to break circular dependency.
+This function dispatches to the notification handler owned by this Store module."
+  ;; Keep the existing availability guard for the Store-owned handler.
   (when (fboundp 'supertag-core-notify-handle-change)
     (supertag-core-notify-handle-change path old-value new-value)))
 
@@ -755,6 +631,664 @@ Returns the updated entity when available, otherwise falls back to :result or :p
          (current current)
          (result result)
          (t previous))))))
+
+;;; --- Transaction Support ---
+
+(defun supertag--transaction-restore-entry (entry)
+  "Undo one recorded ENTRY of the form (PATH EXISTED-P OLD-VALUE).
+Supports (COLLECTION ID) entity changes and (COLLECTION) replacement."
+  (let ((path (nth 0 entry))
+        (existed-p (nth 1 entry))
+        (old-value (nth 2 entry)))
+    (cond
+     ((= (length path) 2)
+      (let ((collection (nth 0 path))
+            (id (nth 1 path)))
+        (if existed-p
+            (supertag-store-put-entity collection id old-value)
+          (supertag-store-remove-entity collection id))))
+     ((= (length path) 1)
+      (if existed-p
+          (supertag-update path old-value)
+        (supertag-delete path)))
+     (t
+      (error "supertag--transaction-restore-entry: unsupported path shape %S" path)))))
+
+(defun supertag--transaction-rollback (log)
+  "Undo every change recorded in LOG, most-recently-touched path first.
+LOG is a list of (PATH EXISTED-P OLD-VALUE) entries as produced by
+`supertag--transaction-record-old-value' — since entries are pushed as they
+are first recorded, LOG is already in the correct (reverse chronological)
+order for `dolist' to walk directly. Restoration itself must not be treated
+as new transactional writes, so the active-transaction flag is bound to nil
+for the duration."
+  (let ((supertag--transaction-active nil)
+        (supertag--transaction-seen nil))
+    (dolist (entry log)
+      (supertag--transaction-restore-entry entry))))
+
+(defvar supertag-after-transaction-rollback-hook nil
+  "Hook run after an outer transaction restores its Store state.
+Functions on this hook must not mutate the Store.")
+
+(defun supertag--run-transaction-rollback-hooks ()
+  "Run every rollback invariant and return the first error, if any."
+  (let (first-error)
+    (run-hook-wrapped
+     'supertag-after-transaction-rollback-hook
+     (lambda (function)
+       (condition-case err
+           (funcall function)
+         (error
+          (unless first-error
+            (setq first-error err))))
+       nil))
+    first-error))
+
+(defmacro supertag-with-transaction (&rest body)
+  "Execute BODY within a transaction.
+If an error occurs during BODY execution, every path touched during the
+transaction — directly, or transitively via automation actions triggered
+synchronously by those writes — is restored to its exact pre-transaction
+value: entities created during the transaction are removed again, and
+entities deleted during the transaction are resurrected with their original
+value. This works because every low-level store mutation primitive
+(`supertag-store-put-entity', `supertag-store-remove-entity',
+and
+the whole-collection replace/clear paths in `supertag-update'/`supertag-delete')
+calls `supertag--transaction-record-old-value' before mutating, which is a
+no-op unless a transaction is active.
+
+Nesting: invoking `supertag-with-transaction' while one is already active
+simply runs BODY inline so its changes join the *enclosing* transaction's
+log — there is no separate commit, rollback, or notification flush for the
+inner call; only the outermost transaction commits or rolls back.
+
+Notifications are suppressed until the (outermost) transaction commits, at
+which point exactly one batch notification flush happens."
+  (declare (indent 0))
+  ;; Use an uninterned symbol so BODY may freely use a variable named
+  ;; `result' without it being captured by this expansion.
+  (let ((result (make-symbol "result")))
+  `(if supertag--transaction-active
+       ;; Already inside a transaction: just run BODY so it joins the
+       ;; enclosing transaction's log instead of starting/ending its own.
+       (progn ,@body)
+     (let ((supertag--transaction-active t) ; Flag for transaction
+           (supertag--transaction-log '()) ; Log for rollback
+           (supertag--transaction-seen nil) ; Dedup set: first-touch only
+           (supertag--tx-success nil)
+           (supertag--rollback-error nil)
+           ,result) ; Variable to capture the result
+       (unwind-protect
+           (progn
+             (setq ,result (supertag-core-state-with-suppressed-notifications
+                           (progn ,@body)))
+             (setq supertag--tx-success t)
+             ;; Commit transaction: notify all pending changes
+             (when (fboundp 'supertag--notify-batch-changes)
+               (supertag--notify-batch-changes))
+             ,result) ; Return the result
+         ;; Cleanup: roll back on error, then always reset transaction state.
+         (unless supertag--tx-success
+           (supertag--transaction-rollback supertag--transaction-log)
+           (setq supertag--rollback-error
+                 (supertag--run-transaction-rollback-hooks)))
+         (setq supertag--transaction-active nil)
+         (setq supertag--transaction-log nil)
+         (setq supertag--transaction-seen nil)
+         (when supertag--rollback-error
+           (signal (car supertag--rollback-error)
+                   (cdr supertag--rollback-error))))))))
+
+;;; --- Derived Store indexes and rollback registration ---
+
+(defvar supertag--store)
+
+;;; --- Index Variables ---
+
+(defvar supertag--index-relations-by-from (make-hash-table :test 'equal)
+  "Index: from-id -> hash-table of relation-id -> t.")
+
+(defvar supertag--index-relations-by-to (make-hash-table :test 'equal)
+  "Index: to-id -> hash-table of relation-id -> t.")
+
+(defvar supertag--index-relations-source-token nil
+  "Source token represented by the current relation indexes.")
+
+(defvar supertag--index-nodes-by-tag (make-hash-table :test 'equal)
+  "Index: Tag ID or occurrence token -> hash-set of node IDs.")
+
+(defvar supertag--index-node-ranks (make-hash-table :test 'equal)
+  "Index: node ID -> Store traversal rank for query-order compatibility.")
+
+(defvar supertag--index-nodes-source-token nil
+  "Source token represented by `supertag--index-nodes-by-tag'.")
+
+(defvar supertag--index-source-revisions (make-hash-table :test 'eq)
+  "Monotonic in-memory revisions for Store collections.")
+
+(defun supertag-index-note-store-change (collection)
+  "Record a mutation of Store COLLECTION."
+  (puthash collection
+           (1+ (gethash collection supertag--index-source-revisions 0))
+           supertag--index-source-revisions))
+
+(defun supertag-index-source-token (collections)
+  "Return the current Store identity and revisions for COLLECTIONS."
+  (cons supertag--store
+        (mapcar (lambda (collection)
+                  (cons collection
+                        (gethash collection supertag--index-source-revisions 0)))
+                collections)))
+
+(defun supertag-index-source-current-p (token collections)
+  "Return non-nil when TOKEN still represents COLLECTIONS in the live Store."
+  (and token
+       (eq (car token) supertag--store)
+       (equal (cdr token) (cdr (supertag-index-source-token collections)))))
+
+;;; --- Incremental Maintenance ---
+
+(defun supertag-index--add-relation-entry (relation-id from-id to-id)
+  "Add RELATION-ID to the indexes for FROM-ID and TO-ID."
+  (let ((from-set (gethash from-id supertag--index-relations-by-from)))
+    (unless from-set
+      (setq from-set (make-hash-table :test 'equal))
+      (puthash from-id from-set supertag--index-relations-by-from))
+    (puthash relation-id t from-set))
+  (let ((to-set (gethash to-id supertag--index-relations-by-to)))
+    (unless to-set
+      (setq to-set (make-hash-table :test 'equal))
+      (puthash to-id to-set supertag--index-relations-by-to))
+    (puthash relation-id t to-set)))
+
+(defun supertag-index--remove-relation-entry (relation-id from-id to-id)
+  "Remove RELATION-ID from the indexes for FROM-ID and TO-ID."
+  (let ((from-set (gethash from-id supertag--index-relations-by-from)))
+    (when from-set
+      (remhash relation-id from-set)
+      (when (= 0 (hash-table-count from-set))
+        (remhash from-id supertag--index-relations-by-from))))
+  (let ((to-set (gethash to-id supertag--index-relations-by-to)))
+    (when to-set
+      (remhash relation-id to-set)
+      (when (= 0 (hash-table-count to-set))
+        (remhash to-id supertag--index-relations-by-to)))))
+
+(defun supertag-index--on-relation-changed
+    (relation-id old-from old-to new-from new-to)
+  "Apply one completed Store mutation of RELATION-ID to relation indexes."
+  (let* ((current-token (supertag-index-source-token '(:relations)))
+         (old-revision (alist-get :relations
+                                  (cdr supertag--index-relations-source-token)))
+         (current-revision (alist-get :relations (cdr current-token))))
+    (when (and old-revision
+               (eq (car supertag--index-relations-source-token) supertag--store)
+               (= (1+ old-revision) current-revision))
+      (when (and old-from old-to)
+        (supertag-index--remove-relation-entry relation-id old-from old-to))
+      (when (and new-from new-to)
+        (supertag-index--add-relation-entry relation-id new-from new-to))
+      (setq supertag--index-relations-source-token current-token))))
+
+;;; --- Full Rebuild ---
+
+(defun supertag-index-rebuild-relations ()
+  "Rebuild relation indexes from the :relations collection.
+Call this after loading the store from disk."
+  (setq supertag--index-relations-by-from (make-hash-table :test 'equal))
+  (setq supertag--index-relations-by-to   (make-hash-table :test 'equal))
+  (when (and (boundp 'supertag--store)
+             (hash-table-p supertag--store))
+    (let ((relations (gethash :relations supertag--store)))
+      (when (hash-table-p relations)
+        (maphash
+         (lambda (rel-id relation)
+           (when relation
+             (let ((from-id (plist-get relation :from))
+                   (to-id   (plist-get relation :to)))
+               (when (and from-id to-id)
+                 (supertag-index--add-relation-entry rel-id from-id to-id)))))
+         relations))))
+  (setq supertag--index-relations-source-token
+        (supertag-index-source-token '(:relations))))
+
+(defun supertag-index--ensure-relations ()
+  "Cold rebuild relation indexes when their Store source changed."
+  (unless (supertag-index-source-current-p
+           supertag--index-relations-source-token '(:relations))
+    (supertag-index-rebuild-relations)))
+
+(defun supertag-node-tag-query-keys (node-data)
+  "Return Semantic Tag IDs and Org Tag Occurrences from NODE-DATA."
+  (delete-dups
+   (append (copy-sequence (or (plist-get node-data :tags) '()))
+           (copy-sequence (or (plist-get node-data :tag-occurrences) '())))))
+
+(defun supertag-index-clear-nodes-by-tag ()
+  "Clear the node membership index."
+  (setq supertag--index-nodes-by-tag (make-hash-table :test 'equal)
+        supertag--index-node-ranks (make-hash-table :test 'equal)
+        supertag--index-nodes-source-token nil))
+
+(defun supertag-index-rebuild-nodes-by-tag ()
+  "Rebuild Tag/occurrence -> node membership from Document Projections."
+  (supertag-index-clear-nodes-by-tag)
+  (let ((nodes (and (boundp 'supertag--store)
+                    (hash-table-p supertag--store)
+                    (gethash :nodes supertag--store)))
+        (rank 0))
+    (when (hash-table-p nodes)
+      (maphash
+       (lambda (node-id node)
+         (puthash node-id rank supertag--index-node-ranks)
+         (setq rank (1+ rank))
+         (dolist (tag (supertag-node-tag-query-keys node))
+           (when (stringp tag)
+             (let ((set (or (gethash tag supertag--index-nodes-by-tag)
+                            (let ((new (make-hash-table :test 'equal)))
+                              (puthash tag new supertag--index-nodes-by-tag)
+                              new))))
+               (puthash node-id t set)))))
+       nodes)))
+  (setq supertag--index-nodes-source-token
+        (supertag-index-source-token '(:nodes))))
+
+(defun supertag-index--ensure-nodes-by-tag ()
+  "Cold rebuild node membership when its Document Projection changed."
+  (unless (supertag-index-source-current-p
+           supertag--index-nodes-source-token '(:nodes))
+    (supertag-index-rebuild-nodes-by-tag)))
+
+(defun supertag-index-find-node-ids-by-tags (tag-ids)
+  "Return node IDs belonging to any ID/token in TAG-IDS."
+  (supertag-index--ensure-nodes-by-tag)
+  (let ((seen (make-hash-table :test 'equal))
+        result)
+    (dolist (tag-id tag-ids)
+      (when-let* ((set (gethash tag-id supertag--index-nodes-by-tag)))
+        (maphash (lambda (node-id _present)
+                   (puthash node-id t seen))
+                 set)))
+    (maphash (lambda (node-id _present) (push node-id result)) seen)
+    (sort result
+          (lambda (left right)
+            (< (gethash left supertag--index-node-ranks most-positive-fixnum)
+               (gethash right supertag--index-node-ranks most-positive-fixnum))))))
+
+(defun supertag-index-clear-all ()
+  "Clear every Store-derived runtime index without touching the Store."
+  (setq supertag--index-relations-by-from (make-hash-table :test 'equal)
+        supertag--index-relations-by-to (make-hash-table :test 'equal)
+        supertag--index-relations-source-token nil)
+  (supertag-index-clear-nodes-by-tag)
+  (when (fboundp 'supertag-tag-index-clear)
+    (supertag-tag-index-clear))
+  (when (fboundp 'supertag-schema-clear-global-field-caches)
+    (supertag-schema-clear-global-field-caches))
+
+  (when (fboundp 'supertag-automation-clear-rule-index)
+    (supertag-automation-clear-rule-index)))
+
+(defun supertag-index-rebuild-all ()
+  "Cold rebuild every Store-derived runtime index as one generation."
+  (supertag-index-clear-all)
+  (condition-case err
+      (progn
+        (supertag-index-rebuild-relations)
+        (when (fboundp 'supertag-tag-index-rebuild)
+          (supertag-tag-index-rebuild))
+        (supertag-index-rebuild-nodes-by-tag)
+        (when (fboundp 'supertag-schema-rebuild-global-field-caches)
+          (supertag-schema-rebuild-global-field-caches))
+
+        (when (fboundp 'supertag-rebuild-rule-index)
+          (supertag-rebuild-rule-index))
+        t)
+    (error
+     (supertag-index-clear-all)
+     (signal (car err) (cdr err)))))
+
+;;; --- Index-Accelerated Queries ---
+
+(defun supertag-index--collect-relations (entity-id index-table &optional type)
+  "Collect relation plists for ENTITY-ID from INDEX-TABLE, optionally filtered by TYPE."
+  (let ((id-set (gethash entity-id index-table))
+        (result '()))
+    (when id-set
+      (let ((relations-ht (and (boundp 'supertag--store)
+                               (hash-table-p supertag--store)
+                               (gethash :relations supertag--store))))
+        (when (hash-table-p relations-ht)
+          (maphash
+           (lambda (rel-id _v)
+             (let ((relation (gethash rel-id relations-ht)))
+               (when (and relation
+                          (or (null type)
+                              (eq (plist-get relation :type) type)))
+                 (push relation result))))
+           id-set))))
+    result))
+
+(defun supertag-index-find-by-from (from-id &optional type)
+  "Find relations originating from FROM-ID.  O(k) where k = matching relations.
+Optional TYPE filters by relation type."
+  (supertag-index--ensure-relations)
+  (supertag-index--collect-relations from-id supertag--index-relations-by-from type))
+
+(defun supertag-index-find-by-to (to-id &optional type)
+  "Find relations targeting TO-ID.  O(k) where k = matching relations.
+Optional TYPE filters by relation type."
+  (supertag-index--ensure-relations)
+  (supertag-index--collect-relations to-id supertag--index-relations-by-to type))
+
+(defun supertag-index-find-between (from-id to-id &optional type)
+  "Find relations from FROM-ID to TO-ID.  O(k) where k = from-id's relations.
+Optional TYPE filters by relation type."
+  (supertag-index--ensure-relations)
+  (let ((id-set (gethash from-id supertag--index-relations-by-from))
+        (result '()))
+    (when id-set
+      (let ((relations-ht (and (boundp 'supertag--store)
+                               (hash-table-p supertag--store)
+                               (gethash :relations supertag--store))))
+        (when (hash-table-p relations-ht)
+          (maphash
+           (lambda (rel-id _v)
+             (let ((relation (gethash rel-id relations-ht)))
+               (when (and relation
+                          (equal (plist-get relation :to) to-id)
+                          (or (null type)
+                              (eq (plist-get relation :type) type)))
+                 (push relation result))))
+           id-set))))
+    result))
+
+(add-hook 'supertag-after-transaction-rollback-hook
+          #'supertag-index-rebuild-all)
+
+;;; --- Canonical committed changes ---
+
+(defconst supertag-change--authorities
+  '(:document :semantic :operational)
+  "Authorities accepted by Canonical Change version 1.")
+
+(defconst supertag-change--scopes
+  '(:fact :projection :fact+projection)
+  "Mutation scopes accepted by Canonical Change version 1.")
+
+(defconst supertag-change--max-affected-entries 32
+  "Maximum number of collection summaries in one Canonical Change.")
+
+(defvar supertag-change--subscribers nil
+  "Canonical Change callbacks, in subscription order.")
+
+(defvar supertag-change--queue nil
+  "FIFO of complete committed delivery batches awaiting delivery.")
+
+(defvar supertag-change--dispatching nil
+  "Non-nil while the Canonical Change FIFO is being drained.")
+
+(defvar supertag-change--delivering-change-id nil
+  "Change ID currently being delivered, used as nested commit causation.")
+
+(defvar supertag-change--subscriber-errors nil
+  "Captured subscriber failures, newest first.")
+
+(defvar supertag-change--id-counter 0
+  "Process-local suffix for Canonical Change IDs.")
+
+(defvar supertag-change--suppress-legacy-store-changed nil
+  "Non-nil while a managed body must suppress immediate legacy delivery.")
+
+(defvar supertag-change--bridge-commit-count 0
+  "Number of committed batches passed through the legacy bridge.")
+
+(defvar supertag-change--bridge-total-path-count 0
+  "Total number of path events passed through the legacy bridge.")
+
+(defvar supertag-change--bridge-last-path-count 0
+  "Number of path events in the most recently bridged commit.")
+
+(defcustom supertag-change-bridge-debug nil
+  "When non-nil, log bounded legacy bridge delivery diagnostics."
+  :type 'boolean
+  :group 'supertag)
+
+(defun supertag-change--plist-p (value)
+  "Return non-nil when VALUE is a proper keyword property list."
+  (and (proper-list-p value)
+       (zerop (% (length value) 2))
+       (cl-loop for (key _value) on value by #'cddr
+                always (keywordp key))))
+
+(defun supertag-change--plist-keys (plist)
+  "Return PLIST keys in order."
+  (cl-loop for (key _value) on plist by #'cddr collect key))
+
+(defun supertag-change--contains-raw-diff-p (value)
+  "Return non-nil when VALUE contains Kernel-private raw diff vocabulary."
+  (cond
+   ((hash-table-p value) t)
+   ((supertag-change--plist-p value)
+    (cl-loop for (key item) on value by #'cddr
+             thereis (or (memq key '(:path :paths :old :new :commit-record))
+                         (supertag-change--contains-raw-diff-p item))))
+   ((consp value)
+    (cl-some #'supertag-change--contains-raw-diff-p value))
+   (t nil)))
+
+(defun supertag-change--validate-affected (affected)
+  "Validate bounded AFFECTED collection/count summaries."
+  (unless (and (proper-list-p affected)
+               (<= (length affected)
+                   supertag-change--max-affected-entries))
+    (error "Canonical Change :affected must contain at most %d entries"
+           supertag-change--max-affected-entries))
+  (dolist (entry affected)
+    (unless (and (supertag-change--plist-p entry)
+                 (equal (sort (copy-sequence
+                               (supertag-change--plist-keys entry))
+                              (lambda (left right)
+                                (string< (symbol-name left)
+                                         (symbol-name right))))
+                        '(:collection :count))
+                 (keywordp (plist-get entry :collection))
+                 (natnump (plist-get entry :count)))
+      (error "Invalid Canonical Change :affected entry: %S" entry))))
+
+(defun supertag-change--validate-envelope (envelope)
+  "Validate and return Canonical Change ENVELOPE."
+  (unless (supertag-change--plist-p envelope)
+    (error "Canonical Change envelope must be a keyword plist"))
+  (let ((allowed '(:authority :scope :operation :subject
+                   :cardinality :affected :metadata)))
+    (dolist (key (supertag-change--plist-keys envelope))
+      (unless (memq key allowed)
+        (error "Unknown Canonical Change envelope key: %S" key))))
+  (dolist (required '(:authority :scope :operation :cardinality :affected))
+    (unless (plist-member envelope required)
+      (error "Canonical Change requires %S" required)))
+  (unless (memq (plist-get envelope :authority)
+                supertag-change--authorities)
+    (error "Invalid Canonical Change authority: %S"
+           (plist-get envelope :authority)))
+  (unless (memq (plist-get envelope :scope) supertag-change--scopes)
+    (error "Invalid Canonical Change scope: %S"
+           (plist-get envelope :scope)))
+  (unless (and (symbolp (plist-get envelope :operation))
+               (plist-get envelope :operation))
+    (error "Canonical Change :operation must be a non-nil symbol"))
+  (unless (or (null (plist-get envelope :subject))
+              (supertag-change--plist-p (plist-get envelope :subject)))
+    (error "Canonical Change :subject must be nil or a keyword plist"))
+  (unless (memq (plist-get envelope :cardinality) '(:single :batch))
+    (error "Invalid Canonical Change cardinality: %S"
+           (plist-get envelope :cardinality)))
+  (unless (or (null (plist-get envelope :metadata))
+              (supertag-change--plist-p (plist-get envelope :metadata)))
+    (error "Canonical Change :metadata must be nil or a keyword plist"))
+  (when (or (supertag-change--contains-raw-diff-p
+             (plist-get envelope :subject))
+            (supertag-change--contains-raw-diff-p
+             (plist-get envelope :metadata)))
+    (error "Canonical Change public data cannot contain raw Store diffs"))
+  (supertag-change--validate-affected (plist-get envelope :affected))
+  envelope)
+
+(defun supertag-change--capture-commit-record ()
+  "Return the changed first-touch entries in the active transaction.
+
+Each private entry retains path/old/new data for commit plumbing.  Equal
+first-touch writes are omitted so a logical no-op publishes no change."
+  (let ((missing (make-symbol "supertag-change-missing")))
+    (cl-loop
+     for (path old-existed-p old-value) in (nreverse supertag--transaction-log)
+     for current = (supertag-get path missing)
+     for current-existed-p = (not (eq current missing))
+     unless (and (eq (not (null old-existed-p)) current-existed-p)
+                 (equal old-value (unless (eq current missing) current)))
+     collect (list :path (copy-tree path)
+                   :old-existed-p old-existed-p
+                   :old (copy-tree old-value)
+                   :new-existed-p current-existed-p
+                   :new (unless (eq current missing) (copy-tree current))))))
+
+(defun supertag-change--next-id ()
+  "Return a process-unique Canonical Change ID."
+  (format "change-%d-%d-%d"
+          (emacs-pid)
+          (truncate (* 1000000 (float-time)))
+          (cl-incf supertag-change--id-counter)))
+
+(defun supertag-change--make-change (envelope)
+  "Build a public Canonical Change from validated ENVELOPE."
+  (list :version 1
+        :change-id (supertag-change--next-id)
+        :causation-id supertag-change--delivering-change-id
+        :authority (plist-get envelope :authority)
+        :scope (plist-get envelope :scope)
+        :operation (plist-get envelope :operation)
+        :subject (copy-tree (plist-get envelope :subject))
+        :cardinality (plist-get envelope :cardinality)
+        :affected (copy-tree (plist-get envelope :affected))
+        :metadata (copy-tree (plist-get envelope :metadata))))
+
+(defun supertag-change--legacy-subscriber-count ()
+  "Return the current number of legacy `:store-changed' subscribers."
+  (if (hash-table-p supertag--subscribers)
+      (length (gethash :store-changed supertag--subscribers))
+    0))
+
+(defun supertag-change--assert-legacy-topic-available (callback)
+  "Reject legacy subscription when CALLBACK already receives Canonical Change."
+  (when (memq callback supertag-change--subscribers)
+    (error "Callback cannot subscribe to both Canonical Change and :store-changed")))
+
+(defun supertag-change-bridge-diagnostics ()
+  "Return bounded counters for the temporary one-way legacy bridge."
+  (list :legacy-subscriber-count
+        (supertag-change--legacy-subscriber-count)
+        :bridged-commit-count supertag-change--bridge-commit-count
+        :total-path-count supertag-change--bridge-total-path-count
+        :last-commit-path-count supertag-change--bridge-last-path-count))
+
+(defun supertag-change-subscribe (callback)
+  "Subscribe CALLBACK to committed Canonical Changes.
+Return an idempotent function that unsubscribes CALLBACK."
+  (unless (functionp callback)
+    (error "Canonical Change subscriber must be callable"))
+  (when (and (hash-table-p supertag--subscribers)
+             (memq callback
+                   (gethash :store-changed supertag--subscribers)))
+    (error "Callback cannot subscribe to both Canonical Change and :store-changed"))
+  (setq supertag-change--subscribers
+        (append supertag-change--subscribers (list callback)))
+  (let ((subscribed t))
+    (lambda ()
+      (when subscribed
+        (setq subscribed nil)
+        (setq supertag-change--subscribers
+              (delq callback supertag-change--subscribers))))))
+
+(defun supertag-change--deliver-canonical (change)
+  "Deliver committed CHANGE to a stable snapshot of subscribers."
+  (dolist (subscriber (copy-sequence supertag-change--subscribers))
+    (condition-case cause
+        (funcall subscriber change)
+      (error
+       (push (list :change-id (plist-get change :change-id)
+                   :subscriber subscriber
+                   :cause cause)
+             supertag-change--subscriber-errors)
+       (message "[supertag] Canonical Change subscriber failed: %s"
+                (error-message-string cause))))))
+
+(defun supertag-change--deliver-batch (batch)
+  "Deliver private BATCH with Canonical Change before its legacy path events."
+  (let* ((change (plist-get batch :change))
+         (commit-record (plist-get batch :commit-record))
+         (supertag-change--delivering-change-id
+          (plist-get change :change-id)))
+    (supertag-change--deliver-canonical change)
+    (dolist (entry commit-record)
+      (supertag-emit-event :store-changed
+                           (plist-get entry :path)
+                           (plist-get entry :old)
+                           (plist-get entry :new)))))
+
+(defun supertag-change--drain ()
+  "Synchronously drain the Canonical Change FIFO without reentry."
+  (unless supertag-change--dispatching
+    (let ((supertag-change--dispatching t))
+      (while supertag-change--queue
+        (let ((batch (pop supertag-change--queue)))
+          (supertag-change--deliver-batch batch))))))
+
+(defun supertag-change--enqueue (change commit-record)
+  "Append one committed CHANGE/COMMIT-RECORD batch to the delivery FIFO."
+  (let ((path-count (length commit-record)))
+    (cl-incf supertag-change--bridge-commit-count)
+    (cl-incf supertag-change--bridge-total-path-count path-count)
+    (setq supertag-change--bridge-last-path-count path-count)
+    (when supertag-change-bridge-debug
+      (message
+       "[supertag] Legacy bridge commit %s: %d path event(s), %d subscriber(s)"
+       (plist-get change :change-id)
+       path-count
+       (supertag-change--legacy-subscriber-count))))
+  (setq supertag-change--queue
+        (nconc supertag-change--queue
+               (list (list :change change
+                           :commit-record commit-record))))
+  (supertag-change--drain))
+
+(defun supertag-change-commit (envelope body)
+  "Run BODY atomically and publish one Canonical Change for a real mutation.
+
+ENVELOPE contains bounded domain metadata; raw Store diffs stay in a private,
+short-lived CommitRecord.  This initial seam must own the outer transaction,
+so invoking it from an already-active transaction is rejected.  A subscriber
+may invoke it safely: the nested committed change joins the FIFO and is not
+delivered until the current change finishes.  Return BODY's result."
+  (supertag-change--validate-envelope envelope)
+  (unless (functionp body)
+    (error "Canonical Change body must be callable"))
+  (when supertag--transaction-active
+    (error "Canonical Change seam must own the outer transaction"))
+  (let (commit-record result)
+    (let ((supertag-change--suppress-legacy-store-changed t))
+      (setq result
+            (supertag-with-transaction
+              (prog1 (funcall body)
+                (setq commit-record
+                      (supertag-change--capture-commit-record))))))
+    (when commit-record
+      (supertag-change--enqueue
+       (supertag-change--make-change envelope)
+       commit-record))
+    result))
 
 (provide 'supertag-core-store)
 

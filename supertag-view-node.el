@@ -1,35 +1,35 @@
-;;; supertag/supertag-view-node.el --- Node-centric view for Supertag -*- lexical-binding: t; -*-
+;;; supertag-view-node.el --- Node-centric view for Supertag -*- lexical-binding: t; -*-
 
 ;;; Commentary:
 ;; This file provides the node-centric view for Supertag. It defines
 ;; a major mode and commands to display and interact with a single node's
 ;; metadata in a dedicated buffer.
 
+
+;; Commands: supertag-view-node, supertag-view-node-refresh, supertag-view-node-mode; local key
+;; command: supertag-view-node--hide-side.
+;; Dependencies: cl-lib, org, subr-x, supertag-core-store, supertag-node, supertag-tag,
+;; supertag-query, supertag-services-sync, supertag-view-framework, supertag-link,
+;; supertag-mention, supertag-concept, supertag-ai, supertag-semantic. Node cache listener
+;; preparation runs after Sync loads; Evil is optional and only disabled locally when available.
 ;;; Code:
 
 (require 'cl-lib)
 (require 'org)
 (require 'subr-x)
 (require 'supertag-core-store)
-(require 'supertag-ops-node)
-(require 'supertag-ops-tag)
-(require 'supertag-ops-field)
-(require 'supertag-ops-global-field)
-(require 'supertag-ops-relation)
-(require 'supertag-view-helper)
-(require 'supertag-services-ui)
-(require 'supertag-services-query)
-(require 'supertag-view-api)
+(require 'supertag-node)
+(require 'supertag-tag)
+(require 'supertag-query)
+(require 'supertag-services-sync)
+(supertag-node--prepare-cache-listener)
 (require 'supertag-view-framework)
-(require 'supertag-view-link)
-(require 'supertag-view-reference)
-(require 'supertag-view-mention)
-(require 'supertag-ui-link)
-(require 'supertag-ontology-function)
-(require 'supertag-ontology-action)
-(require 'supertag-ui-action)
-(require 'supertag-ontology-policy)
-(declare-function supertag-view--resolve-node-tags "supertag-services-ui" (node-id))
+(require 'supertag-link)
+(require 'supertag-mention)
+(require 'supertag-concept)
+(require 'supertag-ai)
+(require 'supertag-semantic)
+(declare-function supertag-view--resolve-node-tags "supertag-tag" (node-id))
 
 ;;; --- Variables ---
 
@@ -91,6 +91,36 @@ Point must be at an Org heading. when invoked from other modes."
        (slot . 0)
        (,size-key . ,supertag-view-node-side-size)))))
 
+;;; --- Node View State ---
+
+(defun supertag-view-build-node-state (node-id)
+  "Build a reusable view state plist for NODE-ID.
+
+The returned plist is data-only (no buffer operations) and is intended
+to be consumed by different UI layouts (node detail view, table-based
+detail panes, previews, etc.).
+
+Returned keys (current contract):
+- :id           — NODE-ID
+- :node         — Isolated node projection from `supertag-note-query-read-node'
+- :tags         — List of tag IDs attached to this node
+- :properties   — Projected Org property entries, each containing
+                  (:key KEY :name NAME :value VALUE)
+- :refs-to      — List of node IDs this node references (:reference)
+- :refs-from    — List of node IDs that reference this node (:reference)
+- :property-count — Total number of projected Org properties
+- :ref-count    — Total number of references (:refs-to + :refs-from)"
+  (when (and node-id (stringp node-id))
+    (when-let* ((detail (supertag-note-query-read-node node-id)))
+      (let ((refs-to (mapcar (lambda (relation) (plist-get relation :to))
+                            (supertag-query-ordinary-references-from node-id)))
+            (refs-from (mapcar (lambda (relation) (plist-get relation :from))
+                              (supertag-query-ordinary-references-to node-id))))
+        (append detail
+                (list :tags (supertag-query-node-tags node-id)
+                      :refs-to refs-to :refs-from refs-from
+                      :ref-count (+ (length refs-to) (length refs-from))))))))
+
 (defun supertag-view-node--build-view-state (input)
   "Build Node view state from Runtime INPUT."
   (let ((node-id (plist-get input :node-id)))
@@ -110,17 +140,16 @@ Point must be at an Org heading. when invoked from other modes."
       (goto-char (point-min)))))
 
 (defun supertag-view-node--capture-selection ()
-  "Return the current Node field selection."
+  "Return the current Node property selection."
   (supertag-view-node--get-context-at-point))
 
 (defun supertag-view-node--restore-selection (selection)
-  "Restore opaque Node field SELECTION."
-  (let ((tag-id (plist-get selection :tag-id))
-        (field-name (plist-get selection :field-name)))
-    (unless (and tag-id field-name
-                 (supertag-view-node--goto-field-in-buffer
-                  (current-buffer) tag-id field-name))
-      (supertag-view-node--goto-first-field))))
+  "Restore opaque Node property SELECTION."
+  (unless (and (plist-get selection :property-key)
+               (supertag-view-node--goto-property-in-buffer
+                (current-buffer) (plist-get selection :property-key)))
+    (or (supertag-view-node--goto-property-in-buffer (current-buffer) nil)
+        (goto-char (point-min)))))
 
 (defun supertag-view-node--subscribe-view (input _state refresh)
   "Subscribe Node view INPUT and return all cleanup callbacks."
@@ -131,8 +160,7 @@ Point must be at an Org heading. when invoked from other modes."
            (lambda (path _old-value _new-value)
              (when (and (listp path)
                         (memq (car path)
-                              '(:nodes :relations :field-values
-                                :field-provenance)))
+                              '(:nodes :relations :tags)))
                (funcall refresh)))))
          (follow-local-p
           (and (buffer-live-p origin) (not supertag-view-node-auto-show))))
@@ -214,7 +242,6 @@ Point must be at an Org heading. when invoked from other modes."
 
 (defun supertag-view-node-toggle-auto-show ()
   "Toggle automatic Node View side window following."
-  (interactive)
   (setq supertag-view-node-auto-show (not supertag-view-node-auto-show))
   (if supertag-view-node-auto-show
       (progn
@@ -242,7 +269,7 @@ You can customize this list to match your org-mode TODO keywords."
 
 ;;; --- Visual Style Variables ---
 
-;; These functions are now available in supertag-view-helper.el
+;; Shared color functions are owned by supertag-view-framework.el
 ;; Keeping these as convenience aliases for backward compatibility
 (defun supertag-view-node--get-theme-adaptive-color (light-color dark-color)
   "Get color that adapts to current theme."
@@ -260,7 +287,7 @@ You can customize this list to match your org-mode TODO keywords."
 
 (defvar supertag-view-node-mode-map
   (let ((map (make-sparse-keymap)))
-    ;; Navigation (snap cursor to Field value column when present)
+    ;; Navigation
     (define-key map (kbd "n") 'next-line)
     (define-key map (kbd "p") 'previous-line)
     (define-key map (kbd "j") 'next-line)
@@ -272,22 +299,6 @@ You can customize this list to match your org-mode TODO keywords."
     (define-key map (kbd "M-<") 'beginning-of-buffer)
     (define-key map (kbd "M->") 'end-of-buffer)
 
-    ;; Field value editing
-    (define-key map (kbd "RET") 'supertag-view-node-edit-at-point)
-    (define-key map (kbd "c") #'supertag-view-node-confirm-field-at-point)
-    (define-key map (kbd "x") #'supertag-view-node-reject-field-at-point)
-    (define-key map (kbd "C") #'supertag-view-node-review-ai-fields)
-
-    ;; Typed Links
-    (let ((link-map (make-sparse-keymap "Link...")))
-      (define-key link-map "a" #'supertag-link-add)
-      (define-key link-map "d" #'supertag-link-remove)
-      (define-key link-map "l" #'supertag-link-menu)
-      (define-key map "l" link-map))
-
-    ;; Ontology Action selected at point, or choose one for the node.
-    (define-key map (kbd "A") #'supertag-action-run)
-
     ;; Utility
     (define-key map (kbd "g") 'supertag-view-node-refresh)
     (define-key map (kbd "q") #'supertag-view-node--hide-side)
@@ -297,19 +308,12 @@ You can customize this list to match your org-mode TODO keywords."
 Users can rebind keys in this map to avoid conflicts with modal editing.")
 
 (define-derived-mode supertag-view-node-mode special-mode "Supertag Node"
-  "A modern major mode for viewing and editing an Supertag node.
+  "A modern major mode for viewing a Supertag node.
 
 \{supertag-view-node-mode-map}
 
 Key Bindings:
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-
-📝 Field Operations:
-  RET     - Edit field value at point. All schema changes (adding, deleting,
-            or reordering fields) should be done in the Schema View (M-x supertag-view-schema).
-  c       - Confirm an agent-written value (⟨AI⟩ badge) as a fact
-  x       - Reject an agent-written value, restoring its previous value or clearing it
-  C       - Review all agent-written values on this node
 
 🧭 Navigation:
   j/k     - Move up/down by line (also n/p)
@@ -320,17 +324,13 @@ Key Bindings:
   M->     - Jump to end of buffer
 
 🔧 Actions:
-  A       - Run or propose an Ontology Action
   g       - Refresh the view
   h       - Show this help (describe-mode)
   q       - Quit and close window
 
 💡 Tips:
-  - Click on any field value or name to edit it
-  - ⟨AI⟩ means an agent wrote the value; ⟨AI · outdated⟩ means the node text changed afterwards
+  - Org properties are displayed read-only from the saved document projection
   - RET on a Reference or Backlink title opens its source node
-  - Field types determine input validation and display format
-  - Changes are saved automatically
   - Use Tab completion when available
 
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
@@ -349,7 +349,10 @@ Key Bindings:
                     (propertize (truncate-string-to-width node-id 20 nil nil "...")
                                'face '(:weight bold)))))
           " | 🏷️ "
-          (:eval (let ((count (or (supertag-view-node--count-fields supertag-view-node--current-node-id) 0)))
+          (:eval (let ((count (or (plist-get
+                                   (plist-get supertag-view--instance :state)
+                                   :property-count)
+                                  0)))
                   (propertize (format "%d" count)
                               'face (if (> count 0) '(:foreground "#22C55E" :weight bold) '(:foreground "gray")))))
           " | 🔗 "
@@ -367,7 +370,7 @@ Key Bindings:
 
 ;;; --- Helper Functions ---
 
-;; Line highlighting functions are now in supertag-view-helper.el
+;; Shared line highlighting is owned by supertag-view-framework.el
 ;; Keeping these as convenience aliases for backward compatibility
 (defun supertag-view-node--highlight-current-line ()
   "Highlight the current line for better visibility."
@@ -377,43 +380,17 @@ Key Bindings:
   "Remove all line highlighting."
   (supertag-view-helper-unhighlight-all-lines))
 
-(defun supertag-view-node--count-fields (node-id)
-  "Count the total number of fields for NODE-ID."
-  (when node-id
-    (let* ((tag-ids (supertag-view--resolve-node-tags node-id))
-           (seen (make-hash-table :test 'equal))
-           (count 0))
-      (dolist (tag-id tag-ids)
-        (dolist (field (supertag-query-resolved-fields tag-id))
-          (let* ((fid (or (plist-get field :id) (plist-get field :name)))
-                 (slug (and fid (supertag-sanitize-field-id fid)))
-                 (dedupe slug))
-            (when (and dedupe (not (gethash dedupe seen)))
-              (puthash dedupe t seen)
-              (cl-incf count)))))
-      count)))
-
 (defun supertag-view-node--get-references (node-id)
   "Get references from NODE-ID to other nodes."
   (when node-id
-    (let ((relations (supertag-query-relations-from node-id :reference)))
+    (let ((relations (supertag-query-ordinary-references-from node-id)))
       (mapcar (lambda (rel) (plist-get rel :to)) relations))))
 
 (defun supertag-view-node--get-referenced-by (node-id)
   "Get nodes that reference NODE-ID."
   (when node-id
     (mapcar (lambda (relation) (plist-get relation :from))
-            (supertag-query-relations-to node-id :reference))))
-
-(defun supertag-view-node--format-display-value (value field-def)
-  "Format VALUE for display with enhanced styling based on FIELD-DEF."
-  (supertag-view-helper-format-field-value field-def value))
-
-(defun supertag-view-node--provenance-badge (node-id tag-id field-name)
-  "Return a badge for an agent-written FIELD-NAME value of NODE-ID, or nil.
-Values a person confirmed or wrote carry no badge; an agent value whose
-source text changed since is marked outdated."
-  (supertag-view-helper-field-provenance-badge node-id tag-id field-name))
+            (supertag-query-ordinary-references-to node-id))))
 
 ;;; --- Modern Rendering Functions ---
 
@@ -432,16 +409,17 @@ Only strips keywords if `supertag-view-node-strip-todo-keywords' is non-nil."
           (string-trim (substring title (match-end 0)))
         title))))
 
-(defun supertag-view-node--insert-simple-header (node-data)
-  "Insert a simple, clean header with NODE-DATA."
-  (let* ((raw-title (or (plist-get node-data :title) "Untitled Node"))
+(defun supertag-view-node--insert-simple-header (state)
+  "Insert a simple, clean header from Node view STATE."
+  (let* ((node-data (plist-get state :node))
+         (raw-title (or (plist-get node-data :title) "Untitled Node"))
          (title (supertag-view-node--strip-todo-keyword raw-title))
          (file (plist-get node-data :file))
          (node-id supertag-view-node--current-node-id)
-         (field-count (supertag-view-node--count-fields node-id))
-         (ref-count (+ (length (supertag-view-node--get-references node-id))
-                       (length (supertag-view-node--get-referenced-by node-id))))
-         (stats (format "⚡ %d fields | 🔗 %d refs" field-count ref-count))
+         (property-count (or (plist-get state :property-count) 0))
+         (ref-count (or (plist-get state :ref-count) 0))
+         (stats (format "⚡ %d properties | 🔗 %d refs"
+                        property-count ref-count))
          (start (point)))
     (supertag-view-helper-insert-simple-header
      (format "📄 %s" (supertag-view-helper-render-org-links title))
@@ -465,98 +443,32 @@ to TAG-ID itself only when no Tag record is available."
         (and tag-data (plist-get tag-data :name))
         tag-id)))
 
-(defun supertag-view-node--insert-tag-block (tag-id fields node-id)
-  "Insert a tag block for TAG-ID with FIELDS for NODE-ID.
-The header shows the Tag's display name while text properties keep the
-stable TAG-ID so interactive commands still resolve the record."
-  (insert (propertize (format "🏷️ %s\n"
-                              (supertag-view-node--tag-display-name tag-id))
-                      'face `(:weight bold :foreground ,(supertag-view-helper-get-accent-color))
-                      'supertag-context t
-                      'type :tag
-                      'tag-id tag-id
-                      'field-name nil
-                      'id tag-id))
-  (if (or (null fields) (zerop (length fields)))
-      (supertag-view-helper-insert-simple-empty-state "No fields defined")
-    (dolist (field-def fields)
-      (let* ((field-name (plist-get field-def :name))
-             (value (supertag-field-get-with-default node-id tag-id field-name))
-             (badge (supertag-view-node--provenance-badge
-                     node-id tag-id field-name))
-             (line-start (point))
-             (interactive-props `(field-name ,field-name
-                                  tag-id ,tag-id
-                                  field-def ,field-def
-                                  supertag-context t
-                                  type :field-value
-                                  mouse-face highlight
-                                  help-echo "Click to edit this field")))
-        (supertag-view-helper-insert-field-line
-         field-name value field-def interactive-props badge)
-        ;; The helper applies row-level interactivity after inserting BADGE,
-        ;; which overwrites the badge's own tooltip.  Restore that one
-        ;; property locally so provenance remains discoverable on hover.
-        (when badge
-          (let ((badge-text (substring-no-properties badge))
-                (tooltip (get-text-property 0 'help-echo badge)))
-            (save-excursion
-              (goto-char line-start)
-              (when (search-forward badge-text (line-end-position) t)
-                (put-text-property (- (point) (length badge-text)) (point)
-                                   'help-echo tooltip))))))))
+(defun supertag-view-node--insert-simple-metadata-section (state)
+  "Insert read-only tags and projected Org properties from STATE."
+  (supertag-view-helper-insert-section-title "Tags" "🏷️")
+  (if-let ((tag-ids (plist-get state :tags)))
+      (dolist (tag-id (sort (copy-sequence tag-ids) #'string<))
+        (insert (propertize (format "  %s\n"
+                                    (supertag-view-node--tag-display-name tag-id))
+                            'supertag-context t
+                            'type :tag
+                            'tag-id tag-id
+                            'id tag-id)))
+    (supertag-view-helper-insert-simple-empty-state "No tags found."))
+  (insert "\n")
+  (supertag-view-helper-insert-section-title "Properties" "📝")
+  (if-let ((properties (plist-get state :properties)))
+      (dolist (property properties)
+        (let ((start (point))
+              (name (plist-get property :name))
+              (value (plist-get property :value))
+              (key (plist-get property :key)))
+          (insert (format "  %-18s %s\n" name (or value "")))
+          (add-text-properties
+           start (point)
+           `(supertag-context t type :property-value property-key ,key))))
+    (supertag-view-helper-insert-simple-empty-state "No properties found."))
   (insert "\n"))
-
-(defun supertag-view-node--insert-simple-metadata-section (node-id)
-  "Insert a simple metadata section for NODE-ID."
-  (let* ((tag-ids (sort (supertag-view--resolve-node-tags node-id) #'string<))
-         (deleted-tags '())
-         (valid-tags '()))
-
-    ;; Separate valid and deleted tags
-    (dolist (tag-id tag-ids)
-      (let ((tag-data (supertag-tag-get tag-id)))
-        (if tag-data
-            (push tag-id valid-tags)
-          (push tag-id deleted-tags))))
-
-    ;; IMPORTANT: Do not mutate datastore from view rendering.
-    ;; Previously, this section attempted to "clean up" relations to tags
-    ;; considered deleted (missing in the current store). However, during
-    ;; startup or file reloads, the store/tag cache may not be fully
-    ;; materialized yet, causing valid tags to appear missing and leading to
-    ;; unintended deletions. We keep a passive notice instead.
-    ;; If cleanup is needed, it should be performed by an explicit ops/migration
-    ;; command, not by a view.
-
-    ;; Display content with simple styling
-    (if (and (not valid-tags) (not deleted-tags))
-        (progn
-          (supertag-view-helper-insert-section-title "Metadata" "🏷️")
-          (supertag-view-helper-insert-simple-empty-state "No metadata found."))
-
-      ;; Display valid tags with simple blocks
-      (supertag-view-helper-insert-section-title "Metadata" "🏷️")
-      (let ((seen (make-hash-table :test 'equal)))
-        (dolist (tag-id (sort valid-tags #'string<))
-          (let* ((fields (supertag-query-resolved-fields tag-id))
-                 (filtered (cl-loop for f in (or fields '())
-                                    for fid = (or (plist-get f :id) (plist-get f :name))
-                                    for slug = (and fid (supertag-sanitize-field-id fid))
-                                    for dedupe = slug
-                                    unless (and dedupe (gethash dedupe seen))
-                                    do (when dedupe (puthash dedupe t seen))
-                                    and collect f)))
-            ;; Defensively ensure `fields` is a list to prevent rendering errors.
-            (when filtered
-              (supertag-view-node--insert-tag-block tag-id filtered node-id)))))
-
-      ;; Show a passive warning for tags currently not found (no deletion here)
-      (when deleted-tags
-        (insert (propertize (format "⚠️ %d tag%s not found (skipped cleanup)\n\n"
-                                    (length deleted-tags)
-                                    (if (= (length deleted-tags) 1) "" "s"))
-                            'face `(:foreground ,(supertag-view-helper-get-warning-color))))))))
 
 (defun supertag-view-node--insert-node-link-line (node-id)
   "Insert a single clickable line for NODE-ID.
@@ -583,94 +495,18 @@ The line looks like `📄 Title' and is clickable with RET/mouse-1."
                           help-echo ,(format "Jump to node: %s" node-id))))))
 
 
-(defun supertag-view-node--insert-semantic-relations-section (node-id)
-  "Insert semantic relations section for NODE-ID.
-Groups relations by type, showing outgoing and incoming with display names."
-  (let ((semantic-types (supertag-relation-type-list-semantic)))
-    (when semantic-types
-      (let ((has-any nil))
-        ;; First pass: check if there are any semantic relations
-        (dolist (entry semantic-types)
-          (let* ((rel-type (car entry))
-                 (outgoing (supertag-query-relations-from node-id rel-type))
-                 (incoming (supertag-query-relations-to node-id rel-type)))
-            (when (or outgoing incoming)
-              (setq has-any t))))
-        (when has-any
-          (supertag-view-helper-insert-section-title "Relations" "🔗")
-          (dolist (entry semantic-types)
-            (let* ((rel-type (car entry))
-                   (meta (cdr entry))
-                   (name (plist-get meta :name))
-                   (inverse-name (or (plist-get meta :inverse-name) name))
-                   (outgoing (supertag-query-relations-from node-id rel-type))
-                   (incoming (supertag-query-relations-to node-id rel-type)))
-              ;; Outgoing relations
-              (when outgoing
-                (insert (format "  %s (%d)\n" name (length outgoing)))
-                (dolist (rel outgoing)
-                  (supertag-view-node--insert-node-link-line (plist-get rel :to))
-                  (let ((note (plist-get (plist-get rel :props) :context-note)))
-                    (when (and note (not (string-empty-p note)))
-                      (insert (format "      ╰ %s\n"
-                                      (propertize note 'face 'font-lock-comment-face)))))))
-              ;; Incoming relations
-              (when incoming
-                (insert (format "  %s (%d)\n" inverse-name (length incoming)))
-                (dolist (rel incoming)
-                  (supertag-view-node--insert-node-link-line (plist-get rel :from))
-                  (let ((note (plist-get (plist-get rel :props) :context-note)))
-                    (when (and note (not (string-empty-p note)))
-                      (insert (format "      ╰ %s\n"
-                                      (propertize note 'face 'font-lock-comment-face)))))))))
-          (insert "\n"))))))
-
-(defun supertag-view-node--insert-action-row (node-id definition)
-  "Insert one Policy-aware Action row for NODE-ID and DEFINITION."
-  (let* ((decision
-          (supertag-ontology-policy-evaluate definition :interactive-user))
-         (outcome (plist-get decision :decision))
-         (start (point))
-         (map (make-sparse-keymap))
-         (action-id (plist-get definition :runtime-id))
-         (button
-          (pcase outcome
-            ((or :allow :confirm) "Run")
-            (:propose-only "Propose")
-            (_ "Denied"))))
-    (insert (format "  %s [%s]" (plist-get definition :label) button))
-    (unless (eq outcome :deny)
-      (let ((command
-             `(lambda ()
-                (interactive)
-                (supertag-action-run ,node-id ,action-id))))
-        (define-key map (kbd "RET") command)
-        (define-key map [mouse-1] command)
-        (add-text-properties
-         start (point)
-         `(face link mouse-face highlight keymap ,map
-                supertag-action-id ,action-id
-                help-echo ,(format "%s %s"
-                                   button
-                                   (plist-get definition :label))))))
-    (when (eq outcome :deny)
-      (add-face-text-property start (point) 'shadow t))
-    (insert "\n")))
-
-(defun supertag-view-node--insert-ontology-capabilities-section (node-id)
-  "Insert applicable Ontology Functions and Policy-governed Actions.
-Listing never evaluates Function results or Action preconditions."
-  (let ((functions (supertag-ontology-function-applicable node-id))
-        (actions (supertag-ontology-action-applicable node-id)))
-    (when functions
-      (supertag-view-helper-insert-section-title "Functions" "ƒ")
-      (dolist (definition functions)
-        (insert (format "  %s\n" (plist-get definition :label))))
-      (insert "\n"))
-    (when actions
-      (supertag-view-helper-insert-section-title "Actions" "▶")
-      (dolist (definition actions)
-        (supertag-view-node--insert-action-row node-id definition))
+(defun supertag-view-node--insert-named-links-section (node-id)
+  "Insert configured text-link relations touching NODE-ID."
+  (let ((outgoing (supertag-query-named-links-from node-id))
+        (incoming (supertag-query-named-links-to node-id)))
+    (when (or outgoing incoming)
+      (supertag-view-helper-insert-section-title "Relations" "🔗")
+      (dolist (relation outgoing)
+        (insert (format "  %s →\n" (plist-get relation :relation-name)))
+        (supertag-view-node--insert-node-link-line (plist-get relation :to)))
+      (dolist (relation incoming)
+        (insert (format "  ← %s\n" (plist-get relation :relation-name)))
+        (supertag-view-node--insert-node-link-line (plist-get relation :from)))
       (insert "\n"))))
 
 (defun supertag-view-node--render-from-state (state)
@@ -683,35 +519,30 @@ STATE 应由 `supertag-view-build-node-state' 构造，只包含数据，不做�
     (setq supertag-view-node--current-node-id node-id)
     (when node-data
       ;; Simple header
-      (supertag-view-node--insert-simple-header node-data)
+      (supertag-view-node--insert-simple-header state)
 
       ;; Simple metadata section
-      (supertag-view-node--insert-simple-metadata-section node-id)
-
-      ;; Applicable typed capabilities.  Listing is read-only and does not run
-      ;; potentially expensive Function or Action preconditions.
-      (supertag-view-node--insert-ontology-capabilities-section node-id)
+      (supertag-view-node--insert-simple-metadata-section state)
 
       ;; Contextual outgoing references and incoming Backlinks.  This remains
       ;; a disposable projection, never a second reference store.
       (supertag-view-reference-insert-sections node-id)
 
+      (supertag-ai-insert-section node-id)
+
       ;; Potential references discovered from source-owned plain text.
       ;; These are computed candidates, never persisted facts.
-      (supertag-view-mention-insert-section node-id)
+      (when (supertag-concept-node-p node-data)
+        (supertag-view-mention-insert-section node-id))
+      (supertag-semantic-insert-section node-id)
       (insert "\n")
 
-      ;; Typed operational Links
-      (supertag-view-link-insert-section node-id)
+      (supertag-view-node--insert-named-links-section node-id)
 
-      ;; Semantic relations section
-      (supertag-view-node--insert-semantic-relations-section node-id)
-
-      ;; Complete footer with all available shortcuts
+      ;; Complete footer with available shortcuts
       (supertag-view-helper-insert-simple-footer
-       "Field: [RET] Edit | [c] Confirm AI | [x] Reject AI | [C] Review AI"
        "📍 Navigation: [j/k] Move | [SPC] Page Down | [S-SPC] Page Up | [M-</>] Start/End"
-       "🔧 Actions: [l a] Add Link | [A] Run | [g] Refresh | [h] Help | [q] Quit")
+       "🔧 Actions: [g] Refresh | [h] Help | [q] Quit")
 
       ;; Activate links in the entire buffer
       (supertag-view-node--activate-links-in-buffer))
@@ -748,337 +579,30 @@ STATE 应由 `supertag-view-build-node-state' 构造，只包含数据，不做�
     (when (get-text-property pos 'supertag-context)
       (list :type (get-text-property pos 'type)
             :tag-id (get-text-property pos 'tag-id)
-            :field-name (get-text-property pos 'field-name)
+            :property-key (get-text-property pos 'property-key)
             :id (get-text-property pos 'id)))))
 
-(defun supertag-view-node-confirm-field-at-point ()
-  "Confirm the field value at point as a fact a person stands behind.
-The value stays as it is; its provenance becomes `:human', which removes
-the ⟨AI⟩ badge and stops the value from being reported as outdated."
-  (interactive)
-  (let ((context (supertag-view-node--get-context-at-point)))
-    (if (not (eq (plist-get context :type) :field-value))
-        (message "No field value at point.")
-      (let* ((node-id supertag-view-node--current-node-id)
-             (tag-id (plist-get context :tag-id))
-             (field-name (plist-get context :field-name))
-             (provenance (supertag-field-provenance node-id tag-id field-name)))
-        (if (eq (plist-get provenance :origin) :human)
-            (message "Field '%s' is already confirmed." field-name)
-          (condition-case err
-              (progn
-                (supertag-field-confirm node-id tag-id field-name)
-                (supertag-view-node--refresh-view)
-                (supertag-view-node--goto-field tag-id field-name)
-                (message "✓ Field '%s' confirmed." field-name))
-            (error
-             (message "Cannot confirm: %s" (error-message-string err)))))))))
-
-(defun supertag-view-node--tag-for-field (node-id field-id)
-  "Return the first Tag of NODE-ID that exposes FIELD-ID, or nil."
-  (cl-loop for tag-id in (supertag-view--resolve-node-tags node-id)
-           when (cl-find field-id (supertag-query-resolved-fields tag-id)
-                         :key (lambda (field)
-                                (or (plist-get field :id)
-                                    (and-let* ((name (plist-get field :name)))
-                                      (supertag-sanitize-field-id name))))
-                         :test #'equal)
-           return tag-id))
-
-(defun supertag-view-node--ai-provenance-fields (node-id)
-  "Return sorted review entries for agent-written fields of NODE-ID.
-Each entry carries the stable field id, display name, schema Tag, value,
-and a copy of its provenance record."
-  (let* ((root (supertag-store-get-collection :field-provenance))
-         (bucket (and (hash-table-p root) (gethash node-id root)))
-         entries)
-    (when (hash-table-p bucket)
-      (maphash
-       (lambda (field-id provenance)
-         (when (eq (plist-get provenance :origin) :agent)
-           (let* ((definition (supertag-global-field-get field-id))
-                  (field-name (or (plist-get definition :name) field-id))
-                  (tag-id (supertag-view-node--tag-for-field node-id field-id)))
-             (push (list :field-id field-id
-                         :field-name field-name
-                         :tag-id tag-id
-                         :value (supertag-field-get
-                                 node-id tag-id field-name)
-                         :provenance (copy-tree provenance))
-                   entries))))
-       bucket))
-    (sort entries
-          (lambda (left right)
-            (string-lessp (downcase (plist-get left :field-name))
-                          (downcase (plist-get right :field-name)))))))
-
-(defun supertag-view-node--review-entry-label (entry)
-  "Return a compact minibuffer label for provenance review ENTRY."
-  (let* ((tag-id (plist-get entry :tag-id))
-         (field-name (plist-get entry :field-name))
-         (value (format "%S" (plist-get entry :value)))
-         (qualified-name
-          (if tag-id
-              (format "%s / %s"
-                      (supertag-view-node--tag-display-name tag-id)
-                      field-name)
-            field-name)))
-    (format "%s = %s" qualified-name
-            (truncate-string-to-width value 60 nil nil "…"))))
-
-(defun supertag-view-node--reject-ai-field (node-id tag-id field-name)
-  "Reject NODE-ID's agent-written FIELD-NAME value.
-Restore `:previous' when the current provenance record carries that key;
-otherwise remove the value.  Return `:restored' or `:cleared'."
-  (let ((provenance (supertag-field-provenance node-id tag-id field-name)))
-    (unless (eq (plist-get provenance :origin) :agent)
-      (error "Field '%s' is not agent-written" field-name))
-    (if (plist-member provenance :previous)
-        (progn
-          ;; A person chose to restore this value, so the restored fact is
-          ;; recorded through the normal Field writer as human-authored.
-          (supertag-field-set node-id tag-id field-name
-                              (plist-get provenance :previous)
-                              '(:origin :human))
-          :restored)
-      (supertag-field-remove node-id tag-id field-name)
-      :cleared)))
-
-(defun supertag-view-node-reject-field-at-point ()
-  "Reject the agent-written field value at point after confirmation.
-The field's recorded `:previous' value is restored when present; otherwise
-the value is cleared.  Refresh the Node View after a successful rejection."
-  (interactive)
-  (let ((context (supertag-view-node--get-context-at-point)))
-    (if (not (eq (plist-get context :type) :field-value))
-        (message "No field value at point.")
-      (let* ((node-id supertag-view-node--current-node-id)
-             (tag-id (plist-get context :tag-id))
-             (field-name (plist-get context :field-name))
-             (provenance (supertag-field-provenance node-id tag-id field-name)))
-        (cond
-         ((not (eq (plist-get provenance :origin) :agent))
-          (message "Field '%s' is not agent-written." field-name))
-         ((not (y-or-n-p (format "Reject AI value for field '%s'? " field-name)))
-          (message "Rejection cancelled."))
-         (t
-          (condition-case err
-              (let ((result (supertag-view-node--reject-ai-field
-                             node-id tag-id field-name)))
-                (supertag-view-node--refresh-view)
-                (supertag-view-node--goto-field tag-id field-name)
-                (message "✓ Field '%s' rejected; %s."
-                         field-name
-                         (if (eq result :restored)
-                             "previous value restored"
-                           "value cleared")))
-            (error
-             (message "Cannot reject: %s" (error-message-string err))))))))))
-
-(defun supertag-view-node-review-ai-fields ()
-  "Review every agent-written field value on the current node.
-For each field, press `c' to confirm, `x' to reject after a y-or-n prompt,
-`s' to skip, `a' to confirm all remaining fields, or `q' to stop.  The
-Node View refreshes once after all selected mutations are complete."
-  (interactive)
-  (let* ((node-id supertag-view-node--current-node-id)
-         (entries (and node-id
-                       (supertag-view-node--ai-provenance-fields node-id)))
-         (total (length entries))
-         (index 0)
-         (confirmed 0)
-         (rejected 0)
-         (skipped 0)
-         (changed nil)
-         (stopped nil)
-         errors)
-    (if (zerop total)
-        (progn
-          (message "No agent-written fields to review on this node.")
-          (list :confirmed 0 :rejected 0 :skipped 0 :stopped nil :errors nil))
-      (while entries
-        (let* ((entry (car entries))
-               (tag-id (plist-get entry :tag-id))
-               (field-name (plist-get entry :field-name))
-               (choice
-                (read-char-choice
-                 (format "AI field %d/%d: %s  [c]onfirm [x]reject [a]ll-confirm [s]kip [q]uit "
-                         (1+ index) total
-                         (supertag-view-node--review-entry-label entry))
-                 '(?c ?x ?a ?s ?q))))
-          (pcase choice
-            (?c
-             (condition-case err
-                 (progn
-                   (supertag-field-confirm node-id tag-id field-name)
-                   (setq confirmed (1+ confirmed)
-                         changed t))
-               (error
-                (push (format "%s: %s" field-name
-                              (error-message-string err))
-                      errors)))
-             (setq entries (cdr entries)
-                   index (1+ index)))
-            (?x
-             (if (y-or-n-p (format "Reject AI value for field '%s'? "
-                                   field-name))
-                 (condition-case err
-                     (progn
-                       (supertag-view-node--reject-ai-field
-                        node-id tag-id field-name)
-                       (setq rejected (1+ rejected)
-                             changed t))
-                   (error
-                    (push (format "%s: %s" field-name
-                                  (error-message-string err))
-                          errors)))
-               (setq skipped (1+ skipped)))
-             (setq entries (cdr entries)
-                   index (1+ index)))
-            (?a
-             (dolist (remaining entries)
-               (let ((remaining-tag (plist-get remaining :tag-id))
-                     (remaining-field (plist-get remaining :field-name)))
-                 (condition-case err
-                     (progn
-                       (supertag-field-confirm
-                        node-id remaining-tag remaining-field)
-                       (setq confirmed (1+ confirmed)
-                             changed t))
-                   (error
-                    (push (format "%s: %s" remaining-field
-                                  (error-message-string err))
-                          errors)))))
-             (setq entries nil))
-            (?s
-             (setq skipped (1+ skipped)
-                   entries (cdr entries)
-                   index (1+ index)))
-            (?q
-             (setq stopped t
-                   entries nil)))))
-      (when changed
-        (supertag-view-node--refresh-view))
-      (message "AI review: %d confirmed, %d rejected, %d skipped%s%s."
-               confirmed rejected skipped
-               (if stopped ", stopped early" "")
-               (if errors (format ", %d failed" (length errors)) ""))
-      (list :confirmed confirmed
-            :rejected rejected
-            :skipped skipped
-            :stopped stopped
-            :errors (nreverse errors)))))
-
-(defun supertag-view-node-edit-at-point ()
-  "Dispatch edit action based on the context at point."
-  (interactive)
-  (let ((context (supertag-view-node--get-context-at-point)))
-    (when context
-      (pcase (plist-get context :type)
-        (:field-value (supertag-view-node--edit-field-value context))
-        ;; TODO: Add other cases for editing tag, field-key etc.
-        (_ (message "No edit action defined for this context."))))))
-
-(defun supertag-view-node--edit-field-value (context)
-  "Handle the logic to edit a field's value with enhanced UI feedback.
-Field-type-specific side effects (e.g., :node-reference) are handled by
-`supertag-field-set'."
-  (let* ((node-id supertag-view-node--current-node-id)
-         (tag-id (plist-get context :tag-id))
-         (field-name (plist-get context :field-name))
-         (field-def (supertag-tag-get-field tag-id field-name))
-         ;; Remember caret offset within the value column to restore after update
-         (saved-offset (let* ((bol (line-beginning-position))
-                              (eol (line-end-position))
-                              (vstart (text-property-any bol eol 'supertag-value-column t)))
-                         (when vstart
-                           (max 0 (- (point) vstart))))))
-    (when field-def
-      (other-window 1)
-      (condition-case err
-          (let* ((current-value (supertag-query-field-value node-id tag-id field-name))
-                 (new-value (supertag-ui-read-field-value field-def current-value)))
-
-            ;; Set the field value.  :node-reference side effects (relations +
-            ;; backlinks) are handled inside `supertag-field-set'.  A value
-            ;; typed here is a fact the person stands behind.
-            (supertag-field-set node-id tag-id field-name new-value
-                                '(:origin :human))
-            (supertag-view-node--refresh-view)
-            (supertag-view-node--focus-view)
-            (when (supertag-view-node--goto-field tag-id field-name)
-              ;; Restore caret position relative to the start of the value column
-              (let* ((bol (line-beginning-position))
-                     (eol (line-end-position))
-                     (vstart (text-property-any bol eol 'supertag-value-column t))
-                     (vend (and vstart (or (next-single-property-change vstart 'supertag-value-column nil eol)
-                                           eol))))
-                (when (and vstart vend)
-                  (let* ((vlen (max 0 (- vend vstart)))
-                         (delta (min (max (or saved-offset 0) 0) vlen)))
-                    (goto-char (min (+ vstart delta) vend))))))
-            (message "✓ Field '%s' updated successfully!" field-name))
-        (quit
-         ;; User cancelled (C-g): restore focus and caret to original field value
-         (supertag-view-node--focus-view)
-         (when (supertag-view-node--goto-field tag-id field-name)
-           (let* ((bol (line-beginning-position))
-                  (eol (line-end-position))
-                  (vstart (text-property-any bol eol 'supertag-value-column t))
-                  (vend (and vstart (or (next-single-property-change vstart 'supertag-value-column nil eol)
-                                        eol))))
-             (when (and vstart vend)
-               (let* ((vlen (max 0 (- vend vstart)))
-                      (delta (min (max (or saved-offset 0) 0) vlen)))
-                 (goto-char (min (+ vstart delta) vend))))))
-         (message "Edit cancelled"))
-        (error
-         ;; On any error, return focus and attempt to restore caret
-         (supertag-view-node--focus-view)
-         (ignore-errors (supertag-view-node--goto-field tag-id field-name))
-         (message "Edit failed: %s" (error-message-string err)))))))
-
-;;; --- Navigation Helpers ---
-
-(defun supertag-view-node--goto-field-in-buffer (buffer &optional tag-id field-name)
-  "Move point inside BUFFER to field identified by TAG-ID and FIELD-NAME.
-When TAG-ID or FIELD-NAME are nil, match the first available field.
-Return non-nil when the target field is located."
+(defun supertag-view-node--goto-property-in-buffer (buffer &optional property-key)
+  "Move point in BUFFER to PROPERTY-KEY, or the first property when nil."
   (when (buffer-live-p buffer)
     (with-current-buffer buffer
-      (let* ((start (point-min))
-             (end   (point-max))
-             (pos   (text-property-any start end 'type :field-value))
-             match)
-        (while (and pos (not match))
-          (let ((p-tag (get-text-property pos 'tag-id))
-                (p-field (get-text-property pos 'field-name)))
-            (when (and (or (null tag-id) (equal p-tag tag-id))
-                       (or (null field-name) (equal p-field field-name)))
-              (setq match pos)))
-          (unless match
-            (let ((next (next-single-property-change pos 'type nil end)))
-              (setq pos (and next (text-property-any next end 'type :field-value))))))
-        (when match
-          (goto-char match)
-          (beginning-of-line)
-          (let ((bol (point))
-                (eol (line-end-position)))
-            (if-let ((valpos (text-property-any bol eol 'supertag-value-column t)))
-                (goto-char valpos)
-              (goto-char bol)))
+      (let ((pos (if property-key
+                     (text-property-any (point-min) (point-max)
+                                        'property-key property-key)
+                   (text-property-any (point-min) (point-max)
+                                      'type :property-value))))
+        (when pos
+          (goto-char pos)
           (point))))))
 
-(defun supertag-view-node--goto-field (&optional tag-id field-name)
-  "Move point in the active node view to TAG-ID and FIELD-NAME.
-When both arguments are nil, jump to the first field."
+(defun supertag-view-node--goto-property (&optional property-key)
+  "Move point in the active Node View to PROPERTY-KEY."
   (when-let ((buffer (supertag-view-node--buffer)))
-    (supertag-view-node--goto-field-in-buffer buffer tag-id field-name)))
+    (supertag-view-node--goto-property-in-buffer buffer property-key)))
 
-(defun supertag-view-node--goto-first-field ()
-  "Move point in the active node view to the first field line.
-Falls back to beginning of buffer when no field is found."
-  (or (supertag-view-node--goto-field nil nil)
+(defun supertag-view-node--goto-first-property ()
+  "Move point to the first property, or buffer start when none exists."
+  (or (supertag-view-node--goto-property nil)
       (progn (goto-char (point-min)) (point))))
 
 (defun supertag-view-node--focus-view ()
@@ -1096,7 +620,16 @@ Falls back to beginning of buffer when no field is found."
     (with-current-buffer buf
       (unless supertag-view--instance
         (user-error "Node View is not Runtime-managed; reopen it before refreshing"))
-      (supertag-view-refresh buf))))
+      (if (and supertag-view-node--current-node-id
+               (not (supertag-node-get supertag-view-node--current-node-id)))
+          (let ((inhibit-read-only t))
+            (erase-buffer)
+            (supertag-view-helper-insert-simple-header
+             "Node View" "The node is not available in this vault.")
+            (supertag-view-helper-insert-simple-empty-state
+             (format "Node %s is not available in this vault."
+                     supertag-view-node--current-node-id)))
+        (supertag-view-refresh buf)))))
 
 
 ;;; --- Commands ---
@@ -1112,14 +645,14 @@ Falls back to beginning of buffer when no field is found."
 
 ;;;###autoload
 (defun supertag-view-node-open (node-id)
-  "Open Node View for NODE-ID and focus its first field."
+  "Open Node View for NODE-ID and focus its first property."
   (unless (and (stringp node-id) (not (string-empty-p node-id)))
     (user-error "Node View requires a node ID"))
   (supertag-view-node--show-side node-id)
   (supertag-view-node--focus-view)
   (when-let* ((buffer (supertag-view-node--buffer)))
     (with-current-buffer buffer
-      (supertag-view-node--goto-first-field)
+      (supertag-view-node--goto-first-property)
       (when-let* ((window (get-buffer-window buffer t)))
         (with-selected-window window
           (recenter)))))
@@ -1147,20 +680,16 @@ Falls back to beginning of buffer when no field is found."
 
 ;;; --- Window Selection Integration ---
 
-;; When user switches focus into the node view window, place point directly on
-;; the first Field value column to reduce extra cursor movement.
+;; When user switches focus into the Node View window, select its first
+;; projected property when no property is already selected.
 (defun supertag-view-node--on-window-selection-change (_frame)
-  "When node view buffer becomes selected, jump to a Field value column."
+  "When Node View becomes selected, retain or select a property row."
   (when-let* ((win (selected-window))
               (buf (and (window-live-p win) (window-buffer win))))
     (with-current-buffer buf
       (when (derived-mode-p 'supertag-view-node-mode)
-        (let* ((bol (line-beginning-position))
-               (eol (line-end-position))
-               (valpos (text-property-any bol eol 'supertag-value-column t)))
-          (if valpos
-              (goto-char valpos)
-            (ignore-errors (supertag-view-node--goto-first-field))))))))
+        (unless (eq (get-text-property (point) 'type) :property-value)
+          (ignore-errors (supertag-view-node--goto-first-property)))))))
 
 ;; Register the hook if available (Emacs 27+)
 (when (boundp 'window-selection-change-functions)

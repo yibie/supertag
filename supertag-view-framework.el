@@ -1,6 +1,10 @@
 ;;; supertag-view-framework.el --- Framework for creating custom views -*- lexical-binding: t; -*-
 
 ;;; Commentary:
+;; Commands: supertag-view-refresh
+;; Business Tag selection (supertag-view--read-tag) is owned by supertag-tag.
+;; Dependencies: cl-lib, button, subr-x, org, widget, wid-edit, supertag-query, supertag-tag, supertag-services-sync
+;; Node arrives through Tag; its cache listener is prepared after Sync loads.
 
 ;; This module provides a framework for developers to create custom views
 ;; of supertag data.  It is NOT an end-user configuration tool - it is
@@ -19,11 +23,357 @@
 (require 'cl-lib)
 (require 'button)
 (require 'subr-x)
+(require 'org)
 (require 'widget)
 (require 'wid-edit)
-(require 'supertag-services-ui)
-(require 'supertag-view-api)
-(require 'supertag-core-store)
+(require 'supertag-query)
+(require 'supertag-tag)
+(require 'supertag-services-sync)
+(supertag-node--prepare-cache-listener)
+
+;;; --- Shared View Drawing ---
+
+(defun supertag-view-helper-insert-action-button (label action data help &optional prop)
+  "Insert LABEL with ACTION, HELP and DATA stored under PROP."
+  (insert-text-button label 'action action 'follow-link t
+                      'help-echo help (or prop 'supertag-action) data))
+
+(defconst supertag-view-helper--section-separator "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+  "Separator line for sections.")
+
+(defconst supertag-view-helper--subsection-separator "┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄"
+  "Separator line for subsections.")
+
+(defun supertag-view-helper-insert-section-header (title icon)
+  "Insert a section header with ICON and TITLE."
+  (insert (propertize (format "%s %s\n" icon title) 'face '(:weight bold :height 1.2)))
+  (insert (propertize (format "%s\n" supertag-view-helper--section-separator) 'face '(:foreground "gray50")))
+  (insert "\n"))
+
+(defun supertag-view-helper-insert-subsection-header (title)
+  "Insert a subsection header with TITLE."
+  (insert (propertize (format "  %s\n" title) 'face '(:weight bold)))
+  (insert (propertize (format "  %s\n" supertag-view-helper--subsection-separator) 'face '(:foreground "gray70")))
+  (insert "\n"))
+
+;;; --- Theme Adaptive Colors ---
+
+(defun supertag-view-helper-get-theme-adaptive-color (light-color dark-color)
+  "Get color that adapts to current theme."
+  (if (eq (frame-parameter nil 'background-mode) 'dark)
+      dark-color
+    light-color))
+
+(defun supertag-view-helper-get-accent-color ()
+  "Get accent color that works well in both light and dark themes."
+  (supertag-view-helper-get-theme-adaptive-color "#0066CC" "#66B3FF"))
+
+(defun supertag-view-helper-get-emphasis-color ()
+  "Get emphasis color that works well in both light and dark themes."
+  (supertag-view-helper-get-theme-adaptive-color "#003D82" "#99D6FF"))
+
+(defun supertag-view-helper-get-muted-color ()
+  "Get muted color that works well in both light and dark themes."
+  (supertag-view-helper-get-theme-adaptive-color "#666666" "#AAAAAA"))
+
+(defun supertag-view-helper-get-success-color ()
+  "Get success color that works well in both light and dark themes."
+  (supertag-view-helper-get-theme-adaptive-color "#22C55E" "#4ADE80"))
+
+(defun supertag-view-helper-get-warning-color ()
+  "Get warning color that works well in both light and dark themes."
+  (supertag-view-helper-get-theme-adaptive-color "#F59E0B" "#FCD34D"))
+
+(defun supertag-view-helper-get-error-color ()
+  "Get error color that works well in both light and dark themes."
+  (supertag-view-helper-get-theme-adaptive-color "#EF4444" "#F87171"))
+
+(defun supertag-view-helper-get-background-color ()
+  "Get background color that works well in both light and dark themes."
+  (supertag-view-helper-get-theme-adaptive-color "#F8FAFC" "#1E293B"))
+
+(defun supertag-view-helper-get-border-color ()
+  "Get border color that works well in both light and dark themes."
+  (supertag-view-helper-get-theme-adaptive-color "#E2E8F0" "#334155"))
+
+;;; --- Value Formatting ---
+
+(defun supertag-view-helper-format-value (value)
+  "Format VALUE for display. Handles lists and nil."
+  (let ((formatted-value (if (listp value)
+                              (mapconcat #'identity value " / ")
+                            (format "%s" (or value "")))))
+    (if (string-empty-p formatted-value)
+        (propertize "[Empty]" 'face `(:foreground ,(supertag-view-helper-get-muted-color) :slant italic))
+      (supertag-view-helper-render-org-links formatted-value))))
+
+(defun supertag-view-helper-render-org-links (text)
+  "Return TEXT with Org-style links rendered as clickable buttons.
+TEXT can be any value convertible to string."
+  (let ((string (cond
+                 ((null text) "")
+                 ((stringp text) (substring-no-properties text))
+                 (t (format "%s" text)))))
+    (if (string-empty-p string)
+        string
+      (with-temp-buffer
+        (insert string)
+        (goto-char (point-min))
+        (while (re-search-forward "\\[\\[\\([^]\n]+\\)\\]\\(\\[\\([^]]+\\)\\]\\)?\\]" nil t)
+          (let* ((match-start (match-beginning 0))
+                 (link (match-string 1))
+                 (desc (or (match-string 3) (match-string 1)))
+                 (link-target link)
+                 (keymap (let ((map (make-sparse-keymap)))
+                           (define-key map (kbd "RET")
+                             (lambda ()
+                               (interactive)
+                               (org-link-open-from-string (format "[[%s]]" link-target))))
+                           (define-key map [mouse-1]
+                             (lambda ()
+                               (interactive)
+                               (org-link-open-from-string (format "[[%s]]" link-target))))
+                           map)))
+            (delete-region match-start (match-end 0))
+            (goto-char match-start)
+            (insert desc)
+            (add-text-properties match-start (+ match-start (length desc))
+                                 `(face org-link
+                                        help-echo ,link
+                                        mouse-face highlight
+                                        keymap ,keymap))
+            (goto-char (+ match-start (length desc)))))
+        (buffer-substring (point-min) (point-max))))))
+
+
+
+(defun supertag-view-helper-format-boolean-value (value)
+  "Format boolean VALUE with visual indicators."
+  (let ((bool-val (cond
+                   ((or (eq value t) (string= value "true") (string= value "yes") (string= value "1")) t)
+                   ((or (eq value nil) (string= value "false") (string= value "no") (string= value "0")) nil)
+                   (t nil))))
+    (if bool-val
+        (propertize "✓ True" 'face `(:foreground ,(supertag-view-helper-get-success-color) :weight bold))
+      (propertize "✗ False" 'face `(:foreground ,(supertag-view-helper-get-muted-color))))))
+
+(defun supertag-view-helper-format-number-value (value)
+  "Format numeric VALUE with proper styling."
+  (if (or (null value) (string-empty-p (format "%s" value)))
+      (propertize "[No value]" 'face `(:foreground ,(supertag-view-helper-get-muted-color) :slant italic))
+    (propertize (format "%s" value) 'face `(:foreground ,(supertag-view-helper-get-accent-color) :weight bold))))
+
+(defun supertag-view-helper-format-date-value (value)
+  "Format date VALUE with calendar icon."
+  (if (or (null value) (string-empty-p (format "%s" value)))
+      (propertize "[No date]" 'face `(:foreground ,(supertag-view-helper-get-muted-color) :slant italic))
+    (propertize (concat "📅 " (format "%s" value))
+                'face `(:foreground ,(supertag-view-helper-get-accent-color)))))
+
+(defun supertag-view-helper-format-url-value (value)
+  "Format URL VALUE as clickable link."
+  (if (or (null value) (string-empty-p (format "%s" value)))
+      (propertize "[No URL]" 'face `(:foreground ,(supertag-view-helper-get-muted-color) :slant italic))
+    (propertize (concat "🔗 " (format "%s" value))
+                'face `(:foreground ,(supertag-view-helper-get-accent-color) :underline t)
+                'mouse-face 'highlight
+                'help-echo "Click to open URL")))
+
+
+;;; --- Simple and Clean Components ---
+
+(defun supertag-view-helper-insert-simple-header (title &optional stats)
+  "Insert a simple header with TITLE and optional STATS."
+  (insert (propertize title 'face `(:weight bold :height 1.3 :foreground ,(supertag-view-helper-get-emphasis-color))))
+  (when stats
+    (insert (propertize (format "    %s" stats)
+                        'face `(:foreground ,(supertag-view-helper-get-muted-color)))))
+  (insert "\n")
+  (insert (propertize (make-string 60 ?─) 'face `(:foreground ,(supertag-view-helper-get-border-color))))
+  (insert "\n\n"))
+
+(defun supertag-view-helper-insert-section-title (title &optional icon)
+  "Insert a simple section title with optional ICON."
+  (insert (propertize (if icon (format "%s %s" icon title) title)
+                      'face `(:weight bold :foreground ,(supertag-view-helper-get-emphasis-color))))
+  (insert "\n"))
+
+
+(defun supertag-view-helper-insert-simple-footer (&rest help-lines)
+  "Insert a simple footer with essential HELP-LINES."
+  (insert "\n")
+  (insert (propertize (make-string 60 ?─) 'face `(:foreground ,(supertag-view-helper-get-border-color))))
+  (insert "\n")
+  (dolist (line help-lines)
+    (insert (propertize (format "%s\n" line)
+                        'face `(:foreground ,(supertag-view-helper-get-muted-color) :height 0.9)))))
+
+(defun supertag-view-helper-insert-simple-empty-state (message)
+  "Insert a simple empty state MESSAGE."
+  (insert (propertize (format "  %s\n" message)
+                      'face `(:foreground ,(supertag-view-helper-get-muted-color) :slant italic))))
+
+
+;;; --- Card-like Components ---
+
+(defun supertag-view-helper-insert-card-start (title &optional icon color)
+  "Start a card-like container with TITLE, optional ICON and COLOR."
+  (let ((card-color (or color (supertag-view-helper-get-border-color)))
+        (title-with-icon (if icon (format "%s %s" icon title) title)))
+    (insert (propertize (format "┌─ %s " title-with-icon)
+                        'face `(:weight bold :foreground ,(supertag-view-helper-get-emphasis-color))))
+    (insert (propertize (make-string (max 0 (- 60 (length title-with-icon) 3)) ?─)
+                        'face `(:foreground ,card-color)))
+    (insert (propertize "┐\n" 'face `(:foreground ,card-color)))))
+
+(defun supertag-view-helper-insert-card-content (content &optional padding)
+  "Insert CONTENT inside a card with optional PADDING."
+  (let ((pad (or padding "│ "))
+        (border-color (supertag-view-helper-get-border-color)))
+    (dolist (line (split-string content "\n"))
+      (insert (propertize pad 'face `(:foreground ,border-color)))
+      (insert line "\n"))))
+
+(defun supertag-view-helper-insert-card-end ()
+  "End a card-like container."
+  (let ((border-color (supertag-view-helper-get-border-color)))
+    (insert (propertize "└" 'face `(:foreground ,border-color)))
+    (insert (propertize (make-string 58 ?─) 'face `(:foreground ,border-color)))
+    (insert (propertize "┘\n" 'face `(:foreground ,border-color)))))
+
+
+(defun supertag-view-helper-insert-separator-line (&optional style)
+  "Insert a separator line with optional STYLE (:thin, :thick, :dotted)."
+  (let ((char (pcase style
+                (:thin "─")
+                (:thick "━")
+                (:dotted "┄")
+                (_ "─")))
+        (border-color (supertag-view-helper-get-border-color)))
+    (insert (propertize "│" 'face `(:foreground ,border-color)))
+    (insert (propertize (make-string 58 (string-to-char char)) 'face `(:foreground ,border-color)))
+    (insert (propertize "│\n" 'face `(:foreground ,border-color)))))
+
+;;; --- Interactive Line Highlighting ---
+
+(defun supertag-view-helper-highlight-current-line ()
+  "Highlight the current line for better visibility."
+  (let ((inhibit-read-only t))
+    (remove-overlays (point-min) (point-max) 'category 'current-line)
+    (let ((overlay (make-overlay (line-beginning-position) (1+ (line-end-position)))))
+      (overlay-put overlay 'category 'current-line)
+      (overlay-put overlay 'face `(:background ,(supertag-view-helper-get-theme-adaptive-color "#F1F5F9" "#334155")
+                                   :extend t
+                                   :box (:line-width 1 :color ,(supertag-view-helper-get-accent-color))))
+      ;; Add subtle animation effect
+      (overlay-put overlay 'priority 100))))
+
+(defun supertag-view-helper-unhighlight-all-lines ()
+  "Remove all line highlighting."
+  (remove-overlays (point-min) (point-max) 'category 'current-line))
+
+(defun supertag-view-helper-enable-line-highlighting ()
+  "Enable enhanced line highlighting for the current buffer."
+  ;; Line highlighting disabled to prevent visual flickering during cursor movement
+  ;; (supertag-view-helper-unhighlight-all-lines)
+  ;; (add-hook 'post-command-hook #'supertag-view-helper-highlight-current-line nil t)
+  )
+
+;;; --- Status and Statistics Display ---
+
+(defun supertag-view-helper-insert-status-badge (status &optional label)
+  "Insert a status badge with STATUS and optional LABEL."
+  (let* ((badge-text (or label (format "%s" status)))
+         (badge-face (pcase status
+                       ('active `(:background ,(supertag-view-helper-get-success-color)
+                                  :foreground "white" :weight bold :box 2))
+                       ('warning `(:background ,(supertag-view-helper-get-warning-color)
+                                   :foreground "black" :weight bold :box 2))
+                       ('error `(:background ,(supertag-view-helper-get-error-color)
+                                 :foreground "white" :weight bold :box 2))
+                       ('inactive `(:background ,(supertag-view-helper-get-muted-color)
+                                    :foreground "white" :weight bold :box 2))
+                       (_ `(:background ,(supertag-view-helper-get-accent-color)
+                           :foreground "white" :weight bold :box 2)))))
+    (insert " ")
+    (insert (propertize (format " %s " badge-text) 'face badge-face))
+    (insert " ")))
+
+(defun supertag-view-helper-insert-stats-summary (stats)
+  "Insert a statistics summary from STATS plist."
+  (let ((total (or (plist-get stats :total) 0))
+        (active (or (plist-get stats :active) 0))
+        (modified (or (plist-get stats :modified) 0)))
+    (insert (propertize "\n📊 Statistics: " 'face `(:weight bold :foreground ,(supertag-view-helper-get-emphasis-color))))
+    (insert (propertize (format "Total: %d" total) 'face `(:weight bold :foreground ,(supertag-view-helper-get-accent-color))))
+    (insert (propertize " • " 'face `(:foreground ,(supertag-view-helper-get-muted-color))))
+    (insert (propertize (format "Active: %d" active) 'face `(:weight bold :foreground ,(supertag-view-helper-get-success-color))))
+    (when (> modified 0)
+      (insert (propertize " • " 'face `(:foreground ,(supertag-view-helper-get-muted-color))))
+      (insert (propertize (format "Modified: %d" modified) 'face `(:weight bold :foreground ,(supertag-view-helper-get-warning-color)))))
+    (insert "\n\n")))
+
+;;; --- Help Text and Empty State ---
+
+(defun supertag-view-helper-insert-help-text (text)
+  "Insert help TEXT with consistent styling."
+  (insert (propertize (format "    %s\n" text)
+                      'face `(:foreground ,(supertag-view-helper-get-muted-color) :height 0.9))))
+
+(defun supertag-view-helper-insert-empty-state (message)
+  "Insert empty state MESSAGE with consistent styling."
+  (insert (propertize (format "  %s\n" message)
+                      'face `(:foreground ,(supertag-view-helper-get-muted-color) :slant italic))))
+
+
+;;; --- Node and File Information Display ---
+
+(defun supertag-view-helper-insert-node-info (title file)
+  "Insert node information with TITLE and FILE in consistent format."
+  (insert (propertize (format "    📄 %s\n" title) 'face '(:weight bold :foreground "default")))
+  (when file
+    (insert (propertize (format "    📁 %s\n" (file-name-nondirectory file))
+                        'face `(:foreground ,(supertag-view-helper-get-muted-color) :slant italic)))))
+
+;;; --- Footer and Navigation ---
+
+(defun supertag-view-helper-insert-footer-start ()
+  "Insert footer separator and navigation title."
+  (insert (propertize (format "%s\n" supertag-view-helper--section-separator) 'face `(:foreground ,(supertag-view-helper-get-muted-color))))
+  (insert (propertize "Navigation:\n" 'face '(:weight bold :foreground "default"))))
+
+(defun supertag-view-helper-insert-footer-with-content (&rest help-lines)
+  "Insert complete footer with custom HELP-LINES."
+  (supertag-view-helper-insert-footer-start)
+  (dolist (line help-lines)
+    (supertag-view-helper-insert-help-text line)))
+
+;;;----------------------------------------------------------------------
+;;; Display Buffer Management
+;;;----------------------------------------------------------------------
+
+(defun supertag-view-helper-display-buffer-right (buffer)
+  "Display BUFFER in a window to the right."
+  (let ((window (display-buffer buffer '(display-buffer-in-side-window
+                                          (side . right)
+                                          (window-width . 0.4)))))
+    (select-window window)
+    (goto-char (point-min))))
+
+;;; --- View Data Access and Subscriptions ---
+
+(defun supertag-view-api-node-base-field (node key)
+  "Read KEY from NODE plist."
+  (plist-get node key))
+
+(defun supertag-view-api-subscribe (event fn)
+  "Subscribe FN to EVENT and return an unsubscribe function.
+
+EVENT is a keyword (e.g. :node-updated) or a store path list.
+FN is called with arguments determined by the event publisher."
+  (unless (functionp fn)
+    (error "FN must be a function"))
+  (supertag-subscribe event fn))
 
 ;; ============================================================================
 ;; Core Registry
@@ -55,22 +405,7 @@ View definition plist structure:
 ;; Core API
 ;; ============================================================================
 
-(defun supertag-view--context-builder-from-context (context)
-  "Build a context builder function from CONTEXT."
-  (let ((builder (plist-get context :context-builder))
-        (query (or (plist-get context :query)
-                   (plist-get context :tag))))
-    (cond
-     ((functionp builder) builder)
-     (query
-      (lambda () (supertag-view--build-context query)))
-     (t nil))))
 
-(defun supertag-view--rebuild-context (context)
-  "Rebuild CONTEXT from its builder or query when available."
-  (if-let* ((builder (supertag-view--context-builder-from-context context)))
-      (funcall builder)
-    context))
 
 (defun supertag-view-register (&rest props)
   "Register a new view with properties PROPS.
@@ -196,32 +531,7 @@ DISPLAY-ACTION overrides the view's registered display action."
              (supertag-view--cleanup-instance)))
          (signal (car err) (cdr err)))))))
 
-(defun supertag-view-list ()
-  "List all registered views.
-Returns a list of view definition plists sorted by name."
-  (let (result)
-    (maphash (lambda (_id view) (push view result))
-             supertag--view-registry)
-    (sort result (lambda (a b)
-                   (string< (plist-get a :name)
-                            (plist-get b :name))))))
 
-(defun supertag-view-list-for-tag (tag-name)
-  "List views applicable to TAG-NAME.
-Returns a list of view definition plists.
-If a view has :valid-for nil, it applies to all tags."
-  (cl-remove-if-not
-   (lambda (view)
-     (let ((valid-for (plist-get view :valid-for)))
-       (and (not (and (plist-member view :selectable)
-                      (null (plist-get view :selectable))))
-            (or (null valid-for)
-                (member tag-name valid-for)))))
-   (supertag-view-list)))
-
-;; ============================================================================
-;; Rendering Utilities (Developer Toolbox)
-;; ============================================================================
 
 (defun supertag-view--header (title)
   "Insert a header with TITLE."
@@ -263,126 +573,10 @@ STATS is a list of (label . value) pairs."
 ;; Data Access Utilities
 ;; ============================================================================
 
-(defun supertag-view--get-vc (node-id column-id &optional default)
-  "Get virtual column value for NODE-ID and COLUMN-ID.
-Returns DEFAULT if not found or error."
-  (if (fboundp 'supertag-virtual-column-get)
-      (supertag-virtual-column-get node-id column-id default)
-    default))
-
-(defun supertag-view--get-global-field (node-id field-id &optional default)
-  "Get global field value for NODE-ID and FIELD-ID, or DEFAULT."
-  (if (fboundp 'supertag-node-get-global-field)
-      (supertag-node-get-global-field node-id field-id default)
-    default))
-
 ;; ============================================================================
 ;; Interactive Commands
 ;; ============================================================================
 
-(declare-function supertag-view-table--get-current-tag-id "supertag-view-table" ())
-
-(defun supertag-view--normalize-tag-query (tag-or-query)
-  "Return a canonical tag query plist for TAG-OR-QUERY."
-  (cond
-   ((and (stringp tag-or-query) (not (string-empty-p tag-or-query)))
-    (list :type :tag :value tag-or-query))
-   ((and (listp tag-or-query)
-         (eq (plist-get tag-or-query :type) :tag)
-         (stringp (plist-get tag-or-query :value))
-         (not (string-empty-p (plist-get tag-or-query :value))))
-    (copy-sequence tag-or-query))
-   (t
-    (user-error "Expected a tag name or tag query, got %S" tag-or-query))))
-
-(defun supertag-view-select-and-render (tag-or-query)
-  "Interactively select a view for TAG-OR-QUERY and render it."
-  (interactive (list (supertag-view--read-tag)))
-  (let* ((query (supertag-view--normalize-tag-query tag-or-query))
-         (tag-name (plist-get query :value))
-         (views (supertag-view-list-for-tag tag-name))
-         (view-names (mapcar (lambda (v) (plist-get v :name)) views)))
-    (if (null views)
-        (message "No views available for tag '%s'" tag-name)
-      (let* ((selected-name (completing-read
-                            (format "Select view for #%s: " tag-name)
-                            view-names
-                            nil t))
-             (selected (cl-find selected-name views
-                               :key (lambda (v) (plist-get v :name))
-                               :test #'string=)))
-        (when selected
-          (supertag-view-open (plist-get selected :id)
-                              (supertag-view--build-context query)))))))
-
-(defun supertag-view-select-from-schema ()
-  "Select and render a view from Schema View."
-  (interactive)
-  (let ((query (or (supertag-view--get-tag-at-point)
-                   (supertag-view--read-tag))))
-    (supertag-view-select-and-render query)))
-
-(defun supertag-view--read-tag ()
-  "Read a tag query and include its explicit descendants when present."
-  (let* ((tag-ids (supertag-view-api-list-tag-ids))
-         (tag (supertag-ui-read-tag
-               "Tag: " tag-ids nil nil)))
-    (append (list :type :tag :value tag)
-            (when (supertag-view-api-tag-descendants tag)
-              '(:include-descendants t)))))
-
-(defun supertag-view--get-tag-at-point ()
-  "Return a tag query derived from Schema View context at point."
-  (let* ((fallback (max (point-min) (1- (point))))
-         (context (or (get-text-property (point) 'supertag-context)
-                      (get-text-property fallback 'supertag-context)))
-         (type (plist-get context :type)))
-    (pcase type
-      ((or :tag :field)
-       (append (list :type :tag :value (plist-get context :tag-id))
-               (when (plist-get context :has-descendants)
-                 '(:include-descendants t)))))))
-
-(defun supertag-view--build-context (tag-or-query)
-  "Build render context for TAG-OR-QUERY."
-  (let* ((query (supertag-view--normalize-tag-query tag-or-query))
-         (tag-name (plist-get query :value))
-         (include-descendants (plist-get query :include-descendants))
-         (node-ids (supertag-view-api-nodes-by-tag
-                    tag-name include-descendants))
-         (nodes (when (and node-ids
-                           (fboundp 'supertag-view-api-get-entities))
-                  (supertag-view-api-get-entities :nodes node-ids))))
-    (list :tag tag-name
-          :query query
-          :include-descendants include-descendants
-          :nodes nodes
-          :virtual-columns nil
-          :get-vc #'supertag-view--get-vc
-          :get-global-field #'supertag-view--get-global-field)))
-
-(defun supertag-view-list-interactive ()
-  "Display list of all views in a buffer."
-  (interactive)
-  (with-output-to-temp-buffer "*Supertag Views*"
-    (princ "Registered Views\n")
-    (princ "=================\n\n")
-    (let ((views (supertag-view-list)))
-      (if (null views)
-          (princ "No views registered.\n")
-        (dolist (view views)
-          (princ (format "ID: %s\n" (plist-get view :id)))
-          (princ (format "  Name: %s\n" (plist-get view :name)))
-          (when (plist-get view :description)
-            (princ (format "  Description: %s\n" (plist-get view :description))))
-          (when (plist-get view :category)
-            (princ (format "  Category: %s\n" (plist-get view :category))))
-          (let ((valid-for (plist-get view :valid-for)))
-            (if valid-for
-                (princ (format "  Valid for: %s\n" valid-for))
-              (princ "  Valid for: (all tags)\n")))
-          (princ "\n")))))
-  (pop-to-buffer "*Supertag Views*"))
 
 (defun supertag-view--refresh-instance ()
   "Refresh the current buffer's View Runtime instance."
@@ -449,19 +643,8 @@ The render function should be provided by the view implementation."
 (defconst supertag-view--literal-props '(:key :action :on-change)
   "Widget properties whose values are literals, not context bindings.")
 
-(defvar supertag-view-widget-mode-map
-  (let ((map (make-sparse-keymap)))
-    (set-keymap-parent map
-                       (make-composed-keymap widget-keymap special-mode-map))
-    (define-key map (kbd "TAB") #'supertag-view-widget-forward)
-    (define-key map (kbd "<backtab>") #'supertag-view-widget-backward)
-    map)
-  "Keymap for `supertag-view-widget-mode'.")
-
 (defvar supertag-view-widget-field-map
   (let ((map (copy-keymap widget-field-keymap)))
-    (define-key map (kbd "TAB") #'supertag-view-widget-forward)
-    (define-key map (kbd "<backtab>") #'supertag-view-widget-backward)
     map)
   "Keymap used by editable fields in Widget DSL views.")
 
@@ -477,46 +660,7 @@ The render function should be provided by the view implementation."
   (setq widget-field-new nil
         widget-field-list nil))
 
-(define-derived-mode supertag-view-widget-mode special-mode "Supertag-View"
-  "Major mode for declarative Supertag views."
-  (setq buffer-read-only nil)
-  (add-hook 'change-major-mode-hook
-            #'supertag-view-widget--cleanup-fields nil t))
 
-(defun supertag-view-widget--interactive-positions ()
-  "Return sorted positions of text buttons and editable fields."
-  (let ((position (point-min))
-        button
-        positions)
-    (when (setq button (button-at position))
-      (push (button-start button) positions)
-      (setq position (button-start button)))
-    (while (setq button (next-button position))
-      (push (button-start button) positions)
-      (setq position (button-start button)))
-    (dolist (field widget-field-list)
-      (push (widget-field-start field) positions))
-    (sort (delete-dups positions) #'<)))
-
-(defun supertag-view-widget-forward (count)
-  "Move forward COUNT interactive controls, wrapping at buffer ends."
-  (interactive "p")
-  (let ((positions (supertag-view-widget--interactive-positions)))
-    (unless positions
-      (user-error "No interactive controls in this view"))
-    (dotimes (_ (abs count))
-      (goto-char
-       (if (> count 0)
-           (or (cl-find-if (lambda (position) (> position (point))) positions)
-               (car positions))
-         (or (cl-find-if (lambda (position) (< position (point)))
-                         positions :from-end t)
-             (car (last positions))))))))
-
-(defun supertag-view-widget-backward (count)
-  "Move backward COUNT interactive controls, wrapping at buffer ends."
-  (interactive "p")
-  (supertag-view-widget-forward (- count)))
 
 (defun supertag-view--resolve-prop (value context)
   "Resolve VALUE in CONTEXT.
@@ -1090,119 +1234,16 @@ Example: (supertag-widget-render (quote header) (list :text \"Title\"))"
 ;; DSL - Declarative View Definition
 ;; ============================================================================
 
-(defun supertag-view-define-from-config (config)
-  "Define a view from a declarative CONFIG.
-CONFIG is a plist with:
-  :id       - View identifier (symbol)
-  :name     - Display name
-  :tag      - Target tag (optional)
-  :widgets  - List of widget definitions or a function of context
-  :persist  - Nil skips developer-config persistence
 
-Widget definition:
-  :type can be a symbol (header) or keyword (:header).
-  Keywords are normalized to symbols at render time."
-  (let* ((id (plist-get config :id))
-         (name (plist-get config :name))
-         (tag (plist-get config :tag))
-         (widgets (plist-get config :widgets)))
 
-    ;; Create a Runtime renderer from widgets.
-    (let ((render-fn
-           (lambda (context)
-             (supertag-view-widget--render-tree widgets context)))
-          (state-fn #'supertag-view--rebuild-context))
-
-      ;; Register the view
-      (supertag-view-register
-       :id id
-       :name name
-       :buffer-name-fn
-       (lambda (context)
-         (format "*View: %s - %s*" name (plist-get context :tag)))
-       :mode-fn #'supertag-view-widget-mode
-       :state-fn state-fn
-       :render-fn render-fn
-       :capture-selection-fn #'supertag-view-widget--capture-selection
-       :restore-selection-fn #'supertag-view-widget--restore-selection
-       :display-action '(display-buffer-pop-up-window)
-       :valid-for (when tag (list tag)))
-
-      ;; Also store config for persistence
-      (unless (and (plist-member config :persist)
-                   (null (plist-get config :persist)))
-        (supertag-view-config-register config))
-
-      (message "View '%s' defined from config" name)
-      id)))
-
-(defun supertag-view-dsl-example ()
-  "Example of using the DSL to define a view."
-  (interactive)
-  (supertag-view-define-from-config
-   (list :id 'dsl-example
-         :name "DSL Example"
-         :tag "demo"
-         :widgets
-         (list
-          (list :type :section :title "Overview"
-                :children
-                (list
-                 (list :type :text :content "This view was created using the DSL!")
-                 (list :type :stats-row
-                       :stats (lambda (ctx)
-                                (list (cons "Total" (length (plist-get ctx :nodes))))))))
-          (list :type :stack
-                :children
-                (list
-                 (list :type :progress-bar
-                       :value (lambda (ctx)
-                                (or (plist-get (car (plist-get ctx :nodes)) :progress) 0)))
-                 (list :type :list :items (list "Task A" "Task B" "Task C"))))))))
-
-;; ============================================================================
-;; Initialization
-;; ============================================================================
-
-(defun supertag-view-config-save-to-store (&optional id)
-  "Persist view configuration(s) into the `:views' Store collection.
-When ID is non-nil, persist only that configuration; otherwise all.
-`:render-fn' is excluded (functions are not serializable)."
-  (interactive)
-  (let ((configs (if id
-                     (let ((config (supertag-view-config-get id)))
-                       (unless config
-                         (error "No configuration found for view: %s" id))
-                       (list config))
-                   (supertag-view-config-list))))
-    (dolist (config configs)
-      (let* ((view-id (plist-get config :id))
-             (serializable
-              (cl-loop for (key value) on config by #'cddr
-                       unless (eq key :render-fn)
-                       append (list key value))))
-        (supertag-store-put-entity
-         :views view-id (plist-put serializable :id view-id))))
-    (when (fboundp 'supertag-save-store)
-      (supertag-save-store))
-    (message "View configs saved to the semantic store")))
-
-(defun supertag-view-config-restore-from-store ()
-  "Restore persisted view configurations from the `:views' collection."
-  (maphash
-   (lambda (id config)
-     (puthash id (supertag--ensure-plist config) supertag--view-configs))
-   (supertag-store-get-collection :views)))
-
-(defun supertag-view-framework-init ()
-  "Initialize the view framework.
-Clears registered views and stored configurations, then restores
-persisted configurations from the `:views' Store collection."
-  (interactive)
-  (clrhash supertag--view-registry)
-  (clrhash supertag--view-configs)
-  (supertag-view-config-restore-from-store)
-  (message "View framework initialized"))
+(defun supertag-ui--sanitize-type-input (type-str)
+  "Return a keyword type from TYPE-STR, stripping leading colons/whitespace."
+  (when (and type-str (not (string-empty-p type-str)))
+    (let* ((clean (string-trim type-str)))
+      (when (string-prefix-p ":" clean)
+        (setq clean (substring clean 1)))
+      (when (not (string-empty-p clean))
+        (intern (concat ":" clean))))))
 
 (provide 'supertag-view-framework)
 

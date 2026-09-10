@@ -29,6 +29,16 @@
 
 ;; Package-Requires: ((emacs "29.1") (org "9.6") (ht "2.4"))
 
+
+;; Commands: supertag-init; startup/exit/Org hooks assemble existing owner entrypoints.
+;; Dependencies: cl-lib, org, org-id, subr-x, supertag-vault, ht, supertag-core-store,
+;; supertag-query, supertag-core-persistence, supertag-node, supertag-tag, supertag-automation,
+;; supertag-services-sync, supertag-link, supertag-mention, supertag-api, supertag-discovery,
+;; supertag-view-framework, supertag-concept, supertag-view-node, supertag-view-stream,
+;; supertag-ai, supertag-semantic, supertag-embark, supertag-migrate. Lazy Doctor and Git
+;; entrypoints: supertag-doctor, supertag-git. ServiceOrg arrives through Node; Menu is a
+;; separately loaded optional entrypoint. External superchat and Embark remain optional; Semantic
+;; requests require explicit configuration.
 ;;; Code:
 
 
@@ -36,49 +46,16 @@
 (require 'org)
 (require 'org-id)
 (require 'subr-x)
+(require 'supertag-vault)
+(defvar supertag-sync-directories-mode)
+(defvar supertag--store-origin)
+(defvar supertag--config-guard-allow)
 
 (defgroup supertag nil
   "Core configuration for Supertag."
   :group 'org)
 
-(defcustom supertag-data-directory
-  (expand-file-name "supertag" user-emacs-directory)
-  "Directory for storing Supertag data."
-  :type 'directory
-  :group 'supertag)
-
-(defvar supertag--base-data-directory
-  (file-name-as-directory (expand-file-name supertag-data-directory))
-  "Base data directory for vault storage.
-
-This stays constant even when `supertag-data-directory` is switched per vault.")
-
-(defcustom supertag-active-sync-directory nil
-  "Active vault root directory when `supertag-sync-directories` lists multiple roots.
-
-This is only used when `supertag-sync-directories-mode` is `vaults`.
-The value may include `~`; it will be normalized internally."
-  :type '(choice (const :tag "First directory" nil)
-                 directory)
-  :group 'supertag)
-
-(defcustom supertag-vault-auto-switch nil
-  "When non-nil, automatically switch the active vault for Org buffers.
-
-If enabled, entering an Org buffer will activate the matching vault (by file path),
-which includes loading that vault's DB/state and restarting auto-sync for it.
-
-Default is nil to avoid unexpected IO and model reload costs during navigation."
-  :type 'boolean
-  :group 'supertag)
-
-(defcustom supertag-vault-modeline-indicator t
-  "When non-nil, show the matched vault name in the mode line for Org buffers.
-
-This does not switch the active vault; it only displays which vault the current
-file belongs to (based on its path)."
-  :type 'boolean
-  :group 'supertag)
+(supertag-vault--prepare-configuration)
 
 (defcustom supertag-file-id-source 'org-roam
   "Policy for recognizing stable file node IDs.
@@ -94,313 +71,33 @@ Files without the selected persistent identity remain ordinary Org files."
                  (const :tag "disable file nodes" disabled))
   :group 'supertag)
 
-(defvar supertag-vault--current nil
-  "Currently active vault plist (normalized).")
-
-(defvar-local supertag-vault--buffer-indicator nil
-  "Cached mode line indicator for the current buffer.")
-
-(define-minor-mode supertag-vault-indicator-mode
-  "Show Supertag vault indicator in the mode line."
-  :init-value nil
-  :lighter (:eval (or supertag-vault--buffer-indicator "")))
+(supertag-vault--prepare-indicator)
 
 (defvar supertag--initialized nil
   "Non-nil after `supertag-init` completes.")
 
-(defvar supertag--config-guard-enabled nil
-  "When non-nil, prevent manual runtime changes to vault persistence variables.")
+(supertag-vault--prepare-guard-defaults)
 
-(defvar supertag--config-guard-allow nil
-  "When non-nil, allow guarded variable updates for vault switching.")
 
-(defvar supertag--config-guard--reverting nil
-  "Internal guard flag used while reverting blocked config changes.")
 
-(defvar supertag--config-guard-state nil
-  "Expected runtime values for vault persistence variables.")
 
-(defun supertag-config-guard--key (symbol)
-  "Return guard key for SYMBOL, or nil when untracked."
-  (pcase symbol
-    ('supertag-data-directory :data-directory)
-    ('supertag-db-file :db-file)
-    ('supertag-db-backup-directory :backup-directory)
-    ('supertag-sync-state-file :sync-state-file)
-    ('supertag-sync-directories :sync-directories)
-    ('supertag-active-sync-directory :active-sync-directory)
-    (_ nil)))
 
-(defun supertag-config-guard--capture ()
-  "Capture current vault persistence settings."
-  (setq supertag--config-guard-state
-        (list :data-directory supertag-data-directory
-              :db-file supertag-db-file
-              :backup-directory supertag-db-backup-directory
-              :sync-state-file (when (boundp 'supertag-sync-state-file)
-                                 supertag-sync-state-file)
-              :sync-directories (when (boundp 'supertag-sync-directories)
-                                  supertag-sync-directories)
-              :active-sync-directory (when (boundp 'supertag-active-sync-directory)
-                                       supertag-active-sync-directory))))
+;;;###autoload (autoload 'supertag--effective-sync-directories "supertag" "Return effective sync directories for the current session.\n\nIn vault mode, returns a single-element list containing the active vault root.\nOtherwise, returns `supertag-sync-directories` unchanged." nil)
+(supertag-vault--prepare-effective-wrappers)
 
-(defun supertag-config-guard--update (symbol newval)
-  "Update guard state for SYMBOL to NEWVAL."
-  (let ((key (supertag-config-guard--key symbol)))
-    (when key
-      (setq supertag--config-guard-state
-            (plist-put supertag--config-guard-state key newval)))))
 
-(defun supertag-config-guard--watch (symbol newval operation _where)
-  "Block manual runtime changes to guarded variables."
-  (when (and supertag--config-guard-enabled
-             supertag--initialized
-             (memq operation '(set let))
-             (not supertag--config-guard--reverting))
-    (let ((key (supertag-config-guard--key symbol)))
-      (when key
-        (if supertag--config-guard-allow
-            (supertag-config-guard--update symbol newval)
-          (let ((expected (plist-get supertag--config-guard-state key)))
-            (unless (equal newval expected)
-              (let ((supertag--config-guard--reverting t))
-                (set symbol expected))
-              (message "Supertag: manual config change blocked. Use M-x supertag-vault-activate to switch vaults."))))))))
 
-(defun supertag-config-guard-enable ()
-  "Enable runtime guard for vault persistence variables."
-  (supertag-config-guard--capture)
-  (unless supertag--config-guard-enabled
-    (setq supertag--config-guard-enabled t)
-    (when (fboundp 'add-variable-watcher)
-      (dolist (var '(supertag-data-directory
-                     supertag-db-file
-                     supertag-db-backup-directory
-                     supertag-sync-state-file
-                     supertag-sync-directories
-                     supertag-active-sync-directory))
-        (add-variable-watcher var #'supertag-config-guard--watch)))))
 
-(defmacro supertag-config-guard--with-allow (&rest body)
-  "Execute BODY while allowing guarded config changes."
-  (declare (indent 0))
-  `(let ((supertag--config-guard-allow t))
-     ,@body))
 
-(defun supertag-vault--normalize-path (path)
-  "Return a canonical directory PATH for matching and IO."
-  (when (and (stringp path) (not (string-empty-p path)))
-    (file-name-as-directory
-     (file-truename (expand-file-name path)))))
 
-(defun supertag-vault--sanitize-name (name)
-  "Return filesystem-friendly NAME."
-  (let ((s (or name "")))
-    (setq s (downcase s))
-    (setq s (replace-regexp-in-string "[^[:alnum:]_.-]+" "-" s))
-    (setq s (replace-regexp-in-string "^-+" "" s))
-    (setq s (replace-regexp-in-string "-+$" "" s))
-    (if (string-empty-p s) "vault" s)))
 
-(defun supertag-vault--id (vault)
-  "Return stable identifier string for VAULT."
-  (let* ((root (plist-get vault :root))
-         (name (plist-get vault :name))
-         (root-norm (and root (supertag-vault--normalize-path root)))
-         (base (supertag-vault--sanitize-name (or name "vault")))
-         (suffix (when root-norm (substring (secure-hash 'sha1 root-norm) 0 10))))
-    (if suffix (format "%s-%s" base suffix) base)))
 
-(defun supertag-vault--normalize-vault-root (root)
-  "Normalize ROOT directory into a vault plist."
-  (let* ((root-norm (supertag-vault--normalize-path root)))
-    (when root-norm
-      (let* ((name (file-name-nondirectory (directory-file-name root-norm)))
-             (vault (list :name (or name "vault") :root root-norm))
-             (id (supertag-vault--id vault))
-             (base (or supertag--base-data-directory
-                       (file-name-as-directory (expand-file-name supertag-data-directory))))
-             (data-dir (file-name-as-directory
-                        (expand-file-name (format "vaults/%s" id) base))))
-        (list :id id :name (plist-get vault :name) :root root-norm :data-directory data-dir)))))
 
-(defun supertag-vault--vault-mode-p ()
-  "Return non-nil when sync directories are treated as separate vaults."
-  (and (boundp 'supertag-sync-directories-mode)
-       (eq supertag-sync-directories-mode 'vaults)))
 
-(defun supertag-vault--normalized-vaults ()
-  "Return list of normalized vaults."
-  (when (and (supertag-vault--vault-mode-p) (listp supertag-sync-directories))
-    (delq nil (mapcar #'supertag-vault--normalize-vault-root supertag-sync-directories))))
 
-(defun supertag-vault--find-by-root (root)
-  "Find normalized vault by ROOT directory."
-  (let ((target (supertag-vault--normalize-path root)))
-    (when target
-      (cl-find-if (lambda (v) (string= (plist-get v :root) target))
-                  (supertag-vault--normalized-vaults)))))
 
-(defun supertag-vault--find-by-file (file)
-  "Find the best matching vault for FILE (longest root prefix)."
-  (when (and (stringp file) (not (string-empty-p file)))
-    (let* ((file-norm (condition-case nil
-                          (file-truename (expand-file-name file))
-                        (error (expand-file-name file))))
-           (best nil)
-           (best-len -1))
-      (dolist (vault (supertag-vault--normalized-vaults))
-        (let* ((root (plist-get vault :root))
-               (root-len (length root)))
-          (when (and (string-prefix-p root file-norm)
-                     (> root-len best-len))
-            (setq best vault)
-            (setq best-len root-len))))
-      best)))
 
-(defun supertag-vault--apply (vault)
-  "Apply VAULT persistence and sync configuration without loading data."
-  (supertag-config-guard--with-allow
-    (let* ((data-dir (file-name-as-directory (plist-get vault :data-directory))))
-      (setq supertag-data-directory data-dir)
-      (setq supertag-db-file (expand-file-name "supertag-db.el" data-dir))
-      (setq supertag-db-backup-directory (expand-file-name "backups" data-dir))
-      (setq supertag-sync-state-file (expand-file-name "sync-state.el" data-dir))
-      ;; Backup date is per-vault; reset to allow correct daily backup decisions.
-      (when (boundp 'supertag-db--last-backup-date)
-        (setq supertag-db--last-backup-date nil))))
-  (supertag-config-guard--capture))
 
-(defun supertag-vault--current-id ()
-  "Return current vault ID or nil."
-  (plist-get supertag-vault--current :id))
-
-(defun supertag-vault--effective-root ()
-  "Return the active vault root directory, or nil when not in vault mode."
-  (when (supertag-vault--vault-mode-p)
-    (let ((vaults (supertag-vault--normalized-vaults)))
-      (cond
-       ((and supertag-active-sync-directory
-             (supertag-vault--find-by-root supertag-active-sync-directory))
-        (plist-get (supertag-vault--find-by-root supertag-active-sync-directory) :root))
-       ((and (consp vaults) (plist-get (car vaults) :root))
-        (plist-get (car vaults) :root))
-       (t nil)))))
-
-;;;###autoload
-(defun supertag--effective-sync-directories ()
-  "Return effective sync directories for the current session.
-
-In vault mode, returns a single-element list containing the active vault root.
-Otherwise, returns `supertag-sync-directories` unchanged."
-  (if (supertag-vault--vault-mode-p)
-      (let ((root (supertag-vault--effective-root)))
-        (when root (list root)))
-    supertag-sync-directories))
-
-(defun supertag-vault--persist-current ()
-  "Persist current vault state/store best-effort."
-  (ignore-errors
-    (when (fboundp 'supertag-sync-save-state)
-      (supertag-sync-save-state)))
-  (ignore-errors
-    (when (fboundp 'supertag-save-store)
-      (supertag-save-store))))
-
-(defun supertag-vault--buffer-vault-name (&optional file)
-  "Return vault name that FILE belongs to, or nil."
-  (let* ((file (or file (buffer-file-name)))
-         (vault (and file (supertag-vault--find-by-file file))))
-    (plist-get vault :name)))
-
-(defun supertag-vault--update-buffer-indicator ()
-  "Update `supertag-vault--buffer-indicator` for the current buffer."
-  (setq supertag-vault--buffer-indicator nil)
-  (when (and supertag-vault-modeline-indicator
-             (listp supertag-sync-directories)
-             (> (length supertag-sync-directories) 1))
-    (let ((name (supertag-vault--buffer-vault-name)))
-      (setq supertag-vault--buffer-indicator
-            (if name
-                (format " ST[%s]" name)
-              " ST[-]"))))
-  (force-mode-line-update))
-
-;;;###autoload
-(defun supertag-vault-activate (vault)
-  "Activate VAULT (normalized plist) and load its DB/state.
-
-This stops the current auto-sync worker (if any), switches persistence paths,
-loads store/sync-state for the selected vault, and restarts auto-sync for the
-active vault when `supertag-sync-auto-start` is non-nil."
-  (interactive
-   (let* ((vaults (supertag-vault--normalized-vaults))
-          (choices (mapcar (lambda (v)
-                             (format "%s  (%s)"
-                                     (plist-get v :name)
-                                     (abbreviate-file-name (plist-get v :root))))
-                           vaults))
-          (choice (completing-read "Supertag vault: " choices nil t)))
-     (list (nth (cl-position choice choices :test #'string=) vaults))))
-  (unless vault
-    (user-error "No vault selected"))
-  (unless (supertag-vault--vault-mode-p)
-    (user-error "Vault switching requires `supertag-sync-directories-mode` set to 'vaults"))
-  (unless (equal (plist-get vault :id) (supertag-vault--current-id))
-    (supertag-vault--persist-current)
-    (when (fboundp 'supertag-sync--cancel-auto-start)
-      (ignore-errors (supertag-sync--cancel-auto-start)))
-    (when (fboundp 'supertag-sync-stop-auto-sync)
-      (ignore-errors (supertag-sync-stop-auto-sync)))
-    (supertag-config-guard--with-allow
-      (setq supertag-vault--current vault)
-      (setq supertag-active-sync-directory (plist-get vault :root)))
-    (supertag-vault--apply vault)
-    (when (fboundp 'supertag-persistence-ensure-data-directory)
-      (supertag-persistence-ensure-data-directory))
-    (when (fboundp 'supertag-sync-load-state)
-      (supertag-sync-load-state))
-    (when (fboundp 'supertag-load-store)
-      (supertag-load-store))
-    (when (and (boundp 'supertag-sync-auto-start)
-               supertag-sync-auto-start
-               (fboundp 'supertag-sync-start-auto-sync))
-      (ignore-errors (supertag-sync-start-auto-sync)))
-    (when (fboundp 'supertag-view-node-refresh)
-      (ignore-errors (supertag-view-node-refresh)))
-    (message "Supertag: active vault => %s (%s)"
-             (plist-get vault :name)
-             (abbreviate-file-name (plist-get vault :root)))))
-
-;;;###autoload
-(defun supertag-vault-auto-activate ()
-  "Update vault indicator and optionally auto-switch active vault for Org buffers."
-  (when (and (listp supertag-sync-directories)
-             (> (length supertag-sync-directories) 1))
-    (when supertag-vault-modeline-indicator
-      (supertag-vault-indicator-mode 1))
-    (supertag-vault--update-buffer-indicator)
-    (when supertag-vault-auto-switch
-      (let ((file (buffer-file-name)))
-        (when file
-          (let ((vault (supertag-vault--find-by-file file)))
-            (when vault
-              (supertag-vault-activate vault))))))))
-
-(defun supertag-vault--select-startup-default ()
-  "Select and apply a default vault at startup (without loading)."
-  (setq supertag--base-data-directory
-        (or supertag--base-data-directory
-            (file-name-as-directory (expand-file-name supertag-data-directory))))
-  (when (and (supertag-vault--vault-mode-p)
-             (listp supertag-sync-directories)
-             (> (length supertag-sync-directories) 1))
-    (let* ((vault (or (supertag-vault--find-by-root supertag-active-sync-directory)
-                      (car (supertag-vault--normalized-vaults)))))
-      (when vault
-        (setq supertag-vault--current vault)
-        (setq supertag-active-sync-directory (plist-get vault :root))
-        (supertag-vault--apply vault)))))
 
 (defcustom supertag-project-root
   (file-name-directory (file-name-directory (or load-file-name buffer-file-name)))
@@ -411,114 +108,47 @@ active vault when `supertag-sync-auto-start` is non-nil."
 ;; --- Core Components ---
 (require 'ht) ; Ensure ht is loaded before other modules that might depend on it
 (require 'supertag-core-store)
-(require 'supertag-core-scan)
+(require 'supertag-query)
 (require 'supertag-core-persistence)
-(require 'supertag-core-schema)
-(require 'supertag-core-transform)
-(require 'supertag-core-notify)
-;; supertag-conflicts.el is a thin, dependency-light module (query/resolve
-;; commands over the `:sync-conflicts' collection supertag-merge.el writes
-;; during a git merge); it must be loaded before the first
-;; `supertag-load-store' call below so its
-;; `supertag-persistence-after-load-hook' subscriber is already registered
-;; when that first load runs (see its Commentary, "Load-time visibility").
-(require 'supertag-conflicts)
 
 ;; --- Entity Operations (ops) ---
-(require 'supertag-ops-node)
-(require 'supertag-ops-tag)
-(require 'supertag-ops-field)
-(require 'supertag-ops-link-definition)
-(require 'supertag-ops-relation)
-(require 'supertag-ops-schema)
-(require 'supertag-ops-batch)
-(require 'supertag-ops-embed)
+(require 'supertag-node)
+(require 'supertag-tag)
 
 ;; --- Automation System ---
-(require 'supertag-automation-sync)
 (require 'supertag-automation)
 
 ;; --- Service Functions (services) ---
-(require 'supertag-services-query)
-(require 'supertag-services-link)
-(require 'supertag-services-reference)
-(require 'supertag-services-mention)
 (require 'supertag-services-sync)
-(require 'supertag-services-ui)
-(require 'supertag-services-capture)
-(require 'supertag-services-embed)
-(require 'supertag-services-scheduler)
+(require 'supertag-link)
+(require 'supertag-mention)
 
 ;; --- Agent-facing plain-data API (callee surface for bridges) ---
 (require 'supertag-api)
 
 
 ;; --- User Interface (ui) ---
-(require 'supertag-ui-commands)
-(require 'supertag-ui-embed)
-(require 'supertag-ui-query-block)
-(require 'supertag-ui-search)
-(require 'supertag-ui-completion)
-(require 'supertag-ui-link)
-(require 'supertag-ui-reference)
-(require 'supertag-ui-mention)
+(require 'supertag-discovery)
 
 ;; --- View ---
 (require 'supertag-view-framework)
 ;; (require 'supertag-view-examples-simple)
-(require 'supertag-view-progress-dashboard)
-(require 'supertag-view-effort-distribution)
-(require 'supertag-view-priority-matrix)
-(require 'supertag-view-schema)
-(require 'supertag-view-helper)
 (require 'supertag-concept)
-(require 'supertag-view-svg-tag)
-(require 'supertag-view-link)
-(require 'supertag-view-reference)
-(require 'supertag-view-mention)
 (require 'supertag-view-node)
 (require 'supertag-view-stream)
-(require 'supertag-view-table)
-(require 'supertag-view-kanban)
-(require 'supertag-ui-act)
-(require 'supertag-ui-embark)
+(require 'supertag-ai)
+(require 'supertag-semantic)
+(require 'supertag-embark)
 
 ;; --- RAG ---
 ;; (archived: supertag-rag, supertag-ui-chat — moved to archive/)
 
-;; --- Migration ---
-;; Keep migration commands available to source checkouts without loading the
-;; migration implementation until one of them is invoked.
-(autoload 'supertag-migration-preview-reciprocal-links "supertag-migration"
-  "Preview reciprocal-link migration candidates." t)
-(autoload 'supertag-migration-execute-reciprocal-links "supertag-migration"
-  "Execute a reviewed reciprocal-link migration." t)
-(autoload 'supertag-migrate-reciprocal-links "supertag-migration"
-  "Review and migrate reciprocal links interactively." t)
-(autoload 'supertag-migrate-database-to-new-arch "supertag-migration"
-  "Migrate a legacy database to the current architecture." t)
-(autoload 'supertag-migration-audit-global-fields "supertag-migration"
-  "Audit readiness for global-field migration." t)
-(autoload 'supertag-migration-audit-stable-tags "supertag-migration"
-  "Audit readiness for stable-tag migration." t)
-(autoload 'supertag-migration-run-stable-tags "supertag-migration"
-  "Audit or run stable-tag migration." t)
-(autoload 'supertag-migration-rewrite-tag-token "supertag-migration"
-  "Audit or rewrite a tag token in Org files." t)
-(autoload 'supertag-migration-run-global-fields "supertag-migration"
-  "Audit or run global-field migration." t)
-(autoload 'supertag-analyze-org-properties "supertag-migration"
-  "Analyze Org properties for field migration." t)
-(autoload 'supertag-convert-properties-to-field "supertag-migration"
-  "Convert one Org property to a tag field." t)
-(autoload 'supertag-batch-convert-properties-to-fields "supertag-migration"
-  "Convert selected Org properties to tag fields." t)
-(autoload 'supertag-migration-add-ids-to-org-headings "supertag-migration"
-  "Add missing IDs to Org headings in a directory." t)
+ ;; --- Version gated migration ---
+(require 'supertag-migrate)
 
 ;; --- Diagnostics (optional) ---
 (autoload 'supertag-doctor "supertag-doctor"
-  "Run Supertag health checks and guided repairs." t)
+  "Run Supertag health checks and guided repairs." nil)
 
 ;; --- Git sync (optional) ---
 ;; Keep the documented M-x commands discoverable even when Supertag is
@@ -532,24 +162,6 @@ active vault when `supertag-sync-auto-start` is non-nil."
 (autoload 'supertag-git-sync-now "supertag-git"
   "Synchronize the current Supertag Git vault immediately." t)
 
-;; --- Graph UI (optional) ---
-;; Requires `websocket' and `simple-httpd' packages.
-;; Not loaded by default; use M-x supertag-graph-ui-mode to activate.
-(autoload 'supertag-graph-ui-mode "supertag-graph-ui"
-  "Enable supertag graph visualization." t)
-(autoload 'supertag-graph-ui-open "supertag-graph-ui"
-  "Open the graph UI in the default browser." t)
-(autoload 'supertag-graph-ui-follow-mode "supertag-graph-ui"
-  "Sync the graph UI focus to the current node in Emacs." t)
-
-;; --- Board UI (optional) ---
-;; Heptabase-style whiteboard. Requires `websocket' package.
-;; Not loaded by default; use M-x supertag-board-mode to activate.
-(autoload 'supertag-board-mode "supertag-board"
-  "Enable supertag whiteboard visualization." t)
-(autoload 'supertag-board-follow-mode "supertag-board"
-  "Sync the board UI focus to the current node in Emacs." t)
-
 ;; --- Initialization ---
 (defun supertag-init ()
  "Initialize the Supertag system.
@@ -561,16 +173,16 @@ This function loads all necessary components and sets up the environment."
 
     ;; Step 1: Select default vault (if configured) before any IO.
     (supertag-vault--select-startup-default)
-    
+
     ;; Step 1: Ensure data directories exist
     (supertag-persistence-ensure-data-directory)
-    
+
     ;; Step 2: Check critical configuration before loading data
     (supertag--check-critical-config)
-    
+
     ;; Step 3: Load sync state
     (supertag-sync-load-state)
-    
+
     ;; Step 4: Load data from persistent storage
     (supertag-load-store)
     (when (and (boundp 'supertag--store-origin)
@@ -581,31 +193,23 @@ This function loads all necessary components and sets up the environment."
                (mapcar #'abbreviate-file-name
                        (or (plist-get supertag--store-origin :load-candidates) '())))
       (supertag-load-store supertag-db-file))
-    
+
     ;; Step 5: Validate loaded data and sync directories
     (supertag--validate-initialization)
-    
-    ;; Step 5.5: Apply user schema registrations (optional)
-    (when (fboundp 'supertag-schema-apply-registrations)
-      (supertag-schema-apply-registrations))
 
     ;; Step 6: Store load already cold-rebuilt every derived index.
 
     ;; Step 7: Set up auto-save and daily backup timers
     (supertag-setup-all-timers)
-    
+
     ;; Step 8: Schedule safe auto-start for sync (optional, guarded)
     (when (and (boundp 'supertag-sync-auto-start)
                supertag-sync-auto-start)
       (supertag-sync-schedule-auto-start))
-    
-    ;; Step 9: Initialize embed services
-    (when (fboundp 'supertag-services-embed-init)
-      (supertag-services-embed-init))
-    
+
     ;; Step 10: Start scheduler
     (supertag-scheduler-start)
-    
+
     ;; Step 11: Enable completion globally
     (global-supertag-ui-completion-mode 1)
 
@@ -666,13 +270,13 @@ Check `supertag-sync-directories`."
          (db-file supertag-db-file)
          (db-exists (file-exists-p db-file))
          (db-size (when db-exists (file-attribute-size (file-attributes db-file)))))
-    
+
     ;; Report database status
     (message "Database status: %s, Size: %s bytes, Nodes: %d"
              (if db-exists "exists" "NEW")
              (if db-size db-size "N/A")
              node-count)
-    
+
     ;; Warn if database is empty but should have data
     ;; Only warn if store itself is invalid or truly empty (no collections at all)
     (when (and db-exists
@@ -686,15 +290,15 @@ This may indicate:\n\
 1. Database corruption or format issues\n\
 2. All nodes were deleted or marked as orphaned\n\
 3. Sync directories configuration changed\n\n\
-Consider running: M-x supertag-reindex-org" db-file)
+Consider running: M-x supertag-sync-full-rescan" db-file)
                        :warning))
-    
+
     ;; Suggest initial sync if database is truly empty
     (when (and (= node-count 0)
                supertag-sync-directories
                (cl-some #'file-directory-p supertag-sync-directories))
-      (message "Database is empty. Consider running: M-x supertag-reindex-org"))))
- 
+      (message "Database is empty. Consider running: M-x supertag-sync-full-rescan"))))
+
 ;; --- Hooks for persistence ---
 (add-hook 'kill-emacs-hook #'supertag-save-store)
 (add-hook 'kill-emacs-hook #'supertag-cleanup-all-timers) ; Clean up all timers on exit
@@ -722,11 +326,6 @@ Consider running: M-x supertag-reindex-org" db-file)
 (add-hook 'org-mode-hook #'supertag-sync-setup-realtime-hooks)
 
 
-;; Declarative ontology modules are optional and remain inert until applied.
-(require 'supertag-ontology nil t)
-
 (provide 'supertag)
 
 ;;; supertag.el ends here
-
- 

@@ -4,36 +4,48 @@
 ;; This file provides functions for persisting the Supertag
 ;; in-memory store to a file and loading it back.
 
+
+;; Commands: none; Lisp entrypoints: supertag-load-store, supertag-save-store,
+;; supertag-persistence-check-legacy-data-directory, supertag-resolve-data-directories,
+;; supertag-restore, supertag-accept-fresh-store; timer lifecycle: supertag-setup-all-timers,
+;; supertag-cleanup-all-timers.
+;; Dependencies: cl-lib, ht, json, parse-time, supertag-core-store. Lazy migration command:
+;; supertag-migrate-run from supertag-migrate.
 ;;; Code:
 
 (require 'cl-lib)
 (require 'ht)
 (require 'json) ; For presence-file encode/decode
 (require 'parse-time) ; For parse-iso8601-time-string, used by presence
-(require 'supertag-core-notify) ; For supertag-subscribe and supertag-emit-event
-(require 'supertag-core-store) ; For supertag--store
-(require 'supertag-core-schema) ; Owns the shared strict time validator
-(require 'supertag-core-index) ; For derived index rebuild after load
-(require 'supertag-core-transform) ; For supertag-with-transaction (real per-entity rollback)
+(require 'supertag-core-store) ; For Store, shared state and event notifications
 
 ;;; --- Persistence Configuration ---
-;; Note: supertag-data-directory is defined in supertag.el
+;; Note: supertag-data-directory is customized in supertag-vault.el
 ;; This is a fallback definition in case this module is loaded independently
 (defvar supertag-data-directory
   (expand-file-name "supertag/" user-emacs-directory)
   "Directory for storing Supertag data.
-This is a fallback definition. The primary definition is in supertag.el.")
+This is a fallback definition.
+The primary customization is in supertag-vault.el.")
 
 (defvar supertag--config-guard-allow)
 
-(defconst supertag-data-version "6.0.0"
+(defconst supertag-data-version "7.0.0"
   "Current data format version.
 Used for data format compatibility checks and automatic migration.
 
-Bumped 5.0.0 -> 6.0.0 (P1-8, see archive/legacy-v2/2026-08-25-phrase/phases/phase-git-sync-20260713/PLAN.md
+7.0.0 preserves retired field data as pending migration records.
+The verified migration chain stamps this version only after DB steps succeed.
+
+Bumped 6.0.0 -> 6.1.0 to retire the duplicate `:node-tag' relation
+projection.  Node `:tags' remains the authoritative membership projection.
+
+Bumped 5.0.0 -> 6.0.0 (P1-8, see
+archive/legacy-v2/2026-08-25-phrase/phases/phase-git-sync-20260713/PLAN.md
 \"S2 规范化序列化\", 修订 2026-07-13): the S2 canonical, line-per-entity
 serialization is NOT actually readable by pre-6.0 (<= 5.9.x) builds the way
-the original S2 writeup assumed. Those builds' `supertag--persistence--try-read-store'
+the original S2 writeup assumed. Those builds'
+`supertag--persistence--try-read-store'
 does exactly ONE `read' of the file and returns whatever single form that
 call happens to consume; against the canonical format's line-per-entity
 layout, that first `read' only ever sees the root scalar line (e.g.
@@ -42,7 +54,7 @@ layout, that first `read' only ever sees the root scalar line (e.g.
 valid, merely-empty store, not a parse error. Bumping the data version at
 least makes `supertag--maybe-auto-migrate' fire (with its own pre-migration
 snapshot) the first time a pre-6.0 database is loaded by THIS (>= 6.0)
-build, and keeps `supertag--get-data-version'/`supertag--run-migrations'
+build, and keeps `supertag--get-data-version'/`supertag-migrate-run'
 honest about the fact that the format actually changed here. See
 `supertag--persistence--write-canonical-store' for the belt-and-suspenders
 `supertag-db-preformat6-*' snapshot, which covers the case this version
@@ -51,6 +63,19 @@ any version equal to `supertag-data-version') by a subsequent save, so
 `supertag--maybe-auto-migrate' sees no version mismatch and never runs,
 yet the on-disk file might still be the pre-canonical (legacy single-`prin1')
 format if it was never resaved since upgrading this package.")
+
+;; Time validation remains with persistence after schema retirement.
+(defun supertag--validate-optional-time (time-value)
+  "Return non-nil when TIME-VALUE is nil or a valid Emacs time value."
+  (or (null time-value)
+      (supertag--validate-time time-value)))
+
+(defun supertag--validate-time (time-value)
+  "验证时间值是否为有效的 Emacs 时间格式。
+TIME-VALUE 应该是四元素列表 (high low micro pico)。"
+  (and (listp time-value)
+       (= (length time-value) 4)
+       (cl-every #'integerp time-value)))
 
 (defun supertag-data-file (filename)
   "Get full path for data file.
@@ -207,7 +232,7 @@ moves, or deletes data.  Return t when initialization may continue."
        (concat
         "Supertag paused startup because %s.\n\n%s\n\n"
         "Data safety: both directories and all database files are unchanged; all data remain safe.\n"
-        "Next step: run M-x supertag-resolve-data-directories to choose which directory to keep active; the other directory will only be renamed, never deleted")
+        "Next step: evaluate (supertag-resolve-data-directories) to choose which directory to keep active; the other directory will only be renamed, never deleted")
        (if (eq issue :both)
            "the retired and current data directories both exist"
          "the retired data directory exists but the current directory does not")
@@ -285,7 +310,6 @@ no data is deleted."
         (special-mode)))
     (display-buffer buffer)))
 
-;;;###autoload
 (defun supertag-resolve-data-directories ()
   "Resolve retired/current default data directories without deleting data.
 Show a comparison, let the user keep the current or legacy directory, and
@@ -293,7 +317,6 @@ require confirmation of the exact rename operations.  The unselected root is
 renamed to a dated `-retired-` archive; name collisions gain a numeric suffix.
 When the legacy root is selected it is moved into the current default path.
 Afterward, offer to load the selected database immediately."
-  (interactive)
   (let* ((state (supertag-persistence-data-directory-state))
          (issue (plist-get state :issue))
          (legacy (directory-file-name (plist-get state :legacy)))
@@ -304,8 +327,7 @@ Afterward, offer to load the selected database immediately."
        (if (plist-get state :applicable)
            "the retired directory is absent"
          "supertag-data-directory is explicitly set to a non-default path")))
-    (when (called-interactively-p 'interactive)
-      (supertag-persistence--display-data-directory-recovery state))
+    (supertag-persistence--display-data-directory-recovery state)
     (let* ((keep-current "Keep current data directory")
            (keep-legacy "Keep legacy data directory")
            (cancel "Cancel")
@@ -359,7 +381,7 @@ Afterward, offer to load the selected database immediately."
                    "Supertag data directories resolved; no data was deleted. Selected database loaded from %s"
                    (abbreviate-file-name database))
                 (message
-                 "Supertag data directories resolved; no data was deleted.%s Restart Emacs, or run M-x supertag-load-store to load %s"
+                 "Supertag data directories resolved; no data was deleted.%s Restart Emacs to load %s"
                  (if load-error (format " Direct load failed: %s." load-error) "")
                  (abbreviate-file-name database)))
               (list :status :resolved
@@ -438,13 +460,13 @@ native behavior is used as a safe fallback."
   "When non-nil, automatically migrate an out-of-date database after load.
 After `supertag-load-store' successfully loads `supertag-db-file', if the
 loaded store's :version does not match `supertag-data-version', this session
-runs `supertag-db-migrate-and-normalize' automatically instead of requiring
+runs `supertag-migrate-run' automatically instead of requiring
 the user to invoke it by hand (see `supertag--maybe-auto-migrate').
 
 A timestamped pre-migration snapshot of the database file is written to
 `supertag-db-backup-directory' before migrating. When nil, out-of-date
 databases are left as-is after loading; migrate manually with
-\\[supertag-db-migrate-and-normalize]."
+\\[supertag-migrate-run]."
   :type 'boolean
   :group 'supertag)
 
@@ -494,9 +516,8 @@ and `supertag--presence-foreign-active-p' returns nil for it."
 non-empty, actually-dirty store to disk (i.e. after the atomic write, the
 dirty flag has been cleared, and the daily-backup check has run -- NOT on
 every timer tick, and NOT when a persistence guard skipped or refused the
-save). This is the S4 git-sync-mode commit trigger's hook point (see
-`supertag-git.el', \"supertag-git-sync-mode\" -> commit debounce): it is
-the one clean seam that fires exactly when `supertag-db-file' just changed
+save). The one clean seam that fires exactly when `supertag-db-file' just
+changed
 on disk, regardless of whether the save was triggered by the auto-save
 timer, an explicit \\[supertag-save-store], or `kill-emacs-hook'. Functions
 on this hook take no arguments and must not signal (an error here would
@@ -509,11 +530,8 @@ acquires the lock/presence claim -- NOT the fresh-empty-store branch, and
 NOT a failed/corrupt-file load). Symmetric to
 `supertag-persistence-after-save-hook' and meant for the same purpose:
 letting an optional module react to a persistence lifecycle event without
-this file requiring that module back (avoiding load-order coupling). Its
-first user is `supertag-conflicts.el', which hooks in here (from its own
-file, at its own load time -- this file never requires or knows about
-that one) to message the user once when the just-loaded store carries
-recorded `:sync-conflicts' (e.g. left behind by a git merge). Functions on
+this file requiring that module back (avoiding load-order coupling).
+Functions on
 this hook take no arguments and must not signal.")
 
 (defvar supertag--db-lock-conflict nil
@@ -582,7 +600,7 @@ locking problem can never break DB loading."
       (if (stringp owner)
           (progn
             (setq supertag--db-lock-conflict owner)
-            (message "Supertag: database %s is locked by another Emacs instance (%s); this session will NOT save until the lock is released. Run M-x supertag-db-retry-lock once the other instance has exited."
+            (message "Supertag: database %s is locked by another Emacs instance (%s); this session will NOT save until the lock is released. Restart Emacs once the other instance has exited, or evaluate (supertag-db-retry-lock)."
                      (abbreviate-file-name supertag-db-file) owner))
         (setq supertag--db-lock-conflict nil)
         (condition-case err
@@ -617,7 +635,6 @@ Useful once the other Emacs instance holding the lock on `supertag-db-file'
 has exited: re-checks `file-locked-p' and, if the lock is now free (or
 already held by this instance), calls `supertag--db-acquire-lock' to take
 it over so saves can resume."
-  (interactive)
   (supertag--db-acquire-lock)
   (if supertag--db-lock-conflict
       (message "Supertag: database %s is still locked by another Emacs instance (%s)."
@@ -843,9 +860,7 @@ must not shrink the recovery window."
         (message "Cleaned up %d old backup files" removed-count))))))
 
 (defun supertag-backup-database-now ()
-  "Force create a backup immediately and clean up old backups.
-This function can be called interactively by users."
-  (interactive)
+  "Force create a backup immediately and clean up old backups."
   (supertag-create-daily-backup)
   (supertag-cleanup-old-backups))
 
@@ -876,18 +891,6 @@ This function can be called interactively by users."
     (if (hash-table-p nodes-table)
         (hash-table-count nodes-table)
       0)))
-
-(defun supertag--count-field-values ()
-  "Return the total number of field values stored."
-  (let ((root (supertag-store-get-collection :field-values))
-        (count 0))
-    (when (hash-table-p root)
-      (maphash
-       (lambda (_node-id node-table)
-         (when (hash-table-p node-table)
-           (cl-incf count (hash-table-count node-table))))
-       root))
-    count))
 
 (defun supertag--persistence--normalize-path (path)
   "Normalize PATH for comparison, or nil when PATH is invalid."
@@ -920,7 +923,8 @@ This function can be called interactively by users."
 (defun supertag--persistence--newest-db-snapshot (&optional dir)
   "Return newest DB snapshot file under DIR (or `supertag-data-directory`).
 
-This is a best-effort fallback for legacy filenames like `supertag-db-YYYY-MM-DD.el`
+This is a best-effort fallback for legacy filenames like
+`supertag-db-YYYY-MM-DD.el`
 or files with a `.db` extension that still contain an Emacs-lisp printed store."
   (let* ((dir (or dir (supertag--persistence--data-dir))))
     (when (and dir (file-directory-p dir))
@@ -994,8 +998,8 @@ or files with a `.db` extension that still contain an Emacs-lisp printed store."
 ;; - PRE-CHECK FINDING (hash tables nested in entity data): the store is NOT
 ;;   uniformly plists-all-the-way-down. `supertag-store-get-collection
 ;;   :fields' (legacy three-level node -> tag -> field nesting, see
-;;   `supertag--normalize-fields-collection' above) and `:field-values'
-;;   (two-level node -> field nesting, see `supertag-store-put-field-value'
+;;   the legacy migration reader) and `:field-values'
+;;   (two-level node -> field nesting, see the legacy migration reader
 ;;   in supertag-core-store.el) are populated by direct hash-table puts that
 ;;   bypass `supertag-store-put-entity'/`supertag--normalize-entity', so the
 ;;   ENTITY VALUE for those two collections is itself a hash table, not a
@@ -1013,7 +1017,7 @@ or files with a `.db` extension that still contain an Emacs-lisp printed store."
 ;;   single `field-defs' list once and reusing the SAME object across all 50
 ;;   synthetic tags' :fields slot (the fixture docstring says outright it
 ;;   "bypass[es] the ops/commit layer entirely"). Real write paths
-;;   (e.g. `supertag-tag-create' in supertag-ops-tag.el) go through
+;;   (e.g. `supertag-tag-create' in supertag-tag.el) go through
 ;;   `supertag--deep-copy-plist' specifically to avoid this kind of aliasing.
 ;;   Regardless of which case applies, per-entity independent `prin1' (no
 ;;   `print-circle' spanning multiple lines) makes cross-entity sharing a
@@ -1033,7 +1037,8 @@ or files with a `.db` extension that still contain an Emacs-lisp printed store."
 The second line embeds the CURRENT `supertag-data-version' (computed at
 call time, not baked into a `defconst', so it always reflects whatever
 this build's version actually is) alongside the canonical format-generation
-number -- see P1-8 / archive/legacy-v2/2026-08-25-phrase/phases/phase-git-sync-20260713/PLAN.md \"S2
+number -- see P1-8 /
+archive/legacy-v2/2026-08-25-phrase/phases/phase-git-sync-20260713/PLAN.md \"S2
 规范化序列化\", 修订 2026-07-13. This is a `;'-comment, skipped by
 `supertag--persistence--skip-leading-comments-and-whitespace' before any
 `read', so it carries no parsing weight -- it exists purely so a human (or
@@ -1130,7 +1135,8 @@ detects AND collects in one pass — see that function's docstring for why."
                   always (keywordp (car cell))))))
 
 (defun supertag--persistence--plist-pairs-or-nil (value)
-  "Return VALUE's `(SORT-KEY KEY . RAW-VALUE)' triples if it is a plist, else nil.
+  "Return VALUE's `(SORT-KEY KEY . RAW-VALUE)' triples if it is a plist,
+else nil.
 A fused, single-pass replacement for calling
 `supertag--persistence--plist-p' (itself a full traversal) and THEN
 separately collecting key/value pairs (a second full traversal): this
@@ -1261,11 +1267,19 @@ does not emit lines for an empty hash table."
      (t nil))))
 
 (defun supertag--persistence--mismatched-durable-collections (left right)
-  "Return durable collections whose contents differ between LEFT and RIGHT."
-  (cl-loop for collection in supertag--store-collections
-           unless (supertag--persistence--collection-roundtrip-equal-p
-                   left right collection)
-           collect collection))
+  "Return durable collections or pending migration roots lost on roundtrip."
+  (append
+   (cl-loop for collection in supertag--store-collections
+            unless (supertag--persistence--collection-roundtrip-equal-p
+                    left right collection)
+            collect collection)
+   ;; These are migration records, not initialized entity collections.
+   (cl-loop for key in '(:legacy-fields :legacy-extends :version)
+            unless (equal (supertag--persistence--canonicalize-value
+                           (gethash key left supertag--not-found))
+                          (supertag--persistence--canonicalize-value
+                           (gethash key right supertag--not-found)))
+            collect key)))
 
 (defun supertag--persistence--thaw-value (value)
   "Inverse of `supertag--persistence--canonicalize-value'.
@@ -1420,7 +1434,8 @@ scalar keys (e.g. :version) merged in directly."
   "Supertag: file contains unresolved git merge conflict markers")
 
 (defun supertag--persistence--buffer-has-conflict-markers-p ()
-  "Return non-nil if the current buffer contains unresolved git conflict markers.
+  "Return non-nil if the current buffer contains unresolved git conflict
+markers.
 Looks for a line beginning with any of the three literal git conflict
 marker prefixes (`<<<<<<<', `=======', `>>>>>>>') -- the shape git itself
 leaves behind in a file when a merge (or the S2-format degradation path:
@@ -1512,6 +1527,11 @@ Signals an error if the file cannot be read or parsed."
                 (puthash canonical (gethash alias store) store)
                 (remhash alias store)
                 (throw 'moved t))))))))
+  ;; Retired :queries (MODEL_CN:302, PLAN_CN decision 14/4b): discard
+  ;; this literal root on load so the next save omits it.  The writer
+  ;; still serializes the in-memory Store; other undeclared roots stay.
+  (when (hash-table-p store)
+    (remhash :queries store))
   store)
 
 (defun supertag--record-store-origin (status &optional context)
@@ -1530,7 +1550,6 @@ Signals an error if the file cannot be read or parsed."
                :active-sync-directory (when (boundp 'supertag-active-sync-directory)
                                         supertag-active-sync-directory)
                :nodes-count (supertag--count-nodes)
-               :field-values-count (supertag--count-field-values)
                :captured-at (current-time))
          context)))
 
@@ -1544,9 +1563,6 @@ Signals an error if the file cannot be read or parsed."
          (origin-status (plist-get origin :status))
          (origin-db (plist-get origin :db-file))
          (origin-state (plist-get origin :sync-state-file))
-         (origin-field-count (plist-get origin :field-values-count))
-         (current-field-count (supertag--count-field-values))
-         (current-nodes (supertag--count-nodes))
          (reasons '()))
     (unless origin
       (push "store origin missing (store not loaded)" reasons))
@@ -1567,11 +1583,6 @@ Signals an error if the file cannot be read or parsed."
         (push "sync-state not loaded for current vault" reasons))))
     (when (memq origin-status '(:failed :empty-file :missing-with-backups))
       (push (format "last load status %s" origin-status) reasons))
-    (when (and (numberp origin-field-count)
-               (> origin-field-count 0)
-               (= current-field-count 0)
-               (> current-nodes 0))
-      (push "field-values dropped to 0 (possible data loss)" reasons))
     (when supertag-db-lock
       (let ((live-owner (supertag--db-lock-status db-file)))
         (cond
@@ -1595,9 +1606,9 @@ doctor-driven recovery, and everything else is a vault switch problem."
   (let ((flow
          (pcase (plist-get supertag--store-origin :status)
            (:missing-with-backups
-            "Your database file is missing but backup snapshots survive. Your notes are safe on disk. Run M-x supertag-restore to recover the newest snapshot, or M-x supertag-accept-fresh-store to intentionally start over empty.")
+            "Your database file is missing but backup snapshots survive. Your notes are safe on disk. Evaluate (supertag-restore) to recover a snapshot, or (supertag-accept-fresh-store) to intentionally start over empty.")
            (:failed
-            "The database file exists but could not be read; it has NOT been modified. Run M-x supertag-doctor for details, then M-x supertag-restore to recover from a snapshot.")
+            "The database file exists but could not be read; it has NOT been modified. Evaluate (supertag-doctor) for details, then (supertag-restore) to recover from a snapshot.")
            (_
             "Proper flow: use M-x supertag-vault-activate to switch vaults and reload state/store before saving."))))
     (user-error "Supertag refused to save: %s. %s"
@@ -1619,54 +1630,6 @@ doctor-driven recovery, and everything else is a vault switch problem."
              db-dir supertag-db-backup-directory))))
 
 ;;; --- Persistence Functions ---
-
-(defun supertag--normalize-fields-collection ()
-  "Normalize the :fields collection to ensure proper nested hash table structure.
-The :fields collection has a three-level structure:
-  :fields -> node-id -> tag-id -> field-name -> value
-This function ensures all levels are proper hash tables."
-  (let* ((fields-root (supertag-store-get-collection :fields))
-         (normalized-count 0))
-    (when (hash-table-p fields-root)
-      (maphash
-       (lambda (node-id node-data)
-         ;; Ensure node-level is a hash table
-         (unless (hash-table-p node-data)
-           (let ((node-table (ht-create)))
-             ;; Convert node-data to hash table if it's a list
-             (when (listp node-data)
-               (let ((cursor node-data))
-                 (while cursor
-                   (let ((tag-id (pop cursor))
-                         (tag-data (pop cursor)))
-                     (when tag-id
-                       (puthash tag-id tag-data node-table))))))
-             (puthash node-id node-table fields-root)
-             (setq node-data node-table)
-             (cl-incf normalized-count)))
-
-         ;; Ensure tag-level is a hash table
-         (when (hash-table-p node-data)
-           (maphash
-            (lambda (tag-id tag-data)
-              (unless (hash-table-p tag-data)
-                (let ((tag-table (ht-create)))
-                  ;; Convert tag-data to hash table if it's a list
-                  (when (listp tag-data)
-                    (let ((cursor tag-data))
-                      (while cursor
-                        (let ((field-name (pop cursor))
-                              (field-value (pop cursor)))
-                          (when field-name
-                            (puthash field-name field-value tag-table))))))
-                  (puthash tag-id tag-table node-data)
-                  (cl-incf normalized-count))))
-            node-data)))
-       fields-root)
-      (when (> normalized-count 0)
-        (message "Normalized %d field structures in :fields collection." normalized-count)
-        (supertag-mark-dirty)))))
-
 
 (defun supertag--persistence--legacy-format-file-p (file)
   "Return non-nil if FILE exists and is NOT in S2 canonical format.
@@ -1693,8 +1656,9 @@ is simply skipped, same as if FILE had already been canonical."
 
 (defun supertag--persistence--snapshot-preformat6 (file)
   "Copy legacy-format FILE to a never-auto-deleted `preformat6' backup.
-Part of P1-8 (archive/legacy-v2/2026-08-25-phrase/phases/phase-git-sync-20260713/PLAN.md \"S2 规范化
-序列化\", 修订 2026-07-13): the FIRST time a canonical save is about to
+Part of P1-8
+(archive/legacy-v2/2026-08-25-phrase/phases/phase-git-sync-20260713/PLAN.md
+\"S2 规范化序列化\", 修订 2026-07-13): the FIRST time a canonical save is about to
 overwrite an on-disk database still in the legacy (pre-6.0) format, this
 preserves that legacy file as
 `supertag-db-backup-directory'/supertag-db-preformat6-<TIMESTAMP>.el --
@@ -1764,7 +1728,8 @@ canonicalized value before the temp file replaces FILE.
 Immediately before the atomic rename -- i.e. only once the new canonical
 content is fully written and verified, and FILE (still holding whatever
 was there before) is about to be replaced -- if FILE currently exists and
-is still in the legacy (pre-6.0) format, `supertag--persistence--snapshot-preformat6'
+is still in the legacy (pre-6.0) format,
+`supertag--persistence--snapshot-preformat6'
 preserves it as a downgrade escape hatch (P1-8). This is a one-time event
 per database: once FILE itself becomes canonical, the check is false on
 every subsequent save.
@@ -1823,17 +1788,10 @@ on every call — including timer ticks where the store turns out not to be
 dirty and nothing else in this function does any work — so a foreign
 machine's `supertag--presence-foreign-active-p' check sees this host as
 recently active for as long as this session keeps running."
-  (interactive)
   (supertag--presence-write)
   (let* ((file-to-save (or file supertag-db-file))
-         (reasons (supertag--persistence-guard-violations file-to-save))
-         (interactive-call (called-interactively-p 'any)))
+         (reasons (supertag--persistence-guard-violations file-to-save)))
     (cond
-     ;; ponytail: timer-driven calls must not raise; only interactive
-     ;; invocations get the loud error. Otherwise a stalled init (e.g.
-     ;; failed `require`) leaves the auto-save timer barking forever.
-     ((and reasons interactive-call)
-      (supertag--persistence-refuse-save reasons))
      (reasons
       (message "Supertag auto-save skipped: %s"
                (mapconcat #'identity reasons "; ")))
@@ -1864,193 +1822,34 @@ recently active for as long as this session keeps running."
           (supertag-check-daily-backup)
           ;; S4 git-sync-mode commit trigger seam — see
           ;; `supertag-persistence-after-save-hook''s docstring.
-          (run-hooks 'supertag-persistence-after-save-hook))))))))
+          (run-hook-wrapped
+           'supertag-persistence-after-save-hook
+           (lambda (subscriber)
+             (condition-case err
+                 (funcall subscriber)
+               (error
+                (message "Supertag after-save subscriber %S failed: %s"
+                         subscriber (error-message-string err))))
+             ;; Never let a subscriber's return value stop delivery.
+             nil))
+          t)))))))
 
-(defun supertag-db-migrate-and-normalize ()
-  "Run all data migrations and normalizations on the loaded store.
-This includes version migrations, field structure normalization,
-and legacy field name migrations. This function should be called
-manually after loading a database from an older version or when
-data corruption is suspected."
-  (interactive)
-  (if (hash-table-p supertag--store)
-      (progn
-        (message "Starting database migration and normalization...")
-
-        ;; --- Data version check and automatic migration ---
-        ;; `supertag--run-migrations' returns non-nil (and stamps :version)
-        ;; whenever it performs a migration, even when no :nodes/:fields
-        ;; content actually changed. That must still mark the store dirty,
-        ;; otherwise a pure version bump is never persisted and migration
-        ;; would silently re-run on every subsequent load.
-        (when (supertag--run-migrations supertag--store)
-          (supertag-mark-dirty))
-
-        ;; --- Normalize :fields collection structure ---
-        (supertag--normalize-fields-collection)
-
-        ;; --- Automatic Field Migration ---
-        (let* ((nodes-table (supertag-store-get-collection :nodes))
-               (migrated-count 0))
-          (maphash
-           (lambda (key value)
-             (when (and value (eq (plist-get value :type) :node))
-               (let ((needs-migration nil)
-                     (migrated-value (copy-sequence value)))
-                 ;; Migrate :file-path to :file
-                 (when (and (plist-get value :file-path)
-                            (not (plist-get value :file)))
-                   (setq migrated-value (plist-put migrated-value :file (plist-get value :file-path)))
-                   (setq needs-migration t))
-                 ;; Migrate :pos to :position
-                 (when (and (plist-get value :pos)
-                            (not (plist-get value :position)))
-                   (setq migrated-value (plist-put migrated-value :position (plist-get value :pos)))
-                   (setq needs-migration t))
-                 ;; Update if migration was needed
-                 (when needs-migration
-                   (supertag-store-put-entity :nodes key migrated-value t)
-                   (cl-incf migrated-count)))))
-           nodes-table)
-          (when (> migrated-count 0)
-            (message "Migrated %d nodes with legacy field names (:file-path -> :file, :pos -> :position)."
-                     migrated-count)
-            (supertag-mark-dirty)))
-
-        (supertag-index-rebuild-all)
-        (message "Database migration and normalization complete.")
-        (when (supertag-dirty-p)
-          (message "Changes were made. Saving database...")
-          (supertag-save-store)))
-    (message "Database not loaded. Please load the database first.")))
-
-  ;; --- Automatic Purge of Invalid Nodes (example, kept commented) ---
-  ;; (let* ((nodes-table (supertag-store-get-collection :nodes))
-  ;;        (keys-to-remove '())
-  ;;        (purged-count 0)
-  ;;        (initial-count (hash-table-count nodes-table)))
-  ;;   (maphash
-  ;;    (lambda (key value)
-  ;;      (unless (and value (plist-get value :type))
-  ;;        (push key keys-to-remove))))
-  ;;    nodes-table)
-  ;;   (when keys-to-remove
-  ;;     (dolist (key keys-to-remove)
-  ;;       (supertag-store-remove-entity :nodes key)
-  ;;       (cl-incf purged-count))
-  ;;     (message "Purged %d invalid/ghost entries from database." purged-count)
-  ;;     (supertag-mark-dirty)))
+(autoload 'supertag-migrate-run "supertag-migrate" "Run verified data migration." t)
 
 (defun supertag--maybe-auto-migrate ()
-  "Automatically migrate the just-loaded store when its version is stale.
-Called from `supertag-load-store' right after a successful load and lock
-acquisition. Does nothing unless all of the following hold:
-- `supertag-db-auto-migrate' is non-nil;
-- `supertag--store' is a loaded hash table;
-- `(supertag--get-data-version supertag--store)' differs from
-  `supertag-data-version' (a missing/nil stored version already reads back
-  as the old default version, so it counts as a mismatch too).
-
-If this session recorded a multi-instance lock conflict
-(`supertag--db-lock-conflict'), migration is skipped with a message instead:
-a read-only session (another Emacs instance holds the write lock) must never
-rewrite the database.
-
-Before migrating, when `supertag-db-file' exists on disk, a pre-migration
-snapshot is copied into `supertag-db-backup-directory' as
-\"supertag-db-premigrate-<OLDVER>-<TIMESTAMP>.el\" (old version sanitized for
-filename use). Note that this filename pattern intentionally does not match
-the daily-backup cleanup regex used by `supertag-cleanup-old-backups'
-\(\"^supertag-db-[0-9]\\{4\\}-[0-9]\\{2\\}-[0-9]\\{2\\}\\.el$\"), so these
-pre-migration snapshots are never automatically deleted. If the database
-file does not exist on disk yet, the snapshot step is skipped but migration
-still proceeds.
-
-Errors signaled by `supertag-db-migrate-and-normalize' are caught here and
-reported loudly rather than re-signaled: the loaded store is left in place
-(so it stays usable) and the message tells the user to run
-\\[supertag-db-migrate-and-normalize] by hand."
-  (when (and supertag-db-auto-migrate
-             (hash-table-p supertag--store))
-    (let ((old-version (supertag--get-data-version supertag--store)))
-      (unless (string= old-version supertag-data-version)
-        (if supertag--db-lock-conflict
-            (message "Supertag: skipping auto-migration of %s (locked by another Emacs instance: %s). Stored data version %s is out of date; run M-x supertag-db-migrate-and-normalize once the lock is released."
-                     (abbreviate-file-name supertag-db-file)
-                     supertag--db-lock-conflict
-                     old-version)
-          (let ((snapshot-file nil))
-            (when (file-exists-p supertag-db-file)
-              (condition-case err
-                  (let* ((sanitized-version
-                          (replace-regexp-in-string "[^A-Za-z0-9]+" "-" old-version))
-                         (existing
-                          (and (file-directory-p supertag-db-backup-directory)
-                               (directory-files
-                                supertag-db-backup-directory t
-                                (format "\\`supertag-db-premigrate-%s-.*\\.el\\'"
-                                        (regexp-quote sanitized-version))))))
-                    (supertag-persistence-ensure-data-directory)
-                    ;; A snapshot for this same source version may already
-                    ;; exist when an earlier auto-migration ran but its save
-                    ;; was skipped by a persistence guard (so the on-disk DB
-                    ;; is still at OLD-VERSION). Reuse it instead of writing
-                    ;; another copy of the same pre-migration state — with a
-                    ;; per-second timestamp a same-second rerun would even
-                    ;; silently overwrite the first snapshot.
-                    (if existing
-                        (progn
-                          (setq snapshot-file (car existing))
-                          (message "Supertag: reusing existing pre-migration snapshot %s"
-                                   (abbreviate-file-name snapshot-file)))
-                      (setq snapshot-file
-                            (expand-file-name
-                             (format "supertag-db-premigrate-%s-%s.el"
-                                     sanitized-version
-                                     (format-time-string "%Y%m%d-%H%M%S"))
-                             supertag-db-backup-directory))
-                      (copy-file supertag-db-file snapshot-file t)
-                      (message "Supertag: pre-migration snapshot saved to %s"
-                               (abbreviate-file-name snapshot-file))))
-                (error
-                 (setq snapshot-file nil)
-                 (message "Supertag: failed to create pre-migration snapshot (%s); proceeding with auto-migration anyway."
-                          (error-message-string err)))))
-            (condition-case err
-                (progn
-                  (supertag-db-migrate-and-normalize)
-                  (message "Supertag: auto-migrated database from version %s to %s.%s"
-                           old-version supertag-data-version
-                           (if snapshot-file
-                               (format " Pre-migration snapshot: %s" (abbreviate-file-name snapshot-file))
-                             ""))
-                  ;; The save inside `supertag-db-migrate-and-normalize' goes
-                  ;; through `supertag-save-store' and is therefore subject to
-                  ;; ALL persistence guards. Early in startup the sync-state
-                  ;; guard can legitimately skip it, leaving the migrated
-                  ;; store in memory only. That is safe (the auto-save timer
-                  ;; persists it once the guards clear), but the user should
-                  ;; know the on-disk file is still the old version for now.
-                  (when (supertag-dirty-p)
-                    (message "Supertag: migrated store not yet written to disk (a save guard deferred it); it will be persisted by the next successful save.")))
-              (error
-               (message "Supertag: AUTO-MIGRATION FAILED (%s -> %s): %s. Database left loaded but NOT migrated.%s Run M-x supertag-db-migrate-and-normalize manually to retry."
-                        old-version supertag-data-version
-                        (error-message-string err)
-                        (if snapshot-file
-                            (format " A pre-migration snapshot is available at %s."
-                                    (abbreviate-file-name snapshot-file))
-                          " No pre-migration snapshot was created."))))))))))
+  "Run the verified version chain when automatic migration is enabled."
+  (when (and supertag-db-auto-migrate (hash-table-p supertag--store)
+             (not (equal (supertag--get-data-version supertag--store) supertag-data-version)))
+    (supertag-migrate-run)))
 
 (defun supertag-load-store (&optional file preserve-lock)
   "Load data into supertag--store from a file.
-This function loads and coerces the persisted store data, but does not
-run version migrations. For migrations/normalization, use the command
-`supertag-db-migrate-and-normalize` after loading.
+This function loads and coerces the persisted store data.  When automatic
+migration is enabled, the version-gated DB migration may run during loading;
+otherwise use `supertag-migrate-run` after loading for an explicit migration.
 FILE is the optional file path. Defaults to supertag-db-file.
 When PRESERVE-LOCK is non-nil, load only FILE while retaining the advisory
 lock already held for it; this is reserved for the restore critical section."
-  (interactive)
   (let* ((locked-file (or file supertag-db-file))
          (candidates (if preserve-lock
                          (list (supertag--persistence--normalize-path locked-file))
@@ -2103,25 +1902,7 @@ lock already held for it; this is reserved for the restore critical section."
                                          (list :loaded-from file-to-load
                                                :load-candidates candidates
                                                :load-failures (nreverse failures)))
-          ;; The "run migration manually" hint is stale once auto-migration is
-          ;; enabled and able to run. Only surface it when auto-migrate is off,
-          ;; or when it is on but a version mismatch will be skipped anyway
-          ;; (this session holds no write lock on `supertag-db-file', so
-          ;; `supertag--maybe-auto-migrate' will refuse to touch the store).
-          (let* ((version-mismatch
-                  (not (string= (supertag--get-data-version supertag--store)
-                                supertag-data-version)))
-                 (migration-will-be-skipped
-                  (and version-mismatch
-                       supertag-db-auto-migrate
-                       (stringp (supertag--db-lock-status file-to-load))))
-                 (show-manual-hint
-                  (or (not supertag-db-auto-migrate) migration-will-be-skipped)))
-            (message "Database loaded from %s.%s"
-                     (abbreviate-file-name file-to-load)
-                     (if show-manual-hint
-                         " For migrations, run M-x supertag-db-migrate-and-normalize."
-                       "")))
+          (message "Database loaded from %s." (abbreviate-file-name file-to-load))
           (unless preserve-lock
             (supertag--db-acquire-lock))
           (supertag--presence-check-and-claim)
@@ -2186,13 +1967,13 @@ lock already held for it; this is reserved for the restore critical section."
                :backup-snapshots (length snapshots)))
         (cond
          (failures
-          (message "Supertag: FAILED to load the database -- %d candidate(s) existed but could not be parsed (%s). Initialized an EMPTY in-memory store as a placeholder; saving is BLOCKED (see M-x supertag-doctor / M-x supertag-git-setup) until this is resolved and the store is reloaded -- your on-disk data has NOT been modified. candidates=%S"
+          (message "Supertag: FAILED to load the database -- %d candidate(s) existed but could not be parsed (%s). Initialized an EMPTY in-memory store as a placeholder; saving is BLOCKED (see M-: (supertag-doctor) / M-x supertag-git-setup) until this is resolved and the store is reloaded -- your on-disk data has NOT been modified. candidates=%S"
                    (length failures)
                    (mapconcat (lambda (f) (format "%s: %s" (abbreviate-file-name (car f)) (cdr f)))
                               failures "; ")
                    (mapcar #'abbreviate-file-name candidates)))
          (snapshots
-          (message "Supertag: database file is MISSING but %d backup snapshot(s) exist (newest: %s). Saving is BLOCKED so the backups stay safe. Run M-x supertag-restore to recover, or M-x supertag-accept-fresh-store to intentionally start empty."
+          (message "Supertag: database file is MISSING but %d backup snapshot(s) exist (newest: %s). Saving is BLOCKED so the backups stay safe. Evaluate (supertag-restore) to recover, or (supertag-accept-fresh-store) to intentionally start empty."
                    (length snapshots)
                    (format-time-string "%Y-%m-%d %H:%M"
                                        (plist-get (car snapshots) :mtime))))
@@ -2251,7 +2032,7 @@ Waits for 2 seconds of idle time before saving to avoid frequent saves."
 
 ;;; --- Event Subscription ---
 
-(defun supertag-persistence--handle-store-changed (path old-value new-value)
+(defun supertag-persistence--handle-store-changed (_path _old-value _new-value)
   "Handle store-changed events.
 This function is called when the store is updated.
 PATH, OLD-VALUE, and NEW-VALUE describe the change."
@@ -2261,106 +2042,9 @@ PATH, OLD-VALUE, and NEW-VALUE describe the change."
 ;; Subscribe to store-changed events
 (supertag-subscribe :store-changed #'supertag-persistence--handle-store-changed)
 
-(defun supertag-db-purge-duplicate-tags ()
-  "Interactively scan the :tags collection and remove duplicate tags.
-Keeps the tag with the most complete data (most fields defined).
-Merges relations from duplicate tags to the kept tag."
-  (interactive)
-  (let* ((tags-table (supertag-store-get-collection :tags))
-         (name-to-tags (make-hash-table :test 'equal))
-         (duplicates-found 0)
-         (tags-removed 0))
-
-    (if (not (hash-table-p tags-table)) ; defensive, though collection is always hash-table
-        (message "Tags collection is missing or invalid; nothing to purge.")
-
-      ;; Step 1: Group tags by name
-      (maphash (lambda (tag-id tag-data)
-                 (when (and tag-data (plist-get tag-data :name))
-                   (let ((tag-name (plist-get tag-data :name)))
-                     (unless (gethash tag-name name-to-tags)
-                       (puthash tag-name '() name-to-tags))
-                     (puthash tag-name
-                             (cons (cons tag-id tag-data) (gethash tag-name name-to-tags))
-                             name-to-tags))))
-               tags-table)
-
-      ;; Step 2: Find and resolve duplicates
-      (maphash (lambda (tag-name tag-list)
-                 (when (> (length tag-list) 1)
-                   (cl-incf duplicates-found)
-                   (message "Found %d duplicate tags for name '%s': %s"
-                           (length tag-list) tag-name
-                           (mapcar #'car tag-list))
-
-                   ;; Choose the "best" tag (with most fields or first created)
-                   (let* ((sorted-tags (sort tag-list
-                                           (lambda (a b)
-                                             (let ((fields-a (length (or (plist-get (cdr a) :fields) '())))
-                                                   (fields-b (length (or (plist-get (cdr b) :fields) '()))))
-                                               (> fields-a fields-b)))))
-                          (keeper (car sorted-tags))
-                          (duplicates (cdr sorted-tags))
-                          (keeper-id (car keeper)))
-
-                    (message "Keeping tag '%s', removing duplicates: %s"
-                            keeper-id (mapcar #'car duplicates))
-
-                    ;; Remove duplicate tags
-                    (dolist (duplicate duplicates)
-                      (let ((duplicate-id (car duplicate)))
-                        (supertag-store-remove-entity :tags duplicate-id)
-                        (cl-incf tags-removed))))))
-               name-to-tags)
-
-      (if (> duplicates-found 0)
-          (progn
-            (message "Duplicate tag cleanup complete. %d tag names had duplicates, %d duplicate tags removed."
-                    duplicates-found tags-removed)
-            (supertag-save-store)
-            (message "Database saved."))
-        (message "No duplicate tags found. Database is clean.")))))
-
-(defun supertag-db-purge-invalid-nodes ()
-  "Interactively scan the :nodes collection and remove entries with invalid data.
-An entry is considered invalid if its value is nil or it's not a valid plist
-with a :type property.
-
-This version is tolerant when the :nodes collection is missing or not yet
-initialized: it will treat that case as an empty collection and exit cleanly."
-  (interactive)
-  (let* ((nodes-table (supertag-store-get-collection :nodes))
-         (keys-to-remove '())
-         (total-keys 0))
-    ;; If nodes-table is missing or not a hash table, log and skip the purge.
-    (if (not (hash-table-p nodes-table))
-        (message "Nodes collection is missing or invalid; nothing to purge.")
-      ;; else proceed with scanning and purging
-      (setq total-keys (hash-table-count nodes-table))
-      (message "Scanning %d total entries in nodes table..." total-keys)
-
-      ;; First, identify all keys with invalid values
-      (maphash (lambda (key value)
-                 (unless (and value (plist-get value :type))
-                   (push key keys-to-remove)))
-               nodes-table)
-
-      ;; Then, remove them
-      (if keys-to-remove
-          (progn
-            (message "Found %d invalid entries to purge. Purging..." (length keys-to-remove))
-            (dolist (key keys-to-remove)
-              ;; Use the new, explicit delete function
-              (supertag-store-remove-entity :nodes key))
-            (message "Purging complete. Saving database...")
-            (supertag-save-store)
-            (message "Database saved. %d entries remain." (hash-table-count (supertag-store-get-collection :nodes))))
-        (message "No invalid entries found. Database is clean.")))))
-
 (defun supertag-db-inspect-file ()
   "Inspect the database file and report its structure.
 Useful for diagnosing why nodes aren't loading properly."
-  (interactive)
   (let* ((candidates (supertag--persistence--db-file-candidates nil))
          (file-to-inspect (or (supertag--persistence--pick-readable-file candidates)
                               supertag-db-file)))
@@ -2415,7 +2099,7 @@ Useful for diagnosing why nodes aren't loading properly."
                       (princ (format "Has :title: %s\n" (if (plist-get data :title) "YES" "NO")))
                       (princ (format "Has :file: %s\n" (if (plist-get data :file) "YES" "NO")))
                       (princ (format "Properties: %S\n" (let ((props '()))
-                                                           (cl-loop for (k v) on data by #'cddr
+                                                           (cl-loop for (k _v) on data by #'cddr
                                                                     do (push k props))
                                                            (nreverse props)))))))
 
@@ -2428,7 +2112,7 @@ Useful for diagnosing why nodes aren't loading properly."
                   (princ "1. Data was created with an older version\n")
                   (princ "2. Manual editing of the database file\n")
                   (princ "3. Incomplete migration\n\n")
-                  (princ "Solution: Run M-x supertag-reindex-org to rebuild Org projections; restore Semantic Facts from backup.\n")))))
+                  (princ "Solution: Run M-x supertag-sync-full-rescan to rebuild Org projections; restore Semantic Facts from backup.\n")))))
         (error
          (message "Error reading database file: %s" (error-message-string err))))))))
 
@@ -2464,30 +2148,22 @@ VERSION is the version string to set."
   (when (hash-table-p data)
     (puthash :version version data)))
 
-(defun supertag--run-migrations (data)
-  "Run data migrations based on version number.
-DATA is the data store to migrate.
-Automatically detects version and executes necessary migration steps.
-Returns t if migration was performed, nil otherwise."
-  (let ((current-version (supertag--get-data-version data)))
-    (unless (string= current-version supertag-data-version)
-      ;; Execute version-specific migrations
-      (cond
-       ;; Migrate from 4.x to 5.0.0
-       ((string-prefix-p "4." current-version)
-        (message "Migrating data from version %s to %s..." current-version supertag-data-version)
-        (supertag--migrate-4x-to-5x data)
-        (message "Data migration completed to version %s" supertag-data-version))
-
-       ;; Other version migrations can be added here
-       (t
-        (when (not (string= current-version supertag-data-version))
-          (message "Warning: Unknown data version %s, setting to current version %s"
-                   current-version supertag-data-version))))
-
-      ;; Update version number
-      (supertag--set-data-version data supertag-data-version)
-      t)))
+(defun supertag--retire-node-tag-projection (data)
+  "Remove every legacy `:node-tag' relation projection from DATA.
+Return the number removed.  Node `:tags' values are left unchanged."
+  (let ((relations (and (hash-table-p data) (gethash :relations data)))
+        relation-ids)
+    (when (hash-table-p relations)
+      (maphash
+       (lambda (relation-id relation)
+         (when (eq (plist-get relation :type) :node-tag)
+           (push relation-id relation-ids)))
+       relations)
+      (dolist (relation-id relation-ids)
+        (remhash relation-id relations)))
+    (message "Retired %d legacy node-tag projection relation(s)."
+             (length relation-ids))
+    (length relation-ids)))
 
 (defun supertag--migrate-4x-to-5x (data)
   "Migrate from version 4.x to 5.0.0.
@@ -2688,9 +2364,8 @@ live database is touched."
       (unless success
         (ignore-errors (delete-file snapshot))))))
 
-;;;###autoload
 (defun supertag-restore ()
-  "Interactively restore the Supertag database from a snapshot.
+  "Restore the Supertag database from a snapshot.
 Offers every daily, pre-restore, pre-migration, and pre-format6 snapshot in
 `supertag-db-backup-directory' (see `supertag--restore-snapshot-list'), newest
 first, via `completing-read'. Shows a preview comparing the chosen snapshot
@@ -2701,7 +2376,6 @@ then takes the database lock and creates a unique
 pre-format6 snapshots reload with auto-migration disabled so they remain
 readable by pre-6.0 builds; quit Emacs immediately after restoring one for
 downgrade."
-  (interactive)
   (let ((snapshots (supertag--restore-snapshot-list)))
     (unless snapshots
       (user-error "No snapshots found in %s"
@@ -2752,13 +2426,12 @@ downgrade."
                        " Quit Emacs now and reopen with the older build"
                      "")))))))
 
-;;;###autoload
 (defun supertag-accept-fresh-store ()
   "Explicitly start over with an empty store despite surviving backups.
 
 When the database file is missing but backup snapshots exist,
 `supertag-load-store' blocks saving so a deleted database cannot be
-silently replaced by an empty one.  This command lifts that block after
+silently replaced by an empty one.  This function lifts that block after
 showing what would be left behind and asking for confirmation.  It never
 touches the backup snapshots themselves.
 
@@ -2766,12 +2439,11 @@ A store whose on-disk file exists but failed to parse (`:failed') cannot
 be accepted this way: the unreadable file would be overwritten on the
 next save.  Recover it with `supertag-restore', or move the file away
 manually first."
-  (interactive)
   (let ((status (plist-get supertag--store-origin :status)))
     (unless (eq status :missing-with-backups)
       (user-error
        (if (eq status :failed)
-           "The database file still exists but could not be read; accepting an empty store would overwrite it. Use M-x supertag-restore, or move the file away manually first"
+           "The database file still exists but could not be read; accepting an empty store would overwrite it. Evaluate (supertag-restore), or move the file away manually first"
          "Saving is not blocked by a missing-database guard (store status: %s)")
        status))
     ;; The database may have reappeared since the blocked load -- a file
@@ -2784,7 +2456,7 @@ manually first."
                               (not (file-directory-p candidate))))
                        (supertag--persistence--db-file-candidates))))
       (when reappeared
-        (user-error "A database file has appeared at %s since the blocked load. Run M-x supertag-load-store to load it instead"
+        (user-error "A database file has appeared at %s since the blocked load. Restart Emacs to load it instead"
                     (abbreviate-file-name reappeared))))
     (let* ((snapshots (supertag--restore-snapshot-list))
            (newest (car snapshots))
@@ -2804,7 +2476,7 @@ manually first."
                                      (plist-get newest :mtime)))
                           "")
                         supertag-db-backup-keep-days)))
-          (message "Kept the recovery guard; run M-x supertag-restore to recover instead.")
+          (message "Kept the recovery guard; evaluate (supertag-restore) to recover instead.")
         (supertag--record-store-origin :new '(:accepted-fresh t))
         (message "Fresh empty store accepted; saving is unblocked. Snapshots remain in %s until routine rotation; copy them elsewhere to keep them permanently."
                  (abbreviate-file-name supertag-db-backup-directory))))))

@@ -1,10 +1,18 @@
-;;; supertag/services/sync.el --- Synchronization mechanism for Supertag -*- lexical-binding: t; -*-
+;;; supertag-services-sync.el --- Synchronization mechanism for Supertag -*- lexical-binding: t; -*-
 
 ;;; Commentary:
 ;; This file implements the synchronization mechanism for the Supertag
 ;; data-centric architecture. It handles importing data from Org files into the
 ;; central store and exporting data from the store back to Org files.
 
+
+;; Commands: supertag-sync-full-rescan, supertag-sync-cleanup-database,
+;; supertag-sync-force-resync-current-file, supertag-sync-status.
+;; Dependencies: cl-lib, subr-x, ht, org-element, org-id;
+;; supertag-core-store,
+;; supertag-node, supertag-query, supertag-core-persistence, supertag-tag;
+;; ordinary Link vocabulary/Relation providers. The file queue is internal.
+;; Tag entity ensure/normalization and inline Tag parsing are provided by supertag-tag.
 ;;; Code:
 
 
@@ -14,16 +22,147 @@
 (require 'org-element) ; For parsing Org files
 (require 'org-id)     ; For generating Org IDs
 (require 'supertag-core-store)
-(require 'supertag-core-schema)
-(require 'supertag-core-transform)
-(require 'supertag-core-state) ; For supertag-with-transaction
-(require 'supertag-ops-node) ; For supertag-node-create
-(require 'supertag-ops-batch) ; For supertag-batch-create
-(require 'supertag-services-query) ; For supertag-find-nodes-by-file
+(require 'supertag-node) ; For supertag-node-create
+(require 'supertag-query)
+;; File membership reads no longer arrive through Query's eager scan load.
+(autoload 'supertag-find-nodes-by-file "supertag-query")
+(declare-function supertag-find-nodes-by-file "supertag-query" (file-path))
 (require 'supertag-core-persistence) ; For supertag-data-directory
-(require 'supertag-ops-tag) ; For supertag-tag-create
-(require 'supertag-ops-relation) ; For supertag-relation-create, supertag-relation-find-between
-(require 'supertag-core-async) ; For async job queue
+(require 'supertag-tag) ; For supertag-tag-create
+;; Ordinary Relation providers load Link only on first use.
+(autoload 'supertag-relation-named-document-link-p "supertag-link")
+(declare-function supertag-relation-named-document-link-p "supertag-link" (relation &optional relation-name))
+(autoload 'supertag-relation-document-link-p "supertag-link")
+(declare-function supertag-relation-document-link-p "supertag-link" (relation))
+(autoload 'supertag-relation-find-between "supertag-link")
+(declare-function supertag-relation-find-between "supertag-link" (from-id to-id &optional type kind))
+(autoload 'supertag-relation-project-document-link "supertag-link")
+(declare-function supertag-relation-project-document-link "supertag-link" (from-id to-id &optional relation-name))
+(autoload 'supertag-relation-find-by-from "supertag-link")
+(declare-function supertag-relation-find-by-from "supertag-link" (from-id &optional type kind))
+(autoload 'supertag-relation-find-by-to "supertag-link")
+(declare-function supertag-relation-find-by-to "supertag-link" (to-id &optional type kind))
+(autoload 'supertag-relation-delete "supertag-link")
+(declare-function supertag-relation-delete "supertag-link" (id))
+;; Relation vocabulary is owned by Link; parsers resolve it on first use.
+(autoload 'supertag-text-link-refresh "supertag-link")
+(declare-function supertag-text-link-refresh "supertag-link" ())
+(autoload 'supertag-text-link-relation-type-p "supertag-link")
+(declare-function supertag-text-link-relation-type-p "supertag-link" (type))
+;;; Internal File Queue
+
+(defgroup supertag-async nil
+  "Asynchronous processing settings for Supertag."
+  :group 'supertag)
+
+(defcustom supertag-async-idle-delay 0.5
+  "Seconds of idle time to wait before processing the next job in the queue.
+Lower values make sync faster but might interfere with typing.
+Higher values ensure Emacs is truly idle."
+  :type 'number
+  :group 'supertag-async)
+
+(defcustom supertag-async-batch-size 1
+  "Number of files to process in a single idle cycle.
+Keep this low (1-3) to maintain responsiveness."
+  :type 'integer
+  :group 'supertag-async)
+
+;;; Variables
+
+(defvar supertag-async--queue '()
+  "List of items (usually file paths) waiting to be processed.
+Ordered from oldest to newest.")
+
+(defvar supertag-async--failed-items '()
+  "Items whose most recent processing attempt failed.
+They are kept outside the active queue to avoid a tight automatic retry
+loop.  A complete `supertag-sync-full-rescan' forgets them via
+`supertag-async-clear-failed'.")
+
+(defvar supertag-async--timer nil
+  "The active idle timer, or nil if not running.")
+
+(defvar supertag-async--processor-fn nil
+  "The function to call for each item in the queue.
+Must accept a single argument (the item).")
+
+;;; Core Functions
+
+(defun supertag-async-init (processor-fn)
+  "Initialize the async system with a PROCESSOR-FN.
+PROCESSOR-FN is a function that takes one argument (the item to process)."
+  (setq supertag-async--processor-fn processor-fn)
+  (setq supertag-async--queue '())
+  (setq supertag-async--failed-items '())
+  (supertag-async--ensure-timer))
+
+(defun supertag-async-enqueue (item)
+  "Add ITEM to the processing queue.
+If ITEM is already in the queue, it is moved to the end (re-prioritized).
+Returns the new queue length."
+  ;; Remove if exists (deduplicate)
+  (setq supertag-async--queue (delete item supertag-async--queue))
+  ;; A fresh enqueue supersedes an earlier failed attempt for this item.
+  (setq supertag-async--failed-items
+        (delete item supertag-async--failed-items))
+  ;; Add to end
+  (setq supertag-async--queue (append supertag-async--queue (list item)))
+  ;; Ensure timer is running
+  (supertag-async--ensure-timer)
+  (length supertag-async--queue))
+
+(defun supertag-async-clear ()
+  "Clear all pending jobs."
+  (setq supertag-async--queue '())
+  (setq supertag-async--failed-items '()))
+
+(defun supertag-async-clear-failed ()
+  "Forget every retained failed item and return how many were dropped.
+Called after a complete full rescan, which has re-read those files."
+  (prog1 (length supertag-async--failed-items)
+    (setq supertag-async--failed-items nil)))
+
+;;; Internal Timer Logic
+
+(defun supertag-async--ensure-timer ()
+  "Start the idle timer if it's not already running and there is work to do."
+  (when (and supertag-async--queue
+             (not supertag-async--timer))
+    (setq supertag-async--timer
+          (run-with-idle-timer
+           supertag-async-idle-delay
+           nil ;; Run once (we will re-schedule if more work remains)
+           #'supertag-async--worker))))
+
+(defun supertag-async--worker ()
+  "Process the next batch of items from the queue."
+  (setq supertag-async--timer nil) ;; Timer has fired, so it's gone
+
+  (when (and supertag-async--queue supertag-async--processor-fn)
+    (let ((count 0))
+      ;; Process each item independently so one failure does not hide which
+      ;; file failed or discard the rest of this batch.
+      (while (and supertag-async--queue
+                  (< count supertag-async-batch-size))
+        ;; Pop before invoking user code.  The processor may enqueue work
+        ;; synchronously; removing the old head afterward would then operate
+        ;; on that newer queue and could discard an unrelated pending item.
+        (let ((item (pop supertag-async--queue)))
+          (condition-case err
+              (funcall supertag-async--processor-fn item)
+            (error
+             (cl-pushnew item supertag-async--failed-items :test #'equal)
+             (message
+              (concat "Supertag sync failed for %s: %s. "
+                      "Data safety: the Org source file was not modified, and its filename is retained for retry. "
+                      "Next: fix the cause, then run M-x supertag-sync-full-rescan.")
+              item (error-message-string err))))
+          (cl-incf count))))
+
+    ;; If work remains, re-schedule
+    (when supertag-async--queue
+      (supertag-async--ensure-timer))))
 
 (defvar supertag-file-id-source 'org-roam
   "Policy for recognizing stable file node IDs.")
@@ -122,7 +261,7 @@ this option can extend that contract, but cannot remove Document Facts."
 
 (defconst supertag-sync-document-fact-hash-props
   '(:title :raw-value :olp :tags :todo :priority :scheduled :deadline
-    :tag-occurrences :unresolved-tags :content :properties :ref-to :file
+    :tag-occurrences :unresolved-tags :content :properties :ref-to :named-links :file
     :level :position :pos :parent-id :link-type)
   "Document Projection properties that must participate in node hashes.")
 
@@ -143,7 +282,7 @@ Stores a plist with :file, :decision, :reason, and :time.")
 
 (defcustom supertag-sync-auto-create-node nil
   "Deprecated compatibility option; sync never invents heading IDs.
-Use an explicit document command such as `supertag-create-node' to persist
+Adding a tag or a link (`supertag-add-tag', `supertag-add-link') persists
 an Org ID before projection.  A read-only scan skips ID-less headings."
   :type 'boolean
   :group 'supertag-sync)
@@ -206,19 +345,8 @@ With the default interval, this caps retries to about 2 minutes."
 (defvar supertag-sync--auto-start-retries-left 0
   "Internal counter for remaining auto-start retries.")
 
-;; Tag write style for rendering headlines
-(defcustom supertag-tag-style 'inline
-  "Style to write tags when generating or inserting Org headlines.
-Supported values:
-- 'inline  => Title with inline #tags.
-- 'org     => Title with org native :tag: syntax.
-- 'both    => Combine both inline and org native forms.
-- 'auto    => Heuristic; currently defaults to 'inline."
-  :type '(choice (const :tag "Inline #tags" inline)
-                 (const :tag "Org :tag:" org)
-                 (const :tag "Both" both)
-                 (const :tag "Auto" auto))
-  :group 'supertag-sync)
+;; Tag write-format configuration and token rules are owned by supertag-tag.
+
 
 ;; Legacy tag handling policy
 (defcustom supertag-sync-legacy-tags-policy 'read-only
@@ -255,6 +383,8 @@ These files will be re-verified once the snapshot becomes complete.")
 (defvar supertag-sync--is-full-rescan-p nil
   "Dynamically bound to t during a full rescan.
 This allows special behavior, like one-time import of legacy tags.")
+
+(defvar supertag-automation-sync--enabled)
 
 ;;; Helper functions for accessing sync state data
 
@@ -900,30 +1030,34 @@ This does not remove the node from the store immediately."
 (defun supertag-db-add-with-hash (id props &optional counters)
   "Add node with ID and PROPS to database, including hash value.
 Existing creation time is preserved while file-backed properties are updated.
-This function also handles tag creation and relations.
+This function also handles tag resolution and reference relations.
 COUNTERS is an optional plist for tracking statistics."
-  (when-let* ((existing (supertag-node-get id))
-              (created-at (plist-get existing :created-at)))
-    (setq props (plist-put (copy-sequence props) :created-at created-at)))
-  (setq props (supertag-sync--resolve-node-tag-occurrences props))
-  (let ((node-hash (supertag-node-hash props)))
-    ;; Ensure :id, :type and :hash are added to props while preserving existing fields
-    (let ((node-props (plist-put props :id id)))
-      (setq node-props (plist-put node-props :type :node))
-      (setq node-props (plist-put node-props :hash node-hash))
-      ;; Process tags only when actually saving the node
-      (supertag--process-node-tags node-props)
-      ;; Reference reconciliation is part of projection, not reporting.
-      (let ((reference-counters
-             (or counters (list :references-created 0 :references-deleted 0)))
-            (current-refs (plist-get node-props :ref-to)))
-        (supertag--cleanup-orphaned-references
-         id current-refs reference-counters)
-        (supertag--process-node-references node-props reference-counters))
-      ;; If this node comes from a file (i.e., has :file), clear any orphan marker
-      (when (plist-get node-props :file)
-        (setq node-props (plist-put node-props :orphaned-at nil)))
-      (supertag-node-create node-props))))
+  (let ((existing (supertag-node-get id)))
+    (when-let* ((created-at (plist-get existing :created-at)))
+      (setq props (plist-put (copy-sequence props) :created-at created-at)))
+    (setq props (supertag-sync--resolve-node-tag-occurrences props))
+    (let ((node-hash (supertag-node-hash props)))
+      ;; Ensure :id, :type and :hash are added to props while preserving existing fields
+      (let ((node-props (plist-put props :id id)))
+        (setq node-props (plist-put node-props :type :node))
+        (setq node-props (plist-put node-props :hash node-hash))
+        ;; Reference reconciliation is part of projection, not reporting.
+        (let ((reference-counters
+               (or counters (list :references-created 0 :references-deleted 0)))
+              (current-refs (plist-get node-props :ref-to))
+              (current-named-links (plist-get node-props :named-links)))
+          (supertag--cleanup-orphaned-references
+           id current-refs reference-counters)
+          (supertag--cleanup-orphaned-named-links
+           id current-named-links reference-counters)
+          (supertag--process-node-references node-props reference-counters)
+          (supertag--process-node-named-links node-props reference-counters))
+        ;; If this node comes from a file (i.e., has :file), clear any orphan marker
+        (when (plist-get node-props :file)
+          (setq node-props (plist-put node-props :orphaned-at nil)))
+        (if existing
+            (supertag-node-update id (lambda (_previous) node-props))
+          (supertag-node-create node-props))))))
 
 (defun supertag-node-changed-p (old-node new-node)
   "Compare OLD-NODE and NEW-NODE to detect changes.
@@ -959,13 +1093,37 @@ Projection; Semantic Facts live in their own Store collections."
                 (1+ (or (plist-get counters :nodes-updated) 0))))))
      (t old-props))))
 
+(defun supertag-sync--extract-file-header-named-links ()
+  "Extract named links from a stripped copy of the current file header."
+  (let ((text (buffer-substring-no-properties (point-min) (point-max))))
+    (with-temp-buffer
+      (insert text)
+      (let ((inhibit-modification-hooks t)
+            (org-mode-hook nil)
+            (org-inhibit-startup t)
+            (org-agenda-inhibit-startup t))
+        (delay-mode-hooks (org-mode))
+        (setq-local org-element-use-cache nil)
+        (supertag-sync--strip-embed-block-contents
+         (or (buffer-file-name) "<file-header>"))
+        (narrow-to-region
+         (point-min)
+         (save-excursion
+           (goto-char (point-min))
+           (if (re-search-forward "^\\*+\\s-" nil t)
+               (match-beginning 0)
+             (point-max))))
+        (supertag--extract-named-links
+         (org-element-contents (org-element-parse-buffer)))))))
+
 (defun supertag-sync--parse-file-header ()
   "Parse file header in current buffer for file node properties.
 Returns a plist with identity, title, tags, and top-level :ref-to links.
 Identity selection follows `supertag-file-id-source'."
+  (supertag-text-link-refresh)
   (save-excursion
     (goto-char (point-min))
-    (let (org-id denote-id id link-type title file-tags ref-to)
+    (let (org-id denote-id id link-type title file-tags ref-to named-links)
       ;; A file-level Org ID must be in the drawer at the start of the file.
       (skip-chars-forward " \t\r\n")
       (when (looking-at "^:PROPERTIES:")
@@ -1018,8 +1176,10 @@ Identity selection follows `supertag-file-id-source'."
                (supertag--extract-refs
                 (org-element-contents (org-element-parse-buffer)))
                :test #'equal)))
-      (list :id id :link-type link-type :title title :file-tags file-tags
-            :ref-to ref-to))))
+      (setq named-links (supertag-sync--extract-file-header-named-links))
+      (append (list :id id :link-type link-type :title title
+                    :file-tags file-tags :ref-to ref-to)
+              (when named-links (list :named-links named-links))))))
 
 (defun supertag-sync--parse-filetags (raw)
   "Parse RAW #+FILETAGS: value into a list of tag strings.
@@ -1040,7 +1200,7 @@ Return its persistent ID, or nil when the selected policy finds none."
   (when-let* ((file-id (plist-get file-header :id)))
     (let* ((title (plist-get file-header :title))
            (file-tags (plist-get file-header :file-tags))
-           (props (list :id file-id
+           (props (append (list :id file-id
                         :file file
                         :level 0
                         :link-type (or (plist-get file-header :link-type) 'id)
@@ -1049,7 +1209,10 @@ Return its persistent ID, or nil when the selected policy finds none."
                         :ref-to (plist-get file-header :ref-to)
                         :position 1
                         :content nil
-                        :properties nil))
+                        :properties nil)
+                          (when-let* ((named-links
+                                      (plist-get file-header :named-links)))
+                            (list :named-links named-links))))
            (existing (supertag-node-get file-id)))
       (if existing
           (when (supertag-node-changed-p existing props)
@@ -1340,6 +1503,12 @@ COUNTERS is a plist for tracking :nodes-created, :nodes-updated, and :nodes-dele
       (supertag-sync--check-and-sync-guarded)
     (supertag-sync--check-and-sync-legacy)))
 
+(defun supertag-sync-check-now ()
+  "Check the managed Org files once and sync the modified ones.
+Git sync nudges this after a merge; the auto-sync timer runs the same
+check on its own schedule."
+  (supertag-sync--check-and-sync))
+
 ;;; --- Enhanced Hash Table Traversal Utilities ---
 
 (defun supertag-traverse-collection (collection-path callback)
@@ -1425,14 +1594,14 @@ Applies a grace period and mass-deletion guardrails to prevent accidental data l
                  candidate-count total-nodes (* ratio 100))
         (setq candidate-ids '())))
 
-    ;; Delete eligible orphaned nodes outside of transaction for immediacy
+    ;; Join an enclosing reindex transaction when present.
     (dolist (id candidate-ids)
       (let ((node (supertag-node-get id)))
         (when (and node (null (plist-get node :file)))
           (supertag-node-delete id)
           (cl-incf deleted-count))))
 
-    (when (> deleted-count 0)
+    (when (and (> deleted-count 0) (not supertag--transaction-active))
       (supertag-save-store))
     deleted-count))
 
@@ -1561,6 +1730,21 @@ are intentionally excluded."
                 (push (or denote-id path) refs)))))))
     (nreverse refs)))
 
+(defun supertag--extract-named-links (elements)
+  "Extract configured named node links from Org ELEMENTS."
+  (let (links)
+    (when elements
+      (org-element-map elements 'link
+        (lambda (link)
+          (unless (supertag--generated-reference-context-p link)
+            (let ((name (org-element-property :type link))
+                  (target (org-element-property :path link)))
+              (when (and (supertag-text-link-relation-type-p name)
+                         (stringp target) (not (string-empty-p target)))
+                (cl-pushnew (list :relation-name name :target-id target)
+                            links :test #'equal)))))))
+    (nreverse links)))
+
 (defun supertag--strip-inline-tags (headline)
   "Return HEADLINE's title without direct-prose inline tags.
 Org links, code and other inline objects are preserved verbatim."
@@ -1628,53 +1812,13 @@ Return a list of tag strings, or an empty list if none."
         (cl-remove-if (lambda (s) (or (null s) (string-empty-p s)))
                       (mapcar #'identity tags)))))
 
-  (defun supertag--normalize-tag-id (name)
-    "Return NAME's Semantic Tag ID, resolving occurrence tokens read-only."
-    (let ((sanitized (supertag-sanitize-tag-name name)))
-      (or (supertag-tag-resolve-occurrence sanitized)
-          (and (not (string-match-p "/" sanitized)) sanitized)
-          (user-error
-           "Unknown nested Tag path '%s'; create its :extends hierarchy first"
-           sanitized))))
 
-  (defun supertag--merge-and-sanitize-tags (tags-1 tags-2)
-    "Merge two tag lists and sanitize names.
-Returns a de-duplicated list preserving order preference of TAGS-1."
-    (let* ((sanitize #'(lambda (s) (and s (supertag-sanitize-tag-name s))))
-           (a (delq nil (mapcar sanitize tags-1)))
-           (b (delq nil (mapcar sanitize tags-2)))
-           (seen (make-hash-table :test 'equal))
-           (out '()))
-      (dolist (tag a)
-        (unless (gethash tag seen)
-          (push tag out)
-          (puthash tag tag seen)))
-      (dolist (tag b)
-        (unless (gethash tag seen)
-          (push tag out)
-          (puthash tag tag seen)))
-      (nreverse out)))
 
-  (defun supertag--resolve-tag-style (&optional node file)
-    "Resolve write style for tags for NODE/FILE context.
-Currently returns `supertag-tag-style`, using 'inline when value is 'auto."
-    (let ((style supertag-tag-style))
-      (if (eq style 'auto) 'inline style)))
 
-  (defun supertag--format-tags-by-style (tags style)
-    "Return a string representing TAGS according to STYLE.
-Result includes a leading space when non-empty, else an empty string."
-    (let* ((inline-part (when tags (mapconcat (lambda (tag) (concat "#" tag)) tags " ")))
-           (org-part (when tags (concat ":" (mapconcat #'identity tags ":") ":"))))
-      (pcase style
-        ('inline (if inline-part (concat " " inline-part) ""))
-        ('org    (if org-part    (concat " " org-part)    ""))
-        ('both   (cond
-                  ((and inline-part org-part) (concat " " inline-part " " org-part))
-                  (inline-part (concat " " inline-part))
-                  (org-part (concat " " org-part))
-                  (t "")))
-        (_ (if inline-part (concat " " inline-part) "")))))
+
+
+
+
 
   (defun supertag--render-org-headline (level title tags file node &optional style tag-position)
     "Render an Org headline line given LEVEL, TITLE and TAGS.
@@ -1716,45 +1860,6 @@ Returns non-nil when a modification was performed."
                 changed)))))))
 
 
-(defun supertag--create-tag-entities (tag-names)
-  "Create tag entities for TAG-NAMES and return their IDs.
-Ensures tags are created only once and returns existing tag IDs.
-IMPORTANT: This function NEVER modifies existing tags - it only creates new ones."
-  (let ((tag-ids '()))
-    (dolist (tag-name tag-names)
-      (let* ((sanitized-name (supertag-sanitize-tag-name tag-name))
-             (tag-id (supertag-tag-resolve-occurrence sanitized-name))
-             (existing-tag (and tag-id (supertag-tag-get tag-id))))
-        ;; CRITICAL: Only create if tag doesn't exist
-        ;; Never modify existing tags to preserve their field definitions
-        (unless existing-tag
-          (setq tag-id
-                (plist-get (supertag-tag-create (list :name sanitized-name)) :id)))
-        (push tag-id tag-ids)))
-    (nreverse tag-ids)))
-
-(defun supertag--create-node-tag-relations (node-id tag-ids)
-  "Create node-tag relations for NODE-ID and TAG-IDS.
-Relation creation function now has built-in duplicate checking."
-  (dolist (tag-id tag-ids)
-    ;; supertag-relation-create now handles duplicate checking internally
-    (supertag-relation-create
-     (list :type :node-tag
-           :from node-id
-           :to tag-id
-           :created-at (current-time)))))
-
-(defun supertag--process-node-tags (node-data)
-  "Make node-tag relations agree with resolved tags in NODE-DATA.
-NODE-DATA is the node plist containing tag information.
-This function never creates or modifies Semantic Tags."
-  (let ((node-id (plist-get node-data :id))
-        (tag-ids (plist-get node-data :tags)))
-    (when node-id
-      (dolist (relation (supertag-relation-find-by-from node-id :node-tag))
-        (unless (member (plist-get relation :to) tag-ids)
-          (supertag-relation-delete (plist-get relation :id))))
-      (supertag--create-node-tag-relations node-id tag-ids))))
 
 
 (defun supertag--process-node-references (node-data counters)
@@ -1774,7 +1879,8 @@ This function is called only when a node is actually being created or updated."
             (when target-node
               (let ((existing
                      (cl-find-if
-                      #'identity
+                      (lambda (relation)
+                        (not (supertag-relation-named-document-link-p relation)))
                       (supertag-relation-find-between
                        node-id target-id :reference :document-link))))
                 (when (supertag-relation-project-document-link node-id target-id)
@@ -1782,6 +1888,34 @@ This function is called only when a node is actually being created or updated."
                     (setf (plist-get counters :references-created)
                           (1+ (or (plist-get counters :references-created)
                                   0)))))))))))))
+
+(defun supertag--process-node-named-links (node-data counters)
+  "Project configured named links in NODE-DATA."
+  (let ((node-id (plist-get node-data :id)))
+    (dolist (link (plist-get node-data :named-links))
+      (let ((name (plist-get link :relation-name))
+            (target-id (plist-get link :target-id)))
+        (when (and node-id (supertag-node-get target-id))
+          (let ((existing (cl-find-if
+                           (lambda (relation)
+                             (supertag-relation-named-document-link-p relation name))
+                           (supertag-relation-find-between
+                            node-id target-id :reference :document-link))))
+            (when (supertag-relation-project-document-link node-id target-id name)
+              (unless existing
+                (setf (plist-get counters :references-created)
+                      (1+ (or (plist-get counters :references-created) 0)))))))))))
+
+(defun supertag--cleanup-orphaned-named-links (node-id current-links counters)
+  "Delete named projections absent from CURRENT-LINKS for NODE-ID."
+  (dolist (relation (supertag-relation-find-by-from node-id :reference))
+    (when (and (supertag-relation-named-document-link-p relation)
+               (not (member (list :relation-name (plist-get relation :relation-name)
+                                  :target-id (plist-get relation :to))
+                            current-links)))
+      (supertag-relation-delete (plist-get relation :id))
+      (setf (plist-get counters :references-deleted)
+            (1+ (or (plist-get counters :references-deleted) 0))))))
 
 (defun supertag--cleanup-orphaned-references (node-id current-refs counters)
   "Clean up orphaned reference relations for a node.
@@ -1793,6 +1927,7 @@ COUNTERS is a plist for tracking relation statistics."
       (let ((target-id (plist-get relation :to)))
         ;; Only Org-owned projections may be deleted from an Org rescan.
         (when (and (supertag-relation-document-link-p relation)
+                   (not (supertag-relation-named-document-link-p relation))
                    (not (member target-id current-refs)))
           (supertag-relation-delete (plist-get relation :id))
           (setf (plist-get counters :references-deleted)
@@ -1808,11 +1943,12 @@ COUNTERS receives Document Link creation/deletion totals."
                   (plist-get node :file))
          (push node nodes))))
     (dolist (node nodes)
-      (supertag--process-node-tags node)
       (supertag--cleanup-orphaned-references
        (plist-get node :id) (plist-get node :ref-to) counters)
-      (supertag--process-node-references node counters))
-    (supertag-relation-reconcile-field-references)))
+      (supertag--cleanup-orphaned-named-links
+       (plist-get node :id) (plist-get node :named-links) counters)
+      (supertag--process-node-references node counters)
+      (supertag--process-node-named-links node counters))))
 
 (defun supertag-sync--rebuild-reference-caches ()
   "Rebuild derived node backlink caches from indexed reference relations."
@@ -1827,8 +1963,10 @@ COUNTERS receives Document Link creation/deletion totals."
                 (sort
                  (delete-dups
                   (mapcar (lambda (relation) (plist-get relation :from))
-                          (supertag-relation-find-by-to
-                           id :reference :document-link)))
+                          (cl-remove-if
+                           #'supertag-relation-named-document-link-p
+                           (supertag-relation-find-by-to
+                            id :reference :document-link))))
                  #'string<))
                (count (length incoming)))
           (unless (and (equal incoming (plist-get node :ref-from))
@@ -2004,7 +2142,12 @@ Returns: :ref-to (list of UUID strings)."
                    (when contents-begin
                      (cl-remove-if (lambda (el) (eq (org-element-type el) 'headline))
                                    (org-element-contents headline))))))
-    (list :ref-to (cl-delete-duplicates refs-to :test #'equal))))
+    (list :ref-to (cl-delete-duplicates refs-to :test #'equal)
+          :named-links
+          (supertag--extract-named-links
+           (when contents-begin
+             (cl-remove-if (lambda (el) (eq (org-element-type el) 'headline))
+                           (org-element-contents headline)))))))
 
 (defun supertag-extractor--setup-defaults ()
   "Register all built-in extractors with default priorities."
@@ -2079,6 +2222,7 @@ or the end of the buffer.  Return the number of unclosed blocks found."
 (defun supertag--parse-org-nodes-from-current-buffer (file &optional migration-mode)
   "Parse org nodes from current buffer content.
 FILE is used for setting the :file property on nodes."
+  (supertag-text-link-refresh)
   (let ((inhibit-modification-hooks t)
         (org-mode-hook nil)
         (org-inhibit-startup t)
@@ -2139,12 +2283,9 @@ Processes FILE for synchronization."
         ;;          (plist-get counters :nodes-deleted))
         (supertag-sync-save-state)))))
 
-;;;###autoload
 (defun supertag-sync-start-auto-sync (&optional interval)
   "Start automatic synchronization with INTERVAL seconds.
 If INTERVAL is nil, use `supertag-sync-auto-interval`."
-  (interactive)
-
   ;; Safety check: ensure function is defined before setting timer
   (unless (fboundp 'supertag-sync--check-and-sync)
     (error "supertag-sync--check-and-sync function is not defined. Cannot start auto-sync."))
@@ -2171,7 +2312,6 @@ If INTERVAL is nil, use `supertag-sync-auto-interval`."
 
 (defun supertag-sync-stop-auto-sync ()
   "Stop automatic synchronization."
-  (interactive)
   (when supertag-sync--timer
     (cancel-timer supertag-sync--timer)
     (setq supertag-sync--timer nil)
@@ -2179,12 +2319,11 @@ If INTERVAL is nil, use `supertag-sync-auto-interval`."
   ;; Stop the async worker
   (supertag-async-clear))
 
-;;;###autoload
 (defun supertag-reindex-org ()
   "Rebuild Document Projections from one complete Org snapshot.
-This command never restores Semantic Facts and never modifies Org files.
+This function never restores Semantic Facts and never modifies Org files;
+the user command is `supertag-sync-full-rescan'.
 Return a report plist whose :status is `complete', `aborted', or `failed'."
-  (interactive)
   (supertag-sync--ensure-state-source)
   (let* ((previous-snapshot (copy-tree (supertag-sync--snapshot-get)))
          (snapshot (supertag-sync--snapshot-build))
@@ -2197,6 +2336,7 @@ Return a report plist whose :status is `complete', `aborted', or `failed'."
          (counters '(:nodes-created 0 :nodes-updated 0 :nodes-deleted 0
                      :references-created 0 :references-deleted 0))
          (supertag-sync--is-full-rescan-p t)
+         (supertag-automation-sync--enabled nil)
          gc-count
          report)
     (supertag-sync--snapshot-set snapshot)
@@ -2249,30 +2389,42 @@ Return a report plist whose :status is `complete', `aborted', or `failed'."
                        :files-processed processed
                        :errors (list (error-message-string err))))))
         (when (eq (plist-get report :status) 'complete)
+          ;; A surrounding caller owns its own commit/save boundary.
+          (unless supertag--transaction-active
+            (supertag-save-store))
           (supertag-sync-save-state))))
-    (when (called-interactively-p 'interactive)
-      (pcase (plist-get report :status)
-        ('complete
-         (message
-          "Supertag reindex: %d files, %d created, %d updated, %d deleted, %d refs created, %d refs deleted, %d GC."
-          (plist-get report :files-processed)
-          (plist-get report :nodes-created)
-          (plist-get report :nodes-updated)
-          (plist-get report :nodes-deleted)
-          (plist-get report :references-created)
-          (plist-get report :references-deleted)
-          (plist-get report :garbage-collected)))
-        ('aborted
-         (message "Supertag reindex aborted: snapshot is %s; no changes made."
-                  snapshot-status))
-        ('failed
-         (message "Supertag reindex failed after %d files; Store changes rolled back: %s"
-                  processed (car (plist-get report :errors))))))
     report))
 
 ;;;###autoload
-(defalias 'supertag-sync-full-rescan #'supertag-reindex-org
-  "Compatibility alias for `supertag-reindex-org'.")
+(defun supertag-sync-full-rescan ()
+  "Rebuild Document Projections from one complete Org snapshot.
+Run `supertag-reindex-org', report the outcome in the echo area, and
+after a complete rebuild forget the files retained by failed background
+syncs (`supertag-async-clear-failed'), since the rebuild re-read them.
+Never restore Semantic Facts and never modify Org files.  Return the
+report plist."
+  (interactive)
+  (let ((report (supertag-reindex-org)))
+    (when (eq (plist-get report :status) 'complete)
+      (supertag-async-clear-failed))
+    (pcase (plist-get report :status)
+      ('complete
+       (message
+        "Supertag reindex: %d files, %d created, %d updated, %d deleted, %d refs created, %d refs deleted, %d GC."
+        (plist-get report :files-processed)
+        (plist-get report :nodes-created)
+        (plist-get report :nodes-updated)
+        (plist-get report :nodes-deleted)
+        (plist-get report :references-created)
+        (plist-get report :references-deleted)
+        (plist-get report :garbage-collected)))
+      ('aborted
+       (message "Supertag reindex aborted: snapshot is %s; no changes made."
+                (plist-get report :snapshot-status)))
+      ('failed
+       (message "Supertag reindex failed after %d files; Store changes rolled back: %s"
+                (plist-get report :files-processed) (car (plist-get report :errors)))))
+    report))
 
 ;;;-------------------------------------------------------------------
 ;;; Database Cleanup
@@ -2283,24 +2435,25 @@ Return a report plist whose :status is `complete', `aborted', or `failed'."
   "Perform database maintenance by validating nodes and garbage collecting orphaned nodes.
 This command runs two key maintenance functions in sequence:
 1. `supertag-sync-validate-nodes': Validates all nodes against their source files
-   and marks any "zombie nodes" (nodes in database but not in files) as orphaned.
+   and marks any zombie nodes (nodes in database but not in files) as orphaned.
 2. `supertag-sync-garbage-collect-orphaned-nodes': Deletes all nodes marked as
    orphaned, including zombie nodes and nodes with nil file properties.
 
 This is a safe operation that helps maintain database integrity."
   (interactive)
-  (message "Starting database cleanup...")
+  (when (or (not (called-interactively-p 'interactive))
+            (yes-or-no-p "Validate nodes and delete orphaned database entries? "))
+    (message "Starting database cleanup...")
 
-  ;; Step 1: Validate all nodes and mark zombies as orphaned
-  (let ((counters '(:nodes-deleted 0)))
-    (supertag-sync-validate-nodes counters)
-    (message "Node validation complete. %d nodes marked as orphaned."
-             (plist-get counters :nodes-deleted))
+    ;; Step 1: Validate all nodes and mark zombies as orphaned
+    (let ((counters '(:nodes-deleted 0)))
+      (supertag-sync-validate-nodes counters)
+      (message "Node validation complete. %d nodes marked as orphaned."
+               (plist-get counters :nodes-deleted))
 
-    ;; Step 2: Garbage collect all orphaned nodes
-    (let ((deleted-count (supertag-sync-garbage-collect-orphaned-nodes)))
-      (message "Database cleanup complete. %d orphaned nodes deleted." deleted-count))))
-
+      ;; Step 2: Garbage collect all orphaned nodes
+      (let ((deleted-count (supertag-sync-garbage-collect-orphaned-nodes)))
+        (message "Database cleanup complete. %d orphaned nodes deleted." deleted-count)))))
 
 
 ;;;-------------------------------------------------------------------
@@ -2505,25 +2658,16 @@ It will create entities of type :node and :tag, and establish relations between 
     (let ((tag-ids (supertag--create-tag-entities all-tags)))
       (setf (plist-get counters :tags-created) (length tag-ids)))
 
-    ;; Third phase: Create node entities and relations
-    (message "Creating node entities and relations...")
+    ;; Third phase: Create node entities
+    (message "Creating node entities...")
     (dolist (node all-nodes)
       (condition-case err
-          (let* ((canonical-node
-                  (supertag-sync--resolve-node-tag-occurrences node))
-                 (tag-ids (plist-get canonical-node :tags)))
+          (let ((canonical-node
+                 (supertag-sync--resolve-node-tag-occurrences node)))
             ;; Create node
             (supertag-node-create canonical-node)
             (setf (plist-get counters :nodes-created)
-                  (1+ (plist-get counters :nodes-created)))
-
-            ;; Create node-tag relations
-            (let ((node-id (plist-get canonical-node :id)))
-              (when (and node-id tag-ids)
-                (supertag--create-node-tag-relations node-id tag-ids)
-                (setf (plist-get counters :relations-created)
-                      (+ (plist-get counters :relations-created)
-                         (length tag-ids))))))
+                  (1+ (plist-get counters :nodes-created))))
         (error
          (message "Failed to create node %s: %s" (plist-get node :id) (error-message-string err))
          (setf (plist-get counters :errors)
@@ -2584,7 +2728,75 @@ Provides helpful hints to the user about configuration issues."
      ((not quiet)
       (message "DIAGNOSTIC: %d files tracked." state-count)))))
 
+;;; --- Explicit Resync and Status Commands ---
+
+(defun supertag-sync-force-resync-file (file)
+  "Force resync FILE, ignoring existing sync state."
+  (unless (file-exists-p file)
+    (user-error "File does not exist: %s" file))
+
+  (unless (supertag-sync--in-sync-scope-p file)
+    (user-error "File is not in sync scope: %s" file))
+
+  (when (yes-or-no-p (format "Force resync file %s? " (file-name-nondirectory file)))
+    (message "Force resyncing file: %s" file)
+
+    ;; Remove from sync state to force processing
+    (let ((state-table (supertag-sync--get-state-table)))
+      (remhash file state-table))
+
+    ;; Process the file
+    (let ((counters '(:nodes-created 0 :nodes-updated 0 :nodes-deleted 0
+                     :references-created 0 :references-deleted 0)))
+      (supertag-with-transaction
+        (supertag-sync--process-single-file file counters))
+
+      ;; Update state and report
+      (supertag-sync-update-state file)
+      (supertag-sync-save-state)
+
+      (message "Force resync completed: %d created, %d updated, %d deleted"
+               (plist-get counters :nodes-created)
+               (plist-get counters :nodes-updated)
+               (plist-get counters :nodes-deleted)))))
+
+;;;###autoload
+(defun supertag-sync-force-resync-current-file ()
+ "Force resync the current file."
+ (interactive)
+ (unless (buffer-file-name)
+   (user-error "Current buffer is not visiting a file"))
+ (supertag-sync-force-resync-file (buffer-file-name)))
+
+;;;###autoload
+(defun supertag-sync-status ()
+ "Show current sync status and configuration."
+ (interactive)
+ (let* ((state-table (supertag-sync--get-state-table))
+        (num-tracked-files (hash-table-count state-table))
+        (modified-files (supertag-get-modified-files))
+        (num-modified (length modified-files))
+        (timer-active (and supertag-sync--timer (not (null supertag-sync--timer)))))
+
+   (message "=== Supertag Sync Status ===")
+   (message "Sync directories: %s" supertag-sync-directories)
+   (message "Exclude directories: %s" supertag-sync-exclude-directories)
+   (message "File pattern: %s" supertag-sync-file-pattern)
+   (message "Auto-sync: %s" (if timer-active "ACTIVE" "INACTIVE"))
+   (message "Tracked files: %d" num-tracked-files)
+   (message "Modified files: %d" num-modified)
+
+   (when (> num-modified 0)
+     (message "Modified files:")
+     (dolist (file modified-files)
+       (message "  - %s" file)))))
+
 ;;; --- Register Built-in Extractors ---
 (supertag-extractor--setup-defaults)
+
+(defun supertag-sync--reset-runtime ()
+  "Clear in-memory sync work belonging to the previous vault."
+  (clrhash supertag-sync--deferred-files)
+  (clrhash supertag-sync--internal-modifications))
 
 (provide 'supertag-services-sync)

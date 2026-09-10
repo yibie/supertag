@@ -4,13 +4,13 @@
 
 ;;; Commentary:
 
-;; `supertag-doctor' is an interactive health-check command for the
+;; `supertag-doctor' is a health-check function for the
 ;; Supertag persistence layer.  It inspects the on-disk database
 ;; file(s), in-memory store guards, lock state, data version, and
 ;; referential integrity, then renders a report to the
 ;; "*Supertag Doctor*" buffer.
 ;;
-;; Unless called with a prefix argument (or running in batch mode via
+;; Unless called with non-nil REPORT-ONLY (or running in batch mode via
 ;; `noninteractive'), it will additionally offer to run a series of
 ;; known-safe repair commands, prompting with `y-or-n-p' before each
 ;; one, and appending what was run to the report buffer.
@@ -21,8 +21,13 @@
 ;; reports "n/a (helper not available)" instead of erroring, so the
 ;; command is always safe to run.
 
+
+;; Commands: none; Lisp entrypoint: supertag-doctor (&optional report-only).
+;; Dependencies: supertag-git, cl-lib, supertag-core-persistence, supertag-core-store. Guarded
+;; repair capability: supertag-sync-cleanup-database from supertag-services-sync.
 ;;; Code:
 
+(require 'supertag-git)
 (require 'cl-lib)
 (require 'supertag-core-persistence)
 (require 'supertag-core-store)
@@ -30,19 +35,11 @@
 ;; Sync-layer repair helper. Not hard-required so this file keeps a
 ;; minimal dependency footprint; guarded with `fboundp' at call time.
 (declare-function supertag-sync-cleanup-database "supertag-services-sync")
-(declare-function supertag-reindex-org "supertag-services-sync")
 
-;; Git-sync diagnostics are loaded lazily when that report section runs, so
-;; a cold doctor invocation can inspect conflicts left by an earlier session.
+;; Git diagnostics are required above, so a cold doctor invocation can
+;; inspect conflicts left by an earlier session.
 (declare-function supertag-git-check "supertag-git")
 (declare-function supertag-git-sync--live-conflicted-org-files "supertag-git")
-
-;; Sync-conflicts (semantic merge conflicts recorded by supertag-merge.el
-;; into the `:sync-conflicts' collection) are reported by supertag-conflicts.el.
-;; Not hard-required -- see that file's Commentary for why this file must not
-;; force its load; every call site below is `fboundp'-guarded.
-(declare-function supertag-conflicts-list "supertag-conflicts")
-(declare-function supertag-conflicts-count "supertag-conflicts")
 
 (defgroup supertag-doctor nil
   "Health check and repair tools for Supertag."
@@ -149,7 +146,7 @@ Silent when the last load succeeded normally and the default roots are clear."
         (insert "Data directory recovery is required: a retired default root is still present.\n\n")
         (insert (supertag-persistence-format-data-directory-comparison) "\n\n")
         (insert "All directories and database files remain safe and unchanged.\n")
-        (insert "  - M-x supertag-resolve-data-directories choose the active root and safely retire the other\n")
+        (insert "  - (supertag-resolve-data-directories) choose the active root and safely retire the other\n")
         (when (memq status '(:failed :missing-with-backups))
           (insert "\n")))
       (when (memq status '(:failed :missing-with-backups))
@@ -157,13 +154,13 @@ Silent when the last load succeeded normally and the default roots are clear."
           (:missing-with-backups
            (insert "The database file is MISSING, but backup snapshots survive.\n")
            (insert "Your notes are safe; saving is blocked so the backups stay intact.\n")
-           (insert "  - M-x supertag-restore            recover from a snapshot\n")
-           (insert "  - M-x supertag-accept-fresh-store intentionally start over empty\n"))
+           (insert "  - (supertag-restore)              recover from a snapshot\n")
+           (insert "  - (supertag-accept-fresh-store)   intentionally start over empty\n"))
           (:failed
            (insert "The database file exists but could NOT be read.\n")
            (insert "It has not been modified; saving is blocked to protect it.\n")
-           (insert "  - M-x supertag-restore            recover from a snapshot\n")
-           (insert "  - M-x supertag-reindex-org        rebuild projections from Org files after restoring\n")))
+           (insert "  - (supertag-restore)              recover from a snapshot\n")
+           (insert "  - M-x supertag-sync-full-rescan   rebuild projections from Org files after restoring\n")))
         (let ((snapshots (when (fboundp 'supertag--restore-snapshot-list)
                            (supertag--restore-snapshot-list))))
           (insert (format "Snapshots available: %s\n"
@@ -220,7 +217,7 @@ Silent when the last load succeeded normally and the default roots are clear."
   ;; saved since upgrading. Surfaced here because a pre-6.0 (<= 5.9.x) build
   ;; cannot read entities out of the canonical format at all (see
   ;; `supertag-data-version''s docstring) -- this line is the first place a
-  ;; user checking `M-x supertag-doctor' before downgrading would see that.
+  ;; user checking `supertag-doctor' before downgrading would see that.
   (let ((active (and (boundp 'supertag-db-file) supertag-db-file)))
     (insert (format "On-disk format: %s\n"
                     (cond
@@ -341,147 +338,23 @@ own / foreign-active / foreign-stale / unavailable."
               (format "foreign, stale (%s, %ds ago)" host age)))))))))))
 
 (defun supertag-doctor--section-git-sync ()
-  "Insert the \"Git Sync\" section into the current buffer.
-Reports this clone's `supertag-git-check' plist (see supertag-git.el):
-whether the database lives inside a git worktree, whether THIS clone's
-`.git/config' has the semantic merge driver configured (the single
-easiest step to forget -- it is per-clone and never travels with the
-repository), `.gitattributes'/tracked/remote status, and the V1
-single-sync-root limitation.
-
-The \"Text Conflicts\" line below is deliberately recomputed FRESH from
-git's own live index state every time this report is generated (via
-`supertag-git-sync--live-conflicted-org-files'), rather than trusted from
-`supertag-git-sync--conflicted-org-files' alone: that variable is
-session-local Lisp state which is simply gone after an Emacs restart, even
-though an unresolved mid-merge repository on disk is not -- this report
-must surface that conflict either way. The session variable is still
-refreshed to match, so it stays a useful cache for other callers (e.g. the
-sync-scanner-skipping advice)."
-  (require 'supertag-git nil t)
+  "Report the Org Git root, tracked local caches, and unresolved text conflicts."
   (supertag-doctor--insert-header "8. Git Sync")
-  (let* ((status (and (fboundp 'supertag-git-check) (supertag-git-check)))
-         (in-repo (and status (plist-get status :in-repo-p)))
-         (repo-root (and status (plist-get status :repo-root))))
-    (if (not status)
-        (insert (supertag-doctor--na) " (supertag-git.el not loaded)\n")
-      (insert (format "In a git repository: %s\n" (if in-repo "yes" "no")))
-      (if (not in-repo)
-          (progn
-            (insert "  Hint: run `M-x supertag-git-setup' to initialize/configure git sync for this vault.\n")
-            (when (plist-get status :multiple-sync-roots-p)
-              (insert "  NOTE: multiple `supertag-sync-directories' roots are configured -- git sync (V1) only supports a single-root vault; `supertag-git-setup' will refuse until this is consolidated.\n")))
-        (progn
-          (insert (format "  Repo root: %s\n" (plist-get status :repo-root)))
-          (insert (format "  DB path relative to repo root: %s\n" (plist-get status :relative-path)))
-          (insert (format "  Merge driver configured (THIS CLONE): %s%s\n"
-                          (if (plist-get status :driver-configured-p) "yes" "NO")
-                          (if (plist-get status :driver-configured-p)
-                              ""
-                            " -- run `M-x supertag-git-setup' on THIS machine; `.git/config' is never synced by git, so every clone/machine needs this done separately")))
-          (insert (format "  .gitattributes entry present: %s%s\n"
-                          (if (plist-get status :gitattributes-entry-present-p) "yes" "no")
-                          (if (plist-get status :gitattributes-entry-present-p)
-                              ""
-                            " -- run `M-x supertag-git-setup'")))
-          (insert (format "  Database tracked by git: %s\n"
-                          (if (plist-get status :db-tracked-p) "yes" "no (commit it once it exists)")))
-          (insert (format "  Remote configured: %s\n"
-                          (if (plist-get status :remote-configured-p) "yes" "no")))
-          (when (plist-get status :multiple-sync-roots-p)
-            (insert "  WARNING: multiple `supertag-sync-directories' roots are configured -- git sync (V1) only supports a single-root vault; consolidate before relying on this.\n"))
-          (when (and (plist-get status :driver-configured-p)
-                     (plist-get status :gitattributes-entry-present-p))
-            (insert "  Degradation note: even if the driver were misconfigured on another clone, git's default line merge still converges disjoint-entity edits; only a same-entity edit produces conflict markers, which the persistence loader refuses to load (see M-x supertag-doctor section \"2. Guards\" / *Messages*) rather than silently treating as an empty database.\n")))))
-    ;; S4: `supertag-git-sync-mode' status + org-text-conflict list. The
-    ;; module was required softly at section entry; keep the guards so a
-    ;; missing/broken optional module still degrades to an honest report.
-    (insert "\n")
-    (if (not (boundp 'supertag-git-sync-mode))
-        (insert "  supertag-git-sync-mode: n/a (supertag-git.el not loaded)\n")
-      (insert (format "  supertag-git-sync-mode: %s\n"
-                      (if (and (boundp 'supertag-git-sync-mode) supertag-git-sync-mode) "ON" "off")))
-      (when (and (boundp 'supertag-git-sync--pending-push-count)
-                 (boundp 'supertag-git-sync-mode)
-                 supertag-git-sync-mode)
-        (insert (format "  Commits pending push: %d\n" supertag-git-sync--pending-push-count)))
-      (let ((conflicted
-             (cond
-              ;; Prefer this session's OWN active vault root (set while
-              ;; `supertag-git-sync-mode' has been enabled at least once
-              ;; this session) when we have one -- recomputing against it
-              ;; keeps this in agreement with the mode's own machinery.
-              ((and (boundp 'supertag-git-sync--vault-root)
-                    supertag-git-sync--vault-root
-                    (fboundp 'supertag-git-sync--live-conflicted-org-files))
-               (supertag-git-sync--live-conflicted-org-files supertag-git-sync--vault-root))
-              ;; Otherwise, whenever we at least know the repo root (from
-              ;; `supertag-git-check' above), recompute live from git
-              ;; anyway -- this is the "survives an Emacs restart" case:
-              ;; `supertag-git-sync--vault-root' is nil until the mode is
-              ;; turned on THIS session, but an unresolved conflict on disk
-              ;; predates this session entirely.
-              ((and in-repo repo-root (fboundp 'supertag-git-sync--live-conflicted-org-files))
-               (supertag-git-sync--live-conflicted-org-files repo-root))
-              ;; Last resort (the soft require failed): fall back to
-              ;; whatever the session cache happens to hold.
-              (t (and (boundp 'supertag-git-sync--conflicted-org-files)
-                      supertag-git-sync--conflicted-org-files)))))
-        ;; Refresh the session cache to match what was just computed live,
-        ;; so other callers (e.g. the sync-scanner-skipping advice) agree
-        ;; with what this report just showed.
-        (when (boundp 'supertag-git-sync--conflicted-org-files)
-          (setq supertag-git-sync--conflicted-org-files conflicted))
-        (if (not conflicted)
-            (insert "  Text Conflicts: none\n")
-          (insert (format "  Text Conflicts: %d file(s) left un-imported after the last merge -- resolve manually (magit / `git checkout --merge'), then they will be picked up again:\n"
-                          (length conflicted)))
-          (dolist (f conflicted)
-            (insert (format "    - %s\n" f))))))))
-
-(defun supertag-doctor--conflict-brief (v)
-  "Compact, truncated `format' rendering of one conflict-side value V.
-Mirrors `supertag-conflicts--describe-value' (duplicated rather than
-required -- see this section's fboundp guard) so this report degrades
-gracefully even when supertag-conflicts.el is not loaded."
-  (let ((s (if (eq v :supertag-merge/absent) "<deleted>" (format "%S" v))))
-    (if (> (length s) 80) (concat (substring s 0 77) "...") s)))
-
-(defun supertag-doctor--section-sync-conflicts ()
-  "Insert the \"9. Sync Conflicts\" section into the current buffer.
-Reports every entity recorded in the `:sync-conflicts' collection by
-`supertag-merge.el' (see its Commentary \"Conflict representation\" for
-the record shape, and supertag-conflicts.el's Commentary for how each
-kind is resolved): id, collection/entity, kind, key, and a compact
-ours/theirs/base rendering, capped at 20 entries with the remainder
-noted. Cleanly reports \"None.\" when there are zero conflicts.
-`fboundp'-guarded throughout -- this file must not hard-require
-`supertag-conflicts.el' (see that file's Commentary, \"Load-time
-visibility\")."
-  (supertag-doctor--insert-header "9. Sync Conflicts")
-  (if (not (fboundp 'supertag-conflicts-list))
-      (insert (supertag-doctor--na) " (supertag-conflicts.el not loaded)\n")
-    (let* ((conflicts (supertag-conflicts-list))
-           (count (length conflicts)))
-      (if (zerop count)
-          (insert "None.\n")
-        (insert (format "Count: %d\n\n" count))
-        (let ((shown 0))
-          (dolist (c conflicts)
-            (when (< shown 20)
-              (cl-incf shown)
-              (insert (format "- %s\n" (plist-get c :id)))
-              (insert (format "  Collection/Entity: %s / %s\n"
-                              (or (plist-get c :collection) "root")
-                              (or (plist-get c :entity-id) "-")))
-              (insert (format "  Kind: %s  Key: %s\n"
-                              (plist-get c :kind) (or (plist-get c :key) "-")))
-              (insert (format "  Ours:   %s\n" (supertag-doctor--conflict-brief (plist-get c :ours))))
-              (insert (format "  Theirs: %s\n" (supertag-doctor--conflict-brief (plist-get c :theirs))))
-              (insert (format "  Base:   %s\n" (supertag-doctor--conflict-brief (plist-get c :base)))))))
-        (when (> count 20)
-          (insert (format "  ... and %d more (showing first 20)\n" (- count 20))))
-        (insert "\nResolve with: M-x supertag-conflicts-resolve (bulk: supertag-conflicts-use-ours-all / supertag-conflicts-use-theirs-all)\n")))))
+  (let* ((status (supertag-git-check))
+         (root (plist-get status :repo-root))
+         (conflicts (and root (supertag-git-sync--live-conflicted-org-files root))))
+    (insert (format "Org Git root: %s\n" (or root "not configured")))
+    (insert (format "Only Org and root .gitignore tracked: %s\n"
+                    (if (plist-get status :org-only-p) "yes" "no")))
+    (insert (format "Tracked DB/attributes: %s\n"
+                    (or (plist-get status :retired-tracked) "none")))
+    (when (plist-get status :retired-tracked)
+      (insert "Run supertag-git-setup to stop tracking local caches.\n"))
+    (insert (format "Conflict pause: %s\n"
+                    (if (or conflicts (bound-and-true-p supertag-git--conflicted-files)) "yes" "no")))
+    (dolist (file (delete-dups (append conflicts (bound-and-true-p supertag-git--conflicted-files))))
+      (insert (format "  %s\n" file)))
+    (when conflicts (insert "Resolve in smerge-mode, save, then supertag-git-sync-now.\n"))))
 
 (defun supertag-doctor--build-report ()
   "Erase the current buffer and insert the full doctor report."
@@ -498,22 +371,17 @@ visibility\")."
   (supertag-doctor--section-backups)
   (supertag-doctor--section-presence)
   (supertag-doctor--section-git-sync)
-  (supertag-doctor--section-sync-conflicts)
   (insert "\n"))
 
 ;;; --- Repairs ---
 
 (defconst supertag-doctor--repair-commands
-  '((supertag-db-migrate-and-normalize
-     . "Run data migrations and normalization (supertag-db-migrate-and-normalize)")
-    (supertag-db-purge-invalid-nodes
-     . "Purge invalid/ghost nodes (supertag-db-purge-invalid-nodes)")
-    (supertag-db-purge-duplicate-tags
-     . "Purge duplicate tags (supertag-db-purge-duplicate-tags)")
+  '((supertag-migrate-run . "Run verified data migration")
+    (supertag-migrate-status . "Report pending migration and identity conflicts")
     (supertag-sync-cleanup-database
      . "Validate nodes and garbage-collect orphans (supertag-sync-cleanup-database)")
-    (supertag-reindex-org
-     . "Rebuild document projections from Org files (supertag-reindex-org)"))
+    (supertag-sync-full-rescan
+     . "Rebuild document projections from Org files (supertag-sync-full-rescan)"))
   "Repair commands offered by `supertag-doctor', in run order.")
 
 (defun supertag-doctor--offer-recovery ()
@@ -532,7 +400,7 @@ visibility\")."
           (insert (format "- RUNNING: %s\n" desc))
           (condition-case err
               (progn
-                (call-interactively #'supertag-resolve-data-directories)
+                (supertag-resolve-data-directories)
                 (insert "  -> done\n"))
             (error
              (insert (format "  -> ERROR: %s\n" (error-message-string err))))))
@@ -554,7 +422,7 @@ visibility\")."
            ((y-or-n-p (format "Recovery: %s? " desc))
             (insert (format "- RUNNING: %s\n" desc))
             (condition-case err
-                (progn (call-interactively fn)
+                (progn (funcall fn)
                        (insert "  -> done\n"))
               (error
                (insert (format "  -> ERROR: %s\n" (error-message-string err))))))
@@ -595,7 +463,6 @@ visibility\")."
 
 ;;; --- Entry point ---
 
-;;;###autoload
 (defun supertag-doctor (&optional report-only)
   "Run health checks on the Supertag database and report to a buffer.
 
@@ -603,12 +470,11 @@ Produces a report in the \"*Supertag Doctor*\" buffer covering
 database files, guards, lock state, data version, integrity, and
 backups.
 
-With a prefix argument REPORT-ONLY (or when running in batch mode,
+With non-nil REPORT-ONLY (or when running in batch mode,
 see `noninteractive'), only the report is produced and no repairs are
 offered. Otherwise, after the report, a series of known-safe repair
 commands are offered one at a time via `y-or-n-p', skipping any that
 are not currently available (not `fboundp')."
-  (interactive "P")
   (let* ((report-only (or report-only noninteractive))
          (buf (get-buffer-create supertag-doctor--buffer-name)))
     (with-current-buffer buf

@@ -3,18 +3,25 @@
 ;;; Commentary:
 
 ;; Stream View presents every node carrying a tag (or one of its transitive
-;; `:extends' descendants) as a chronological title list.  The buffer is a
+;; path descendants) as a chronological title list.  The buffer is a
 ;; normal View Runtime instance rendered through the existing Widget DSL.
 
+
+;; Commands: supertag-view-stream-mode, supertag-view-stream-edit-mode, supertag-view-stream,
+;; supertag-view-stream-next-node, supertag-view-stream-previous-node,
+;; supertag-view-stream-open-node-view, supertag-view-stream-edit,
+;; supertag-view-stream-edit-finish, supertag-view-stream-edit-abort, supertag-view-stream-quit.
+;; Dependencies: cl-lib, org, subr-x, time-date, supertag-node, supertag-services-sync,
+;; supertag-service-org, supertag-view-framework, supertag-view-node.
 ;;; Code:
 
 (require 'cl-lib)
 (require 'org)
 (require 'subr-x)
 (require 'time-date)
-(require 'supertag-ops-node)
+(require 'supertag-node)
 (require 'supertag-services-sync)
-(require 'supertag-view-api)
+(require 'supertag-service-org)
 (require 'supertag-view-framework)
 (require 'supertag-view-node)
 
@@ -45,17 +52,11 @@
 (defvar-local supertag-view-stream-edit--return-buffer nil
   "Stream buffer to refresh after an indirect edit finishes.")
 
-(defvar-local supertag-view-stream-edit--window-configuration nil
-  "Window configuration to restore after an indirect edit.")
-
 (defvar-local supertag-view-stream-edit--node-id nil
   "Node ID being edited in the current indirect buffer.")
 
-(defvar-local supertag-view-stream-edit--original-text nil
-  "Source text to restore when the current Stream edit is aborted.")
-
-(defvar-local supertag-view-stream-edit--base-modified-p nil
-  "Whether the source buffer was modified before the Stream edit.")
+(defvar-local supertag-view-stream-edit--session nil
+  "Transient source context, rollback baseline and save hook for this edit.")
 
 (defvar supertag-view-stream-mode-map
   (let ((map (make-sparse-keymap)))
@@ -325,7 +326,7 @@
 
 ;;;###autoload
 (defun supertag-view-stream (&optional tag)
-  "Open a title Stream for TAG and all `:extends' descendants."
+  "Open a title Stream for TAG and all path descendants."
   (interactive
    (list (plist-get (supertag-view--read-tag) :value)))
   (unless (and (stringp tag) (not (string-empty-p tag)))
@@ -398,70 +399,169 @@
     (unless (and (stringp file) (file-exists-p file))
       (user-error "Source file for node %s is unavailable" node-id))
     (let* ((base (find-file-noselect file))
-           (window-config (current-window-configuration))
+           session
            range
            edit)
       (with-current-buffer base
         (unless (derived-mode-p 'org-mode)
           (org-mode))
-        (setq range (supertag-view-stream--edit-range node-id level))
-        (goto-char (car range))
-        (setq edit
-              (clone-indirect-buffer
-               (generate-new-buffer-name
-                (format "*Supertag Edit: %s*"
-                        (supertag-view-stream--node-title node)))
-               nil)))
+        (setq session
+              (list :base base
+                    :save-hook nil
+                    :change-hook nil
+                    :point (copy-marker (point))
+                    :mark (when (mark t) (copy-marker (mark t)))
+                    :active mark-active
+                    :min (copy-marker (point-min))
+                    :max (copy-marker (point-max) t)
+                    :dirty (buffer-modified-p)))
+        (save-excursion
+          (save-restriction
+            (setq range (supertag-view-stream--edit-range node-id level))
+            (setq session
+                  (append session
+                          (list :start (copy-marker (car range))
+                                :end (copy-marker (cdr range))
+                                :text (buffer-substring-no-properties
+                                       (car range) (cdr range))
+                                :file-text (buffer-substring-no-properties
+                                            (point-min) (point-max)))))
+            (goto-char (car range))
+            (setq edit
+                  (clone-indirect-buffer
+                   (generate-new-buffer-name
+                    (format "*Supertag Edit: %s*"
+                            (supertag-view-stream--node-title node)))
+                   nil)))))
       (with-current-buffer edit
         (widen)
         (narrow-to-region (car range) (cdr range))
         (goto-char (point-min))
         (org-fold-show-all)
         (setq-local supertag-view-stream-edit--return-buffer main
-                    supertag-view-stream-edit--window-configuration window-config
                     supertag-view-stream-edit--node-id node-id
-                    supertag-view-stream-edit--original-text
-                    (buffer-substring-no-properties (point-min) (point-max))
-                    supertag-view-stream-edit--base-modified-p
-                    (buffer-modified-p))
-        (supertag-view-stream-edit-mode 1))
+                    supertag-view-stream-edit--session session)
+        (supertag-view-stream-edit-mode 1)
+        (add-hook 'after-change-functions
+                  #'supertag-view-stream-edit--track-end nil t)
+        (add-hook 'kill-buffer-hook #'supertag-view-stream-edit--cleanup nil t))
+      ;; Native save-buffer on an indirect buffer saves its base and runs
+      ;; the base's after-save-hook.  Install after cloning, so the edit
+      ;; does not inherit an extra copy of this session's callback.
+      (let ((changed (lambda (&rest _)
+                       (when (buffer-live-p edit)
+                         ;; Base insertions at the next heading belong outside
+                         ;; this edit, including the indirect narrowing boundary.
+                         (with-current-buffer edit
+                           (narrow-to-region (plist-get session :start)
+                                             (plist-get session :end))))))
+            (saved (lambda ()
+                     (when (buffer-live-p edit)
+                       (supertag-view-stream-edit--saved session)))))
+        (setf (plist-get session :save-hook) saved
+              (plist-get session :change-hook) changed)
+        (with-current-buffer base
+          (add-hook 'after-save-hook saved nil t)
+          (add-hook 'after-change-functions changed nil t)))
       (pop-to-buffer edit)
       edit)))
+
+(defun supertag-view-stream-edit--track-end (beg end _old-length)
+  "Include edits made at this edit buffer's end, but not base insertions."
+  (let ((boundary (plist-get supertag-view-stream-edit--session :end)))
+    (when (and (<= beg boundary) (>= end boundary))
+      (set-marker boundary end))))
+
+(defun supertag-view-stream-edit--saved (session)
+  "Advance SESSION's cancellation baseline after a successful base save."
+  (save-restriction
+    (widen)
+    (setf (plist-get session :text)
+          (buffer-substring-no-properties (plist-get session :start)
+                                          (plist-get session :end))
+          (plist-get session :file-text)
+          (buffer-substring-no-properties (point-min) (point-max))
+          (plist-get session :dirty) nil)))
+
+(defun supertag-view-stream-edit--cleanup ()
+  "Release this edit's hook and markers, restoring its base context."
+  (when-let* ((session supertag-view-stream-edit--session))
+    (let ((base (plist-get session :base)))
+      (when (buffer-live-p base)
+        (with-current-buffer base
+          (remove-hook 'after-save-hook (plist-get session :save-hook) t)
+          (remove-hook 'after-change-functions (plist-get session :change-hook) t)
+          (widen)
+          (narrow-to-region (plist-get session :min) (plist-get session :max))
+          (goto-char (plist-get session :point))
+          (if (plist-get session :mark)
+              (set-mark (marker-position (plist-get session :mark)))
+            (set-marker (mark-marker) nil))
+          (setq mark-active (plist-get session :active)))))
+    (dolist (key '(:point :mark :min :max :start :end))
+      (when-let* ((marker (plist-get session key)))
+        (set-marker marker nil)))
+    (setq supertag-view-stream-edit--session nil)))
 
 (defun supertag-view-stream-edit--close (refresh)
   "Close the current Stream edit, refreshing its Stream when REFRESH."
   (let ((edit (current-buffer))
         (main supertag-view-stream-edit--return-buffer)
-        (window-config supertag-view-stream-edit--window-configuration))
+        (window (get-buffer-window (current-buffer) t)))
+    ;; Replace only this edit's display.  Restoring an old window configuration
+    ;; would delete unrelated windows the user opened during the session.
+    (when (buffer-live-p main)
+      (dolist (edit-window (get-buffer-window-list edit nil t))
+        (set-window-buffer edit-window main)))
     (kill-buffer edit)
-    (when (window-configuration-p window-config)
-      (set-window-configuration window-config))
+    (when (buffer-live-p main)
+      (if (window-live-p window)
+          (select-window window)
+        (pop-to-buffer main)))
     (when (and refresh (buffer-live-p main))
       (supertag-view-refresh main))
     main))
 
 (defun supertag-view-stream-edit-finish ()
-  "Finish the current Stream indirect edit and return to its Stream."
+  "Save the whole source file, project this node and return to its Stream.
+This also saves existing drafts elsewhere in that file.  Failure retains
+the edit for retry; a projection failure preserves the saved document."
   (interactive)
   (unless supertag-view-stream-edit-mode
     (user-error "Not editing a Stream node"))
-  (let ((node-id supertag-view-stream-edit--node-id))
-    (save-restriction
-      (widen)
-      (when (supertag-node--goto-location node-id)
-        (supertag-node-sync-at-point)))
+  (let ((node-id supertag-view-stream-edit--node-id)
+        (base (buffer-base-buffer)))
+    (unless (buffer-live-p base)
+      (user-error "Stream source buffer is no longer available"))
+    (with-current-buffer base
+      (save-excursion
+        (save-restriction
+          (widen)
+          (unless (supertag-node--goto-location node-id)
+            (user-error "Could not locate node %s in its source file" node-id))
+          (supertag-service-org-save-and-project-current-node node-id))))
     (supertag-view-stream-edit--close t)))
 
 (defun supertag-view-stream-edit-abort ()
-  "Abort the current Stream edit and return without keeping its changes."
+  "Cancel unsaved session edits, retaining the latest successful native save.
+Other changes outside the edit range are preserved.  This command never saves."
   (interactive)
   (unless supertag-view-stream-edit-mode
     (user-error "Not editing a Stream node"))
-  (let ((inhibit-read-only t)
-        (buffer-undo-list t))
-    (delete-region (point-min) (point-max))
-    (insert supertag-view-stream-edit--original-text)
-    (set-buffer-modified-p supertag-view-stream-edit--base-modified-p))
+  (let* ((session supertag-view-stream-edit--session)
+         (text (plist-get session :text))
+         (inhibit-read-only t))
+    (save-restriction
+      (widen)
+      ;; A minimal text replacement retains markers in unchanged text,
+      ;; including the base point, mark and restriction boundaries.
+      (replace-region-contents (plist-get session :start)
+                               (plist-get session :end)
+                               (lambda () text))
+      (set-buffer-modified-p
+       (or (plist-get session :dirty)
+           (not (equal (buffer-substring-no-properties (point-min) (point-max))
+                       (plist-get session :file-text)))))))
   (supertag-view-stream-edit--close nil))
 
 (defun supertag-view-stream-quit ()

@@ -17,20 +17,28 @@
 ;;   and sends specialized operations to a task-specific secondary menu.
 ;; - Top-level keys are short and unique; lowercase "q" is left untouched
 ;;   so `transient's default quit binding keeps working.
-;; - Every command referenced here already exists elsewhere in
-;;   Supertag; none are (re)defined in this file. Commands whose
-;;   owning feature carries an `;;;###autoload' cookie (or is guaranteed
-;;   to already be loaded as part of Supertag's own core `require'
-;;   chain) are wired directly by symbol. Commands whose owning feature
-;;   is NOT unconditionally loaded (or has no autoload cookie) are wired
-;;   through a thin `supertag-menu--*' wrapper that `require's the owning
-;;   feature before calling the real command interactively, so the menu
-;;   works regardless of what has been loaded so far.
-;; - Every suffix names a command defined after this feature loads.  Lazy
-;;   wrappers additionally verify their target after loading its feature,
-;;   so a stale menu entry fails as "unavailable" rather than as a void
-;;   function.
+;; - Business commands live in their owning modules, not in this file;
+;;   optional targets may be unavailable. The declared feature wrappers
+;;   below are used regardless of autoload cookies or main's require chain;
+;;   direct migration actions expect the initialized session. Each thin
+;;   `supertag-menu--*' wrapper registers a native
+;;   autoload on first use when neither target nor owner is already present,
+;;   then calls the target interactively. Menu-only loading installs no
+;;   business-target bindings and loads no business features.
+;; - An already loaded owner with an absent target reports "unavailable".
+;;   Cold autoload failures keep their native error/quit; loading a file
+;;   which does not define its advertised target is a native autoload error.
 
+
+;; Commands: supertag-menu, supertag-menu-more, supertag-menu-write-more,
+;; supertag-menu-organize-more, supertag-menu-find-more, supertag-menu-maintain-more;
+;; supertag-menu--* target wrappers are local menu actions.
+;; Dependencies: transient only at load time. Native-autoload targets: supertag-view-node,
+;; supertag-view-stream, supertag-tag, supertag-node, supertag-link, supertag-concept,
+;; supertag-discovery, supertag-query, supertag-semantic, supertag-ai, supertag-services-sync,
+;; supertag-git, supertag-automation, supertag-vault. Direct migration targets use
+;; supertag-migrate in an initialized session; supertag-migrate-tag-ids remains a known
+;; unavailable optional target.
 ;;; Code:
 
 (require 'transient)
@@ -42,176 +50,77 @@
 ;; already guaranteed to be loaded by the time a real Supertag session
 ;; calls `supertag-menu' (see the module-by-module notes below).
 
-;; supertag-view-table.el (no autoload cookie; wrapped)
-(declare-function supertag-view-table "supertag-view-table" (data-source &optional columns view-config named-views))
-;; supertag-ui-commands.el (no autoload cookie; wrapped)
-(declare-function supertag-view-kanban "supertag-ui-commands" ())
 ;; supertag-view-node.el (no autoload cookie; wrapped)
 (declare-function supertag-view-node "supertag-view-node" ())
 (declare-function supertag-view-stream "supertag-view-stream" (&optional tag-id))
-;; supertag-view-schema.el (;;;###autoload; also unconditionally required
-;; by supertag.el, so it is safe to reference directly)
-(declare-function supertag-view-schema "supertag-view-schema" ())
-;; supertag-board.el (;;;###autoload; optional feature, requires the
-;; external `websocket' package; guarded with :if fboundp below)
-(declare-function supertag-board-mode "supertag-board" (&optional arg))
-(autoload 'supertag-board-mode "supertag-board" nil t)
-;; supertag-graph-ui.el (;;;###autoload; optional feature, requires the
-;; external `websocket' package; guarded with :if fboundp below)
-(declare-function supertag-graph-ui-open "supertag-graph-ui" ())
-(autoload 'supertag-graph-ui-open "supertag-graph-ui" nil t)
 
-;; supertag-ui-commands.el (no autoload cookies; all wrapped)
-(declare-function supertag-add-tag "supertag-ui-commands" (&optional beg end))
-(declare-function supertag-remove-tag-from-node "supertag-ui-commands" ())
-(declare-function supertag-change-tag-at-point "supertag-ui-commands" ())
-(declare-function supertag-rename-tag "supertag-ui-commands" (&optional tag-id))
-(declare-function supertag-delete-tag-everywhere "supertag-ui-commands" (&optional tag-id))
-(declare-function supertag-ui-quick-edit-field "supertag-ui-commands" ())
-(declare-function supertag-edit-fields "supertag-ui-commands" (&optional node-id tag-id))
-(declare-function supertag-find-node "supertag-ui-commands" ())
-(declare-function supertag-reference-insert "supertag-ui-reference"
+;; Tag, Node and Link commands (loaded through their feature wrappers)
+;; Add Tag is owned by the Tag feature.
+(declare-function supertag-add-tag "supertag-tag" (&optional beg end))
+(declare-function supertag-remove-tag-from-node "supertag-tag" ())
+;; Tag management is loaded lazily from its feature.
+(declare-function supertag-rename-tag "supertag-tag" (&optional old-id new-name))
+(declare-function supertag-delete-tag-everywhere "supertag-tag" (&optional tag-name))
+(declare-function supertag-find-node "supertag-node" (&optional other-window))
+(declare-function supertag-add-link "supertag-link"
                   (&optional choose-target))
-(declare-function supertag-insert-embed "supertag-ui-commands" ())
-(declare-function supertag-convert-link-to-embed "supertag-ui-commands" ())
-(declare-function supertag-capture "supertag-ui-commands" (&optional target-file headline))
-(declare-function supertag-act "supertag-ui-act" ())
+;; supertag-concept.el (Promote uses its feature wrapper below)
+(declare-function supertag-promote "supertag-concept" (&optional template-key selected-node))
 
-;; supertag-ui-link.el (small typed-Link workflow; wrapped)
-(declare-function supertag-link-add "supertag-ui-link" (&optional node-id))
-(declare-function supertag-link-remove "supertag-ui-link" (&optional node-id))
-(declare-function supertag-link-menu "supertag-ui-link" ())
+;; supertag-discovery.el (no autoload cookie; wrapped)
+(declare-function supertag-discovery "supertag-discovery" ())
+;; supertag-query.el (wrapped; build/describe also have autoload cookies)
+(declare-function supertag-add-query-block "supertag-query" ())
+(declare-function supertag-query-build "supertag-query" ())
+(declare-function supertag-query-describe-syntax "supertag-query" ())
 
-;; supertag-concept.el (;;;###autoload; also unconditionally required by
-;; supertag.el, so it is safe to reference directly)
-(declare-function supertag-promote-concept "supertag-concept" (beg end))
-
-;; supertag-ui-search.el (no autoload cookie; wrapped)
-(declare-function supertag-search "supertag-ui-search" ())
-;; supertag-ui-query-block.el (no autoload cookie; wrapped)
-(declare-function supertag-insert-query-block "supertag-ui-query-block" ())
-(declare-function supertag-insert-query-dblock "supertag-ui-query-block" ())
-(declare-function supertag-query-build "supertag-query-library" ())
-(declare-function supertag-query-run-saved "supertag-query-library" ())
-(declare-function supertag-query-describe-syntax "supertag-query-library" ())
-
-;; supertag-view-ontology-migration.el (optional control-plane UI; wrapped)
-(declare-function supertag-ontology-migration-preview
-                  "supertag-view-ontology-migration" (&optional name))
-(declare-function supertag-ontology-migration-apply
-                  "supertag-view-ontology-migration" (&optional name))
-(declare-function supertag-ontology-migration-status
-                  "supertag-view-ontology-migration" (&optional module))
-(declare-function supertag-ontology-migration-goto-definition
-                  "supertag-view-ontology-migration" (&optional name))
-
-;; supertag-ui-tool.el (transient, provider-neutral LLM tool catalog)
-(declare-function supertag-ui-tool-list "supertag-ui-tool" (&optional actor))
-(declare-function supertag-ui-tool-copy-catalog-json
-                  "supertag-ui-tool" (&optional pretty))
-
-;; supertag-services-capture.el (;;;###autoload; also unconditionally
-;; required by supertag.el, so it is safe to reference directly)
-(declare-function supertag-capture-with-template "supertag-services-capture" (&optional template-key))
-
-;; supertag-ui-commands.el / supertag-services-sync.el (;;;###autoload;
-;; unconditionally required by supertag.el, so it is safe to
-;; reference these directly)
-(declare-function supertag-sync-check-now "supertag-ui-commands" ())
-(declare-function supertag-sync-cleanup-database "supertag-ui-commands" ())
-(declare-function supertag-sync-status "supertag-ui-commands" ())
-(declare-function supertag-reindex-org "supertag-services-sync" ())
-
-;; supertag-doctor.el (;;;###autoload, but NOT part of supertag.el's
-;; own `require' chain; wrapped for robustness)
-(declare-function supertag-doctor "supertag-doctor" (&optional report-only))
-;; supertag-core-persistence.el (no autoload cookie; wrapped)
-(declare-function supertag-db-retry-lock "supertag-core-persistence" ())
-;; supertag-core-persistence.el (owned by a teammate; `supertag-restore'
-;; is developed alongside this iteration too, so it is wrapped exactly
-;; like `supertag-db-retry-lock' above rather than assumed present)
-(declare-function supertag-restore "supertag-core-persistence" ())
+;; supertag-services-sync.el (maintenance commands use feature wrappers below)
+(declare-function supertag-sync-cleanup-database "supertag-services-sync" ())
+(declare-function supertag-sync-status "supertag-services-sync" ())
+(declare-function supertag-sync-full-rescan "supertag-services-sync" ())
 
 ;; supertag-git.el (;;;###autoload, but NOT part of supertag.el's own
-;; `require' chain; wrapped for robustness, same as `supertag-doctor')
+;; `require' chain; wrapped for robustness)
 (declare-function supertag-git-setup "supertag-git" ())
 (declare-function supertag-git-clone "supertag-git" (remote-url local-directory))
 (declare-function supertag-git-sync-mode "supertag-git" (&optional arg))
 
-;; supertag-conflicts.el (;;;###autoload; also unconditionally required by
-;; supertag.el, so it is safe to reference directly)
-(declare-function supertag-conflicts-resolve "supertag-conflicts" ())
-(declare-function supertag-conflicts-use-ours-all "supertag-conflicts" ())
-(declare-function supertag-conflicts-use-theirs-all "supertag-conflicts" ())
-
-;; supertag-automation-sync.el / supertag-automation.el (no autoload
-;; cookie; unconditionally required by supertag.el, but wrapped
-;; anyway since Supertag's own menu entries for this file wrap every
-;; non-autoloaded command)
-(declare-function supertag-automation-sync-enable "supertag-automation-sync" ())
-(declare-function supertag-automation-sync-disable "supertag-automation-sync" ())
-(declare-function supertag-automation-recalculate-all-rollups "supertag-automation" ())
-;; supertag-services-scheduler.el (no autoload cookie; wrapped)
-(declare-function supertag-scheduler-start "supertag-services-scheduler" ())
-(declare-function supertag-scheduler-stop "supertag-services-scheduler" ())
-(declare-function supertag-scheduler-list-tasks "supertag-services-scheduler" ())
-
-;; supertag-virtual-column.el (no autoload cookie; wrapped)
-(declare-function supertag-virtual-column-create-interactive "supertag-virtual-column" ())
-(declare-function supertag-virtual-column-edit-interactive "supertag-virtual-column" ())
-(declare-function supertag-virtual-column-delete-interactive "supertag-virtual-column" ())
-(declare-function supertag-virtual-column-list-interactive "supertag-virtual-column" ())
-
-;; supertag-migration.el (;;;###autoload; also unconditionally required by
-;; supertag.el, so it is safe to reference directly)
-(declare-function supertag-migrate-database-to-new-arch "supertag-migration" ())
-(declare-function supertag-batch-convert-properties-to-fields "supertag-migration" ())
-(declare-function supertag-migration-add-ids-to-org-headings "supertag-migration" (directory))
-(declare-function supertag-migration-preview-reciprocal-links "supertag-migration" (&optional displayp))
-(declare-function supertag-migrate-reciprocal-links "supertag-migration" ())
-;; supertag-migrate-tag-ids.el (no autoload cookie; NOT part of
-;; supertag.el's own `require' chain; wrapped)
+;; supertag-migrate.el (required by supertag.el)
+(declare-function supertag-migrate-preview "supertag-migrate" ())
+(declare-function supertag-migrate-apply "supertag-migrate" ())
+(declare-function supertag-migrate-status "supertag-migrate" ())
+(declare-function supertag-migrate-run "supertag-migrate" ())
 (declare-function supertag-migrate-tag-ids "supertag-migrate-tag-ids" ())
 
-;; supertag-view-svg-tag.el / supertag-concept.el (;;;###autoload; also
-;; unconditionally required by supertag.el, so it is safe to
-;; reference these directly)
-(declare-function supertag-svg-tag-mode-toggle "supertag-view-svg-tag" ())
+;; supertag-tag.el / supertag-concept.el (display toggles use feature wrappers below)
+(declare-function supertag-toggle-tag-style "supertag-tag" ())
 (declare-function supertag-concept-link-mode "supertag-concept" (&optional arg))
 
-;; supertag-setup.el and supertag-automation-templates.el are developed
-;; alongside this file; guard every reference with `fboundp' and never
-;; `require' them directly from here.
-(declare-function supertag-setup "supertag-setup" ())
-(declare-function supertag-automation-insert-template "supertag-automation-templates" ())
-(declare-function supertag-automation-list-templates "supertag-automation-templates" ())
+;; Setup and Automation commands are loaded by their feature wrappers below.
+(declare-function supertag-setup "supertag-vault" ())
+(declare-function supertag-automation-insert-template "supertag-automation" ())
+(declare-function supertag-automation-list-templates "supertag-automation" ())
 
 ;;; --- Thin lazy-loading wrappers ---
-;; Each wrapper `require's the owning feature (safe: these files have no
-;; load-time side effects of their own -- unlike `supertag.el', which
-;; runs `supertag-init' at load time) and then calls the real, already
-;;-interactive command. This keeps `supertag-menu' usable even when only
-;; part of Supertag has been loaded so far.
+;; Prefer an existing target binding, including an existing autoload.
+;; Otherwise register an interactive autoload only when its owner is not
+;; already loaded. `call-interactively' performs native lazy loading and
+;; preserves prefix input; no loader failures are intercepted here.
 
 (defmacro supertag-menu--defwrapper (name feature command doc)
-  "Define NAME as a command that `require's FEATURE, then calls COMMAND.
-DOC is used as the docstring of the generated wrapper."
+  "Define NAME to call COMMAND interactively, autoloading from FEATURE if needed.
+An existing target binding is authoritative. If FEATURE is already loaded
+but COMMAND is absent, report it as unavailable. Otherwise native autoload
+errors propagate unchanged. DOC is the generated wrapper's docstring."
   (declare (indent defun))
   `(defun ,name ()
      ,doc
      (interactive)
-     (require ',feature)
+     (unless (or (fboundp ',command) (featurep ',feature))
+       (autoload ',command ,(symbol-name feature) nil t))
      (unless (fboundp ',command)
        (user-error "Supertag command `%s' is unavailable" ',command))
      (call-interactively #',command)))
-
-(supertag-menu--defwrapper supertag-menu--view-table
-  supertag-view-table supertag-view-table
-  "Open `supertag-view-table', loading its feature first if needed.")
-
-(supertag-menu--defwrapper supertag-menu--view-kanban
-  supertag-ui-commands supertag-view-kanban
-  "Open `supertag-view-kanban', loading its feature first if needed.")
 
 (supertag-menu--defwrapper supertag-menu--view-node
   supertag-view-node supertag-view-node
@@ -221,157 +130,79 @@ DOC is used as the docstring of the generated wrapper."
   supertag-view-stream supertag-view-stream
   "Open `supertag-view-stream', loading its feature first if needed.")
 
-(supertag-menu--defwrapper supertag-menu--view-schema
-  supertag-view-schema supertag-view-schema
-  "Open `supertag-view-schema', loading its feature first if needed.")
-
-(supertag-menu--defwrapper supertag-menu--act
-  supertag-ui-act supertag-act
-  "Open context actions for the object at point.")
-
 (supertag-menu--defwrapper supertag-menu--add-tag
-  supertag-ui-commands supertag-add-tag
+  supertag-tag supertag-add-tag
   "Run `supertag-add-tag', loading its feature first if needed.")
 
 (supertag-menu--defwrapper supertag-menu--remove-tag
-  supertag-ui-commands supertag-remove-tag-from-node
+  supertag-tag supertag-remove-tag-from-node
   "Run `supertag-remove-tag-from-node', loading its feature first if needed.")
 
-(supertag-menu--defwrapper supertag-menu--change-tag
-  supertag-ui-commands supertag-change-tag-at-point
-  "Run `supertag-change-tag-at-point', loading its feature first if needed.")
-
 (supertag-menu--defwrapper supertag-menu--rename-tag
-  supertag-ui-commands supertag-rename-tag
+  supertag-tag supertag-rename-tag
   "Run `supertag-rename-tag', loading its feature first if needed.")
 
 (supertag-menu--defwrapper supertag-menu--delete-tag
-  supertag-ui-commands supertag-delete-tag-everywhere
+  supertag-tag supertag-delete-tag-everywhere
   "Run `supertag-delete-tag-everywhere', loading its feature first if needed.")
 
-(supertag-menu--defwrapper supertag-menu--quick-edit-field
-  supertag-ui-commands supertag-ui-quick-edit-field
-  "Run `supertag-ui-quick-edit-field', loading its feature first if needed.")
+(supertag-menu--defwrapper supertag-menu--discovery
+  supertag-discovery supertag-discovery
+  "Run `supertag-discovery', loading its feature first if needed.")
 
-(supertag-menu--defwrapper supertag-menu--edit-fields
-  supertag-ui-commands supertag-edit-fields
-  "Edit all fields for the current node in one continuous pass.")
-
-(supertag-menu--defwrapper supertag-menu--search
-  supertag-ui-search supertag-search
-  "Run `supertag-search', loading its feature first if needed.")
-
-(supertag-menu--defwrapper supertag-menu--insert-query-block
-  supertag-ui-query-block supertag-insert-query-block
-  "Run `supertag-insert-query-block', loading its feature first if needed.")
-
-(supertag-menu--defwrapper supertag-menu--insert-query-dblock
-  supertag-ui-query-block supertag-insert-query-dblock
-  "Run `supertag-insert-query-dblock', loading its feature first if needed.")
+(supertag-menu--defwrapper supertag-menu--add-query-block
+  supertag-query supertag-add-query-block
+  "Run `supertag-add-query-block', loading its feature first if needed.")
 
 (supertag-menu--defwrapper supertag-menu--query-build
-  supertag-query-library supertag-query-build
+  supertag-query supertag-query-build
   "Run `supertag-query-build', loading its feature first if needed.")
 
-(supertag-menu--defwrapper supertag-menu--query-run-saved
-  supertag-query-library supertag-query-run-saved
-  "Run `supertag-query-run-saved', loading its feature first if needed.")
-
 (supertag-menu--defwrapper supertag-menu--query-describe-syntax
-  supertag-query-library supertag-query-describe-syntax
+  supertag-query supertag-query-describe-syntax
   "Run `supertag-query-describe-syntax', loading its feature first if needed.")
 
-(supertag-menu--defwrapper supertag-menu--ontology-migration-preview
-  supertag-view-ontology-migration supertag-ontology-migration-preview
-  "Preview one registered Ontology migration without mutating the Store.")
+(supertag-menu--defwrapper supertag-menu--semantic-rebuild
+  supertag-semantic supertag-semantic-rebuild "Rebuild optional semantic candidates.")
+(supertag-menu--defwrapper supertag-menu--semantic-status
+  supertag-semantic supertag-semantic-status "Show semantic candidate status.")
+(supertag-menu--defwrapper supertag-menu--semantic-stop
+  supertag-semantic supertag-semantic-stop "Stop the current embedding round.")
 
-(supertag-menu--defwrapper supertag-menu--ontology-migration-apply
-  supertag-view-ontology-migration supertag-ontology-migration-apply
-  "Preview again and atomically apply one registered Ontology migration.")
+(supertag-menu--defwrapper supertag-menu--extract-properties
+  supertag-ai supertag-ai-extract-properties "Extract property candidates with AI.")
 
-(supertag-menu--defwrapper supertag-menu--ontology-migration-status
-  supertag-view-ontology-migration supertag-ontology-migration-status
-  "Show the Store-owned applied Ontology migration ledger.")
+(supertag-menu--defwrapper supertag-menu--extract-tag-properties
+  supertag-ai supertag-ai-extract-tag-properties
+  "Extract property candidates for every node with a chosen tag, one at a time.")
+(supertag-menu--defwrapper supertag-menu--cancel-extraction
+  supertag-ai supertag-ai-cancel-extraction "Cancel the AI extraction for the node at point.")
+(supertag-menu--defwrapper supertag-menu--cancel-batch
+  supertag-ai supertag-ai-cancel-batch "Stop the running AI batch extraction.")
 
-(supertag-menu--defwrapper supertag-menu--ontology-migration-goto
-  supertag-view-ontology-migration supertag-ontology-migration-goto-definition
-  "Visit the source declaration of one registered Ontology migration.")
-
-(supertag-menu--defwrapper supertag-menu--ontology-tool-list
-  supertag-ui-tool supertag-ui-tool-list
-  "Inspect the transient Policy-aware LLM tool catalog.")
-
-(supertag-menu--defwrapper supertag-menu--ontology-tool-copy-json
-  supertag-ui-tool supertag-ui-tool-copy-catalog-json
-  "Copy the provider-neutral LLM tool catalog as JSON.")
-
-(supertag-menu--defwrapper supertag-menu--insert-embed
-  supertag-ui-commands supertag-insert-embed
-  "Run `supertag-insert-embed', loading its feature first if needed.")
-
-(supertag-menu--defwrapper supertag-menu--convert-link-to-embed
-  supertag-ui-commands supertag-convert-link-to-embed
-  "Run `supertag-convert-link-to-embed', loading its feature first if needed.")
-
-(supertag-menu--defwrapper supertag-menu--add-reference
-  supertag-ui-reference supertag-reference-insert
-  "Create or link a reference, loading its feature first if needed.")
+(supertag-menu--defwrapper supertag-menu--add-link
+  supertag-link supertag-add-link
+  "Add an ordinary or named link, loading its feature first if needed.")
 
 (supertag-menu--defwrapper supertag-menu--find-node
-  supertag-ui-commands supertag-find-node
+  supertag-node supertag-find-node
   "Run `supertag-find-node', loading its feature first if needed.")
 
-(supertag-menu--defwrapper supertag-menu--link-add
-  supertag-ui-link supertag-link-add
-  "Add a typed Link from the current node.")
-
-(supertag-menu--defwrapper supertag-menu--link-remove
-  supertag-ui-link supertag-link-remove
-  "Remove a typed Link touching the current node.")
-
-(supertag-menu--defwrapper supertag-menu--link-menu
-  supertag-ui-link supertag-link-menu
-  "Open the typed-Link action menu for the current node.")
-
-(supertag-menu--defwrapper supertag-menu--capture
-  supertag-ui-commands supertag-capture
-  "Run `supertag-capture', loading its feature first if needed.")
-
-(supertag-menu--defwrapper supertag-menu--capture-with-template
-  supertag-services-capture supertag-capture-with-template
-  "Capture a node with a reusable template.")
-
-(supertag-menu--defwrapper supertag-menu--promote-concept
-  supertag-concept supertag-promote-concept
+(supertag-menu--defwrapper supertag-menu--promote
+  supertag-concept supertag-promote
   "Promote the active region to a concept.")
 
-(supertag-menu--defwrapper supertag-menu--doctor
-  supertag-doctor supertag-doctor
-  "Run `supertag-doctor', loading its feature first if needed.")
-
-(supertag-menu--defwrapper supertag-menu--db-retry-lock
-  supertag-core-persistence supertag-db-retry-lock
-  "Run `supertag-db-retry-lock', loading its feature first if needed.")
-
-(supertag-menu--defwrapper supertag-menu--restore
-  supertag-core-persistence supertag-restore
-  "Run `supertag-restore', loading its feature first if needed.")
-
-(supertag-menu--defwrapper supertag-menu--sync-check
-  supertag-ui-commands supertag-sync-check-now
-  "Check for changed Org files and synchronize them now.")
-
 (supertag-menu--defwrapper supertag-menu--sync-cleanup
-  supertag-ui-commands supertag-sync-cleanup-database
+  supertag-services-sync supertag-sync-cleanup-database
   "Clean stale projections from the database.")
 
 (supertag-menu--defwrapper supertag-menu--sync-status
-  supertag-ui-commands supertag-sync-status
+  supertag-services-sync supertag-sync-status
   "Show the current synchronization status.")
 
-(supertag-menu--defwrapper supertag-menu--reindex
-  supertag-services-sync supertag-reindex-org
-  "Rebuild Document Projections from Org files.")
+(supertag-menu--defwrapper supertag-menu--full-rescan
+  supertag-services-sync supertag-sync-full-rescan
+  "Rebuild Document Projections from a complete Org snapshot.")
 
 (supertag-menu--defwrapper supertag-menu--git-setup
   supertag-git supertag-git-setup
@@ -385,73 +216,17 @@ DOC is used as the docstring of the generated wrapper."
   supertag-git supertag-git-sync-mode
   "Toggle `supertag-git-sync-mode', loading its feature first if needed.")
 
-(supertag-menu--defwrapper supertag-menu--conflicts-resolve
-  supertag-conflicts supertag-conflicts-resolve
-  "Open the conflict-resolution workflow.")
-
-(supertag-menu--defwrapper supertag-menu--conflicts-use-ours
-  supertag-conflicts supertag-conflicts-use-ours-all
-  "Resolve every conflict using the local side.")
-
-(supertag-menu--defwrapper supertag-menu--conflicts-use-theirs
-  supertag-conflicts supertag-conflicts-use-theirs-all
-  "Resolve every conflict using the incoming side.")
-
-(supertag-menu--defwrapper supertag-menu--automation-sync-enable
-  supertag-automation-sync supertag-automation-sync-enable
-  "Run `supertag-automation-sync-enable', loading its feature first if needed.")
-
-(supertag-menu--defwrapper supertag-menu--automation-sync-disable
-  supertag-automation-sync supertag-automation-sync-disable
-  "Run `supertag-automation-sync-disable', loading its feature first if needed.")
-
-(supertag-menu--defwrapper supertag-menu--automation-recalculate-all-rollups
-  supertag-automation supertag-automation-recalculate-all-rollups
-  "Run `supertag-automation-recalculate-all-rollups', loading its feature
-first if needed.")
-
-(supertag-menu--defwrapper supertag-menu--scheduler-start
-  supertag-services-scheduler supertag-scheduler-start
-  "Run `supertag-scheduler-start', loading its feature first if needed.")
-
-(supertag-menu--defwrapper supertag-menu--scheduler-stop
-  supertag-services-scheduler supertag-scheduler-stop
-  "Run `supertag-scheduler-stop', loading its feature first if needed.")
-
-(supertag-menu--defwrapper supertag-menu--scheduler-list-tasks
-  supertag-services-scheduler supertag-scheduler-list-tasks
-  "Run `supertag-scheduler-list-tasks', loading its feature first if needed.")
 
 (supertag-menu--defwrapper supertag-menu--automation-insert-template
-  supertag-automation-templates supertag-automation-insert-template
+  supertag-automation supertag-automation-insert-template
   "Insert an automation template.")
 
 (supertag-menu--defwrapper supertag-menu--automation-list-templates
-  supertag-automation-templates supertag-automation-list-templates
+  supertag-automation supertag-automation-list-templates
   "List the available automation templates.")
 
-(supertag-menu--defwrapper supertag-menu--virtual-column-create
-  supertag-virtual-column supertag-virtual-column-create-interactive
-  "Run `supertag-virtual-column-create-interactive', loading its feature
-first if needed.")
-
-(supertag-menu--defwrapper supertag-menu--virtual-column-edit
-  supertag-virtual-column supertag-virtual-column-edit-interactive
-  "Run `supertag-virtual-column-edit-interactive', loading its feature
-first if needed.")
-
-(supertag-menu--defwrapper supertag-menu--virtual-column-delete
-  supertag-virtual-column supertag-virtual-column-delete-interactive
-  "Run `supertag-virtual-column-delete-interactive', loading its feature
-first if needed.")
-
-(supertag-menu--defwrapper supertag-menu--virtual-column-list
-  supertag-virtual-column supertag-virtual-column-list-interactive
-  "Run `supertag-virtual-column-list-interactive', loading its feature
-first if needed.")
-
 (supertag-menu--defwrapper supertag-menu--toggle-svg-tags
-  supertag-view-svg-tag supertag-svg-tag-mode-toggle
+  supertag-tag supertag-toggle-tag-style
   "Toggle SVG rendering for inline tags.")
 
 (supertag-menu--defwrapper supertag-menu--toggle-concept-links
@@ -459,28 +234,8 @@ first if needed.")
   "Toggle dynamic concept-mention highlighting.")
 
 (supertag-menu--defwrapper supertag-menu--setup
-  supertag-setup supertag-setup
+  supertag-vault supertag-setup
   "Open the guided Supertag setup wizard.")
-
-(supertag-menu--defwrapper supertag-menu--migrate-database
-  supertag-migration supertag-migrate-database-to-new-arch
-  "Migrate the database to the current architecture.")
-
-(supertag-menu--defwrapper supertag-menu--migrate-properties
-  supertag-migration supertag-batch-convert-properties-to-fields
-  "Convert legacy Org properties to Supertag fields.")
-
-(supertag-menu--defwrapper supertag-menu--migrate-add-ids
-  supertag-migration supertag-migration-add-ids-to-org-headings
-  "Add IDs to Org headings during migration.")
-
-(supertag-menu--defwrapper supertag-menu--migrate-preview-links
-  supertag-migration supertag-migration-preview-reciprocal-links
-  "Preview reciprocal-link migration.")
-
-(supertag-menu--defwrapper supertag-menu--migrate-links
-  supertag-migration supertag-migrate-reciprocal-links
-  "Migrate reciprocal links.")
 
 (supertag-menu--defwrapper supertag-menu--migrate-tag-ids
   supertag-migrate-tag-ids supertag-migrate-tag-ids
@@ -492,116 +247,78 @@ first if needed.")
 (transient-define-prefix supertag-menu-write-more ()
   "Less-frequent commands for writing structured content."
   [["Query blocks"
-    ("b" "Insert query block"   supertag-menu--insert-query-block)
-    ("d" "Insert dynamic query" supertag-menu--insert-query-dblock)]
+    ("b" "Add query block"   supertag-menu--add-query-block)]
    ["References & concepts"
-    ("c" "Convert link to embed" supertag-menu--convert-link-to-embed)
-    ("p" "Promote selection to concept" supertag-menu--promote-concept)]
+    ("p" "Promote with template" supertag-menu--promote)]
    ["Automation"
-    ("t" "Insert automation template" supertag-menu--automation-insert-template)]])
+    ("t" "Insert automation template" supertag-menu--automation-insert-template)]
+   ["AI"
+    ("E" "Extract properties by tag (AI)" supertag-menu--extract-tag-properties)
+    ("C" "Cancel extraction (AI)"         supertag-menu--cancel-extraction)
+    ("B" "Cancel batch (AI)"              supertag-menu--cancel-batch)]])
 
 ;;;###autoload
 (transient-define-prefix supertag-menu-organize-more ()
-  "Less-frequent commands for reorganizing tags, fields, and Links."
-  [["Tags & schema"
-    ("c" "Change tag on node"    supertag-menu--change-tag)
+  "Less-frequent commands for reorganizing tags."
+  [["Tags"
     ("r" "Rename tag everywhere" supertag-menu--rename-tag)
-    ("D" "Delete tag everywhere" supertag-menu--delete-tag)
-    ("s" "Open schema"           supertag-menu--view-schema)]
-   ["Typed Links"
-    ("a" "Add typed Link"    supertag-menu--link-add)
-    ("d" "Remove typed Link" supertag-menu--link-remove)]
-   ["Virtual columns"
-    ("vc" "Create" supertag-menu--virtual-column-create)
-    ("ve" "Edit"   supertag-menu--virtual-column-edit)
-    ("vd" "Delete" supertag-menu--virtual-column-delete)
-    ("vl" "List"   supertag-menu--virtual-column-list)]])
+    ("D" "Delete tag everywhere" supertag-menu--delete-tag)]
+   ])
 
 ;;;###autoload
 (transient-define-prefix supertag-menu-find-more ()
   "Less-frequent commands for queries, views, and inspection."
   [["Queries"
     ("b" "Build query"       supertag-menu--query-build)
-    ("r" "Run saved query"   supertag-menu--query-run-saved)
     ("h" "Query syntax help" supertag-menu--query-describe-syntax)]
    ["Additional views"
-    ("s" "Stream view"                 supertag-menu--view-stream)
-    ("w" "Whiteboard"                  supertag-board-mode
-     :if (lambda () (fboundp 'supertag-board-mode)))
-    ("G" "Graph UI"                    supertag-graph-ui-open
-     :if (lambda () (fboundp 'supertag-graph-ui-open)))]
+    ("s" "Stream view"                 supertag-menu--view-stream)]
    ["Display"
     ("t" "Toggle SVG tags"      supertag-menu--toggle-svg-tags)
     ("c" "Toggle concept links" supertag-menu--toggle-concept-links)]
-   ["LLM tools"
-    ("l" "Inspect catalog"   supertag-menu--ontology-tool-list)
-    ("j" "Copy catalog JSON" supertag-menu--ontology-tool-copy-json)]])
+   ])
 
 ;;;###autoload
 (transient-define-prefix supertag-menu-maintain-more ()
   "Less-frequent commands for maintenance, automation, and migration."
   [["Data & setup"
     ("c" "Cleanup database" supertag-menu--sync-cleanup)
-    ("l" "Retry DB lock"    supertag-menu--db-retry-lock)
-    ("s" "Setup wizard"     supertag-menu--setup)]
-   ["Git & conflicts"
+    ("s" "Setup wizard"     supertag-menu--setup)
+    ("er" "Rebuild similar notes" supertag-menu--semantic-rebuild)
+    ("es" "Similarity status" supertag-menu--semantic-status)
+    ("ex" "Stop embeddings" supertag-menu--semantic-stop)]
+   ["Git"
     ("gs" "Setup git sync"    supertag-menu--git-setup)
     ("gc" "Clone vault"       supertag-menu--git-clone)
-    ("gm" "Toggle sync mode"  supertag-menu--git-sync-mode)
-    ("gr" "Resolve conflicts" supertag-menu--conflicts-resolve)
-    ("go" "Use ours (all)"    supertag-menu--conflicts-use-ours)
-    ("gt" "Use theirs (all)"  supertag-menu--conflicts-use-theirs)]
+    ("gm" "Toggle sync mode"  supertag-menu--git-sync-mode)]
    ["Automation"
-    ("al" "List templates"       supertag-menu--automation-list-templates)
-    ("ae" "Enable auto-sync"     supertag-menu--automation-sync-enable)
-    ("ad" "Disable auto-sync"    supertag-menu--automation-sync-disable)
-    ("ar" "Recalculate rollups"  supertag-menu--automation-recalculate-all-rollups)
-    ("as" "Start scheduler"      supertag-menu--scheduler-start)
-    ("ax" "Stop scheduler"       supertag-menu--scheduler-stop)
-    ("at" "List scheduled tasks" supertag-menu--scheduler-list-tasks)]
-   ["Ontology migration"
-    ("op" "Preview plan"      supertag-menu--ontology-migration-preview)
-    ("oa" "Apply migration"   supertag-menu--ontology-migration-apply)
-    ("os" "Applied status"    supertag-menu--ontology-migration-status)
-    ("og" "Go to declaration" supertag-menu--ontology-migration-goto)]
-   ["Legacy migration"
-    ("md" "Migrate database"         supertag-menu--migrate-database)
-    ("mp" "Properties to fields"     supertag-menu--migrate-properties)
-    ("mi" "Add IDs to headings"      supertag-menu--migrate-add-ids)
-    ("mr" "Preview reciprocal links" supertag-menu--migrate-preview-links)
-    ("mx" "Migrate reciprocal links" supertag-menu--migrate-links)
+    ("al" "List templates"       supertag-menu--automation-list-templates)]
+   ["Migration"
+    ("mp" "Preview migration" supertag-migrate-preview)
+    ("ma" "Apply migration" supertag-migrate-apply)
+    ("ms" "Migration status" supertag-migrate-status)
+    ("mr" "Run data migration" supertag-migrate-run)
     ("mt" "Migrate tag IDs"          supertag-menu--migrate-tag-ids)]])
 
 ;;;###autoload
 (transient-define-prefix supertag-menu ()
   "Open Supertag commands grouped by the user's current task."
   [["记录 Capture & Write"
-    ("c" "Capture"                  supertag-menu--capture)
-    ("t" "Capture with template"    supertag-menu--capture-with-template)
-    ("l" "Create or link reference" supertag-menu--add-reference)
-    ("e" "Edit fields (whole page)" supertag-menu--edit-fields)
-    ("i" "Insert embed"             supertag-menu--insert-embed)
+    ("l" "Add link" supertag-menu--add-link)
+    ("e" "Extract properties (AI)" supertag-menu--extract-properties)
     ("w" "More writing..."          supertag-menu-write-more)]
    ["整理 Organize"
-    ("a" "Act at point..."       supertag-menu--act)
     ("g" "Add tag"               supertag-menu--add-tag)
     ("r" "Remove tag from node"  supertag-menu--remove-tag)
-    ("f" "Quick edit one field"  supertag-menu--quick-edit-field)
-    ("k" "Typed Link actions..." supertag-menu--link-menu)
     ("o" "More organize..."      supertag-menu-organize-more)]
    ["查找 Find & View"
-    ("s" "Search"              supertag-menu--search)
+    ("s" "Discovery"           supertag-menu--discovery)
     ("n" "Find node"           supertag-menu--find-node)
     ("v" "Node view"           supertag-menu--view-node)
-    ("b" "Table view"          supertag-menu--view-table)
-    ("j" "Kanban board"        supertag-menu--view-kanban)
     ("V" "More find & view..." supertag-menu-find-more)]
    ["维护 Maintain"
-    ("d" "Doctor"              supertag-menu--doctor)
-    ("y" "Check & sync now"    supertag-menu--sync-check)
     ("u" "Sync status"         supertag-menu--sync-status)
-    ("R" "Restore from backup" supertag-menu--restore)
-    ("x" "Reindex Org"         supertag-menu--reindex)
+    ("x" "Full rescan"         supertag-menu--full-rescan)
     ("M" "More maintenance..." supertag-menu-maintain-more)]])
 
 ;;;###autoload

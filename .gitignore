@@ -9,7 +9,7 @@
 auto-save-list
 tramp
 .#*
-.DS_Store 
+.DS_Store
 .aider*
 *.log
 *.log.*

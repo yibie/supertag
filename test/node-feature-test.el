@@ -1245,7 +1245,10 @@
                     (pcase restriction
                       ('none (should (equal "Parent #token" result)) (should-not caught))
                       ('parent-outside (should-not result) (should-not caught))
-                      ('target-outside (should-not result) (should-not caught)))
+                      ('target-outside
+                       (should-not result)
+                       (should (equal (list 'user-error (format-message "Node 'child' was not found in %s" file))
+                                      caught))))
                     (should (eq source (current-buffer))) (should (= 3 (point)))
                     (should (equal context (with-current-buffer target (list (point) (point-min) (point-max)))))
                     (princ (format "NODE-H-PARENT %S result=%S error=%S\n" restriction result caught))))
@@ -1293,7 +1296,7 @@
                     (if handled
                         (progn (should (eq target (current-buffer)))
                                (should-not (buffer-narrowed-p))
-                               (should (equal (if (eq kind 'inside-target-outside) "sibling" "child") (org-entry-get nil "ID")))
+                               (should (equal "child" (org-entry-get nil "ID")))
                                (should-not (org-invisible-p (point))))
                       (should (eq source (current-buffer))))
                     (should (equal store (prin1-to-string supertag--store)))

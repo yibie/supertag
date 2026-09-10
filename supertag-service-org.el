@@ -219,9 +219,11 @@ that value and reject a conflicting existing ID."
   (when-let* ((property-position
                (supertag-node-location--id-property-position node-id)))
     (save-excursion
-      (goto-char property-position)
-      (org-back-to-heading t)
-      (point))))
+      (save-restriction
+        (widen)
+        (goto-char property-position)
+        (org-back-to-heading t)
+        (point)))))
 
 (defun supertag-node-location--file-drawer-end ()
   "Return the end of the file-level property drawer, or nil."

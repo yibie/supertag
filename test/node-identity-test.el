@@ -230,6 +230,53 @@
         (insert-file-contents file)
         (should (re-search-forward "^:ID:[ \t]+node-id$" nil t))))))
 
+(ert-deftest node-location-heading-position-resolves-outside-narrowing ()
+  "Heading position resolves in the widened buffer, not the visible one."
+  (node-identity-test--with-clean-env
+    (let ((file (expand-file-name "narrow.org" tmp)))
+      (with-temp-file file
+        (insert "* Parent\n** Child\n:PROPERTIES:\n:ID: child\n:END:\n* Sibling\n"))
+      (with-current-buffer (find-file-noselect file)
+        (org-mode)
+        (goto-char (point-min))
+        (search-forward "* Sibling")
+        (beginning-of-line)
+        (let ((narrow-start (point)) (point-before (point)))
+          (narrow-to-region (point) (point-max))
+          (let ((position (supertag-node-location--heading-position "child")))
+            (should (integerp position))
+            (save-restriction
+              (widen)
+              (goto-char position)
+              (should (looking-at "\\*\\* Child")))
+            (should (= (point) point-before))
+            (should (= (point-min) narrow-start))))))))
+
+(ert-deftest node-location-id-property-skips-lookalikes-outside-drawers ()
+  "Lookalike :ID: lines in source blocks or body text do not resolve nodes."
+  (node-identity-test--with-clean-env
+    (let ((file (expand-file-name "lookalike.org" tmp)))
+      (with-temp-file file
+        (insert "* Parent\n#+begin_src org\n:ID: child\n#+end_src\n"
+                "* Child\n:PROPERTIES:\n:ID: child\n:END:\n"
+                "* Other\nSome text.\n:ID: ghost\n"))
+      (supertag-store-put-entity
+       :nodes "child" `(:id "child" :title "Child" :file ,file :position 99999 :level 1))
+      (supertag-store-put-entity
+       :nodes "ghost" `(:id "ghost" :title "Ghost" :file ,file :position 99999 :level 1))
+      (let ((marker (supertag-node-location-find "child")))
+        (should (markerp marker))
+        (with-current-buffer (marker-buffer marker)
+          (goto-char (marker-position marker))
+          (should (looking-at "\\*\\* Child"))
+          (should (equal "child" (org-entry-get nil "ID")))))
+      (should-not (supertag-node-location-find "ghost"))
+      (with-current-buffer (find-file-noselect file)
+        (org-mode)
+        (should (supertag-node-location-goto-current-buffer "child"))
+        (should (looking-at "\\*\\* Child"))
+        (should-not (supertag-node-location-goto-current-buffer "ghost"))))))
+
 (ert-deftest node-location-finds-store-node-with-empty-org-id-cache ()
   "Store file plus in-file ID resolves without touching Org's cache."
   (node-identity-test--with-clean-env

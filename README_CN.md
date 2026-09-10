@@ -9,8 +9,9 @@
 
 运行 `bash test/run-tests.sh` 执行 contract、compat 与具名 transition；
 `bash test/run-tests.sh --guidance` 执行轻量指导检查。
-历史 field/Board 断言须显式运行 `bash test/run-tests.sh archive`，
-Board npm/build 则是独立的手动 CI 选项。本地 runner 不安装依赖。
+历史 field/Board 断言须显式运行 `bash test/run-tests.sh archive`；
+Board 与 Graph 两个 Web 前端已封存于 `archive/ext/`，手动 Board npm/build CI 任务随之退役。
+本地 runner 不安装依赖。
 范围及日志见[测试指南](test/README.md)。
 本片不声称完整包隔离、fresh-package 安装、Embark 集成或其余整修包已经验收。
 <!-- /P1 development -->

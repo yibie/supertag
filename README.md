@@ -11,7 +11,8 @@ tag, relation and business dependencies; writer and queue behavior is unchanged.
 Run `bash test/run-tests.sh` for contract, compatibility and named transition
 checks, or `bash test/run-tests.sh --guidance` for lightweight guidance checks.
 Historical field/Board assertions use explicit `bash test/run-tests.sh archive`;
-Board npm/build is a separate manual CI option. No dependency installation is
+the Board and Graph web frontends are archived under `archive/ext/`, and the
+manual Board npm/build CI job is retired with them. No dependency installation is
 performed by the local runner. See the [test guide](test/README.md) for scope and logs.
 This slice does not claim complete package isolation, fresh-package installation,
 Embark integration or acceptance of the remaining renovation packages.

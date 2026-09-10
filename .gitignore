@@ -63,16 +63,16 @@ dev-note/
 .ruff_cache/
 IMPROVEMENT_PLAN.md
 
-# ext/board-ui build artifacts and dependencies
-ext/board-ui/node_modules/
-ext/board-ui/.next/
-ext/board-ui/out/
+# archive/ext/board-ui build artifacts and dependencies
+archive/ext/board-ui/node_modules/
+archive/ext/board-ui/.next/
+archive/ext/board-ui/out/
 
-# ext/graph-ui build artifacts and dependencies
-ext/graph-ui/node_modules/
-ext/graph-ui/build/
-ext/graph-ui/.next/
-ext/graph-ui/out/
+# archive/ext/graph-ui build artifacts and dependencies
+archive/ext/graph-ui/node_modules/
+archive/ext/graph-ui/build/
+archive/ext/graph-ui/.next/
+archive/ext/graph-ui/out/
 
 # YoYo AI version control directory
 .yoyo/

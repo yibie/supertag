@@ -34,7 +34,8 @@ fail. `tee` preserves the Emacs failure status. Counterexample copies and their
 exit-code logs remain in the printed `supertag-entrypoints.*` directory.
 The runner uses `-Q`, initializes installed dependencies, source-loads Query and
 Node, then requires Tag/Sync and prepares the Node cache listener. It never
-installs packages or runs Board npm.
+installs packages or runs npm builds (the Board/Graph frontends are archived
+under `archive/ext/`).
 Independent byte compilation must use a temporary source copy and fresh process;
 source results do not establish fresh-package or Embark installation coverage.
 

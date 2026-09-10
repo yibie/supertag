@@ -5,12 +5,7 @@ on:
     branches:
       - main
   pull_request: {}
-  workflow_dispatch:
-    inputs:
-      archive_board:
-        description: 'Explicit historical Board npm/build check'
-        type: boolean
-        default: false
+  workflow_dispatch: {}
 
 concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
@@ -101,30 +96,11 @@ jobs:
           root_scratch_dirs=".claude commands docs hooks logs qoder .qoder .pi .codegraph .reasonix .serena"
           for directory in ${root_scratch_dirs}; do
             git check-ignore -q --no-index "${directory}/scratch"
-            if git check-ignore -q --no-index "ext/ignore-check/${directory}/source"; then
+            if git check-ignore -q --no-index "archive/ext/ignore-check/${directory}/source"; then
               echo "Nested source directory is unexpectedly ignored: ${directory}" >&2
               exit 1
             fi
           done
           grep -Fxq '/.agent-relay/' .gitignore
           ! grep -Fxq '.agent-relay/' .gitignore
-          ! git check-ignore -q --no-index ext/board-ui/hooks/useWebSocket.ts
-
-  board-ui:
-    if: github.event_name == 'workflow_dispatch' && inputs.archive_board
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-node@v4
-        with:
-          node-version: 20
-          cache: npm
-          cache-dependency-path: ext/board-ui/package-lock.json
-
-      - name: Install Board UI dependencies
-        working-directory: ext/board-ui
-        run: npm ci
-
-      - name: Build Board UI
-        working-directory: ext/board-ui
-        run: npm run build
+          ! git check-ignore -q --no-index archive/ext/board-ui/hooks/useWebSocket.ts

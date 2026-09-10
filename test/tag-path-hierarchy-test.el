@@ -787,7 +787,7 @@
 
 ;;; D3 shared completion lifecycle and real Tag commit controls.
 (defun supertag-path-test--capf-hooks (enabled)
-  (dolist (pair '((completion-at-point-functions . supertag-reference-completion-at-point)
+  (dolist (pair '((completion-at-point-functions . supertag-tag--reference-completion-at-point)
                   (completion-at-point-functions . supertag-completion-at-point)
                   (post-self-insert-hook . supertag-completion--auto-record-on-boundary)))
     (should (= (if enabled 1 0) (cl-count (cdr pair) (symbol-value (car pair)))))))
@@ -808,7 +808,7 @@
             (supertag-ui-completion-mode 1)
             (supertag-completion-setup)
             (supertag-path-test--capf-hooks t)
-            (should (< (cl-position 'supertag-reference-completion-at-point completion-at-point-functions)
+            (should (< (cl-position 'supertag-tag--reference-completion-at-point completion-at-point-functions)
                        (cl-position 'supertag-completion-at-point completion-at-point-functions)))
             (should (memq 'ignore completion-at-point-functions))
             (supertag-ui-completion-mode -1)
@@ -987,13 +987,17 @@
                          (setq result (run-hook-wrapped 'completion-at-point-functions
                                        (lambda (fn) (push fn calls) (funcall fn))))
                          (should (equal (nreverse calls)
-                                        '(supertag-reference-completion-at-point supertag-completion-at-point)))
-                         (should (featurep 'supertag-link))
+                                        '(supertag-tag--reference-completion-at-point supertag-completion-at-point)))
+                         (should-not (featurep 'supertag-link))
                          (should (member "canonical" (all-completions "" (nth 2 result))))
                          (should (eq 'supertag-tag
                                      (completion-metadata-get (completion-metadata "" (nth 2 result) nil) 'category))))
+                       (erase-buffer) (insert "* Note\n[[can")
+                       (run-hook-wrapped 'completion-at-point-functions
+                                         (lambda (fn) (funcall fn)))
+                       (should (featurep 'supertag-link))
                        (should (equal "prebound" supertag-completion--last-unregistered-hint)))
-                     (princ "D3-HASH real hooks Link->Tag; Link loaded before Tag result\n"))
+                     (princ "D3-HASH Tag completion leaves Link cold; shorthand loads Link\n"))
                     (t
                      ;; Resolve real providers before isolating only non-mode IO/timers.
                      (require 'supertag-core-persistence)
@@ -1021,7 +1025,7 @@
                          (with-current-buffer a
                            (should supertag-ui-completion-mode)
                            (should (= 1 (cl-count 'supertag-completion-at-point completion-at-point-functions)))
-                           (should (= 1 (cl-count 'supertag-reference-completion-at-point completion-at-point-functions))))
+                           (should (= 1 (cl-count 'supertag-tag--reference-completion-at-point completion-at-point-functions))))
                          (with-current-buffer b (should-not supertag-ui-completion-mode))
                          (with-temp-buffer (org-mode) (should supertag-ui-completion-mode))))))
                    (let ((after-init-time nil))

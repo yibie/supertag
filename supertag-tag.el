@@ -108,9 +108,35 @@
 (autoload 'supertag-view-helper-get-border-color "supertag-view-framework")
 (declare-function supertag-view-helper-get-border-color "supertag-view-framework" ())
 
-;; Link remains the first shared CAPF; its implementation loads on first call.
+;; Keep the Link CAPF lazy: ordinary tag completion must not load Link merely
+;; to learn that point is not inside its shorthand syntax.
+(defvar supertag-reference-shorthand-openers
+  '(("[[" . "]]" ) ("【【" . "】】"))
+  "Opener/closer pairs recognised by reference completion.")
+
 (autoload 'supertag-reference-completion-at-point "supertag-link")
 (declare-function supertag-reference-completion-at-point "supertag-link" ())
+
+(defun supertag-tag--reference-shorthand-at-point-p ()
+  "Return non-nil when point may be in an unclosed reference shorthand.
+
+This is intentionally only a cheap same-line routing check.  Link owns the
+precise bounds and context validation after it is loaded."
+  (let ((end (point)) found)
+    (dolist (pair supertag-reference-shorthand-openers)
+      (let ((opener (car pair)) (closer (cdr pair)))
+        (save-excursion
+          (when (search-backward opener (line-beginning-position) t)
+            (let ((open (point)))
+              (goto-char end)
+              (unless (search-backward closer open t)
+                (setq found t)))))))
+    found))
+
+(defun supertag-tag--reference-completion-at-point ()
+  "Dispatch to Link's CAPF only for possible reference shorthand syntax."
+  (when (supertag-tag--reference-shorthand-at-point-p)
+    (supertag-reference-completion-at-point)))
 
 (autoload 'supertag-find-nodes-by-tag "supertag-query")
 (declare-function supertag-find-nodes-by-tag "supertag-query" (tag-name &optional include-descendants))
@@ -3234,7 +3260,7 @@ CAPF `[New]' candidate."
   ;; Added after the Tag CAPF so this reference CAPF is checked first.  Each
   ;; function is exclusive only inside its own explicit syntax (# or [[).
   (add-hook 'completion-at-point-functions
-            #'supertag-reference-completion-at-point nil t)
+            #'supertag-tag--reference-completion-at-point nil t)
   (add-hook 'post-self-insert-hook
             #'supertag-completion--auto-record-on-boundary nil t))
 
@@ -3247,7 +3273,7 @@ CAPF `[New]' candidate."
     (remove-hook 'completion-at-point-functions
                  #'supertag-completion-at-point t)
     (remove-hook 'completion-at-point-functions
-                 #'supertag-reference-completion-at-point t)
+                 #'supertag-tag--reference-completion-at-point t)
     (remove-hook 'post-self-insert-hook
                  #'supertag-completion--auto-record-on-boundary t)))
 

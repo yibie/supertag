@@ -1049,6 +1049,16 @@ Sets up rule indexing and event handlers for the automation engine."
   (setq supertag-automation--processing-queue nil)
   (message "Unified automation system cleaned up"))
 
+(defun supertag-automation--after-store-load ()
+  "Refresh Automation's derived state after a persisted Store is loaded."
+  (condition-case err
+      (progn
+        (supertag-automation-clear-rule-index)
+        (supertag-rebuild-rule-index)
+        (supertag-automation--register-all-scheduled))
+    (error
+     (message "[Supertag Automation] Failed to refresh loaded rules: %S" err))))
+
 ;;; --- Event Adaptation ---
 
 ;;; Customization
@@ -1481,7 +1491,8 @@ FUNCTION: Function to call when task runs
 ARGS: Plist with scheduling parameters:
   - :interval seconds for interval tasks
   - :time HH:MM string for daily tasks"
-  (let ((task (list :type type :function function)))
+  (let ((task (list :type type :function function))
+        (previous (gethash id supertag-scheduler--tasks)))
     (pcase type
       (:interval
        (let ((interval (plist-get args :interval)))
@@ -1496,6 +1507,8 @@ ARGS: Plist with scheduling parameters:
          (setq task (plist-put task :time time))
          (when days
            (setq task (plist-put task :days-of-week days))))))
+    (when-let* ((last-run (plist-get previous :last-run)))
+      (setq task (plist-put task :last-run last-run)))
     (puthash id task supertag-scheduler--tasks)
     (message "[Supertag Scheduler] Task '%s' registered." id)))
 
@@ -1982,6 +1995,8 @@ calls `supertag-automation-create' after explicit confirmation."
 
 ;; Initialize the automation system when loaded
 (supertag-automation-init)
+(add-hook 'supertag-persistence-after-load-hook
+          #'supertag-automation--after-store-load)
 
 (defun supertag-automation--reset-runtime ()
   "Discard queued automation work at a vault boundary."

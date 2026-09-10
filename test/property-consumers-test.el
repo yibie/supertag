@@ -444,7 +444,7 @@
       (should (= inits 1)) (should (eq registry supertag-scheduler--tasks))
       ;; Must be produced by the original unique load-init, not by this test.
       (should (functionp (plist-get (gethash 'aub-first registry) :function)))
-      (should-not (plist-get (gethash 'aub-first registry) :last-run))
+      (should (equal "prebound" (plist-get (gethash 'aub-first registry) :last-run)))
       (should (equal "kept" (plist-get (gethash 'unrelated registry) :last-run)))
       (should (equal "prebound-path" supertag-scheduler--state-file))
       (should (= 17 supertag-scheduler-check-interval)) (should-not supertag-scheduler--master-timer)
@@ -465,7 +465,7 @@
           (should (memq timer timer-list)))
         (should (= inits 2)) (should (eq registry supertag-scheduler--tasks))
         (should-not (eq task (gethash 'aub-first registry)))
-        (should-not (plist-get (gethash 'aub-first registry) :last-run)))
+        (should (equal "2026-09-08" (plist-get (gethash 'aub-first registry) :last-run))))
       (should (= 1 (cl-count 'supertag-automation--handle-entity-change
                             (gethash :store-changed supertag--subscribers))))
       (princ "AUB-FIRST-PASS\n"))))
@@ -611,6 +611,11 @@
       (princ "AUB-LATE-ENTRY empty-memory main\n")
       (should-not (supertag-automation-get "aub-late"))
       (should (= 0 (hash-table-count supertag-scheduler--tasks)))
+      (should (= 1 (cl-count 'supertag-automation--after-store-load
+                             supertag-persistence-after-load-hook)))
+      (load (expand-file-name "supertag-automation.el" aua-root) nil nil t)
+      (should (= 1 (cl-count 'supertag-automation--after-store-load
+                             supertag-persistence-after-load-hook)))
       (let ((order nil))
         (advice-add 'supertag-load-store :after (lambda (&rest _) (push 'load order)))
         (advice-add 'supertag-rebuild-rule-index :after (lambda (&rest _) (push 'index order)))
@@ -624,6 +629,6 @@
                        (reverse order) (supertag-automation-get "aub-late") (hash-table-count supertag-scheduler--tasks)))
         (should (supertag-automation-get "aub-late"))
         (should (memq 'load order)) (should (memq 'index order)) (should (memq 'start order))
-        (should-not (memq 'register order))
-        (should (= 0 (hash-table-count supertag-scheduler--tasks)))
+        (should (memq 'register order))
+        (should (= 1 (hash-table-count supertag-scheduler--tasks)))
         (should (timerp supertag-scheduler--master-timer))))))

@@ -638,5 +638,4 @@ Supertag 每天自动保存快照（可配置）：
 - [[file:SYNC-CONFIGURATION.md][同步配置]] — 性能调优、vault 模式、故障排查
 - [[file:VIEW_FRAMEWORK_DEV_GUIDE.md][视图框架]] — 构建自定义仪表盘
 - [[file:VIRTUAL_COLUMNS.md][虚拟列]] — 计算字段 API
-- [[file:ONTOLOGY-ARCHITECTURE_cn.md][架构深度解析]]
 - [[file:SUPERTAG-PLUGIN-GUIDE_cn.md][插件开发指南]] — 构建自己的 extractor 和服务

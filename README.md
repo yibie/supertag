@@ -130,7 +130,7 @@ Org properties are optional. They live in Org files and enter the database as re
 - **Node View** (`M-x supertag-view-node`): Inspect a node's saved Org properties, tags, references, and mentions in a read-only detail view.
 - **Stream View** (`M-x supertag-view-stream`): Browse the complete chronological, single-column list grouped by creation day, with `title  #tags` rows for a tag and all tags below it in the slash path (`#media` includes `#media/book`). Use `n`/`p` to move, `e` to edit the source heading and its own body (file-level nodes expose the whole file), or `v` for the read-only Node View. `C-c C-c` saves the **whole source file, including other existing drafts**, then projects the node and returns to Stream. `C-c C-k` cancels only pending session edits: a successful native `C-x C-s` becomes the new cancellation baseline, and outside edits are preserved. Save failure leaves the edit open; post-save projection failure keeps the saved text and exposes the existing retry.
 
-Legacy Table, Schema, Kanban, Board, Graph, and standalone Ontology tool UIs are
+Legacy Table, Schema, Kanban, Board, and Graph tool UIs are
 archived and are not loaded or advertised by the default package. Their source
 can still be loaded explicitly for compatibility work.
 
@@ -143,7 +143,7 @@ can still be loaded explicitly for compatibility work.
 3. Use `supertag-discovery` to search notes, and use Embark on headings, tags, links, or selections for contextual add-link, tag, and Promote actions.
 4. Use an Org capture template for new notes. For a versioned data migration, preview and apply with `supertag-migrate-preview` and `supertag-migrate-apply`.
 
-Table, Schema, Kanban, Board, Graph, and standalone Ontology entry points are archived and are not part of the current workflow.
+Table, Schema, Kanban, Board, and Graph entry points are archived and are not part of the current workflow.
 
 ---
 
@@ -211,8 +211,6 @@ Write participants, discussion, and decisions in the body; use ordinary lists fo
 | Follow named links | `M-x supertag-view-node` | Inspect relations on a node |
 | Add or view relationships | `M-x supertag-add-link` (prefix argument for a relation name), then open Node View | Ordinary links keep `id`/`denote`; a named link such as `[[supports:NODE-ID]]` is saved text and can use a configured or newly entered session name |
 | Find or explicitly create a node | `M-x supertag-find-node`; use `C-u M-x supertag-find-node` for another window | Existing nodes open without writes. If nothing matches, choose the explicit Create action and a complete creation template; Find never inserts a source link or performs Promote monitoring |
-| Declare Types, Fields, and Links in code (archived workflow) | Explicitly load `supertag-ontology`, then use `supertag-defontology` and `M-x supertag-ontology-preview` / `M-x supertag-ontology-apply` | Legacy ontology deployment remains available from its archive component, not the default command surface |
-| Run an archived Ontology Action | Explicitly load `supertag-ui-action`, then `M-x supertag-action-run` | The legacy Policy-aware implementation remains available, but Node View no longer loads, lists, or runs these capabilities |
 | Merge duplicate tags | Preview and merge tags from the current tag workflow; Schema View is archived | Preview and merge into a new/existing tag; Schema renames are previewed, then written file by file through the Org writer |
 | Capture new node | `M-x org-capture` | Uses normal Org Capture; Supertag templates can retain their internal finalization |
 | Rediscover notes | `M-x supertag-discovery` | Opens 10 random full-body notes by default; `s` searches all nodes for every keyword, `g` refreshes, and marked references can be inserted at the starting note |
@@ -296,8 +294,6 @@ Chinese text is matched without imposing incorrect ASCII word boundaries.
 the decision remains inspectable, syncable Org data rather than a hidden cache.
 Mention discovery itself uses only a small disposable parse cache. See
 `UNLINKED-MENTIONS.md` for the exact boundaries.
-
-See [`doc/ARCHIVED-ONTOLOGY.md`](doc/ARCHIVED-ONTOLOGY.md).
 
 ## Why this doesn't add friction
 
@@ -451,8 +447,6 @@ verified database migration explicitly.
 
 ---
 
-Ontology material is archived in [`doc/ARCHIVED-ONTOLOGY.md`](doc/ARCHIVED-ONTOLOGY.md).
-
 ### Optional agent integration and the plain-data API
 
 Agent integration is not required for writing. Historical field provenance remains alongside `:legacy-fields` and is not deleted by this change in direction; its preservation does not imply a field system in the current default workflow.
@@ -533,16 +527,12 @@ Discovery never creates IDs. A #tag on a heading takes priority over the heading
 - **Capture system**: `doc/CAPTURE-GUIDE.md`
 - **Virtual columns**: `doc/VIRTUAL_COLUMNS.md`
 - **Plugin development**: `doc/SUPERTAG-PLUGIN-GUIDE.md`
-- **Architecture deep-dive**: `doc/ONTOLOGY-ARCHITECTURE_cn.md`
 - **View framework**: `doc/VIEW_FRAMEWORK_DEV_GUIDE.md`
 - **vs old architecture**: `doc/COMPARE-NEW-OLD-ARCHITECTURE.md`
 
 ---
 
 Supertag is developed as free software under the GPLv3. Contributions, bug reports, and feature requests are welcome on GitHub.
-
-
-Originally 25 of the 27 doc/ files carried archive notices; the two ABOUT-QUERY-BLOCK guides are current documentation and their grammar cleanup is deferred; two ARCHIVED-ONTOLOGY archive documents were added.
 
 ## Configuration variables
 

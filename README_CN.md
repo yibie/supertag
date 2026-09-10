@@ -134,7 +134,7 @@ Supertag 只建立在三个简单想法上：
 3. 用 `supertag-discovery` 搜索笔记；在标题、标签、链接或选区使用 Embark，可调用加链接、打标签和 Promote。
 4. 用 Org capture 模板新建笔记。需要版本化数据迁移时，先用 `supertag-migrate-preview` 预览，再用 `supertag-migrate-apply` 应用。
 
-Table、Schema、Kanban、Board、Graph 和独立 Ontology 入口已封存，不属于当前工作流。
+Table、Schema、Kanban、Board、Graph 入口已封存，不属于当前工作流。
 
 ---
 
@@ -202,8 +202,6 @@ Table、Schema、Kanban、Board、Graph 和独立 Ontology 入口已封存，不
 | 定义类型化关系（封存 UI） | 显式加载 `supertag-view-schema`，再在 Schema View 中按 `a l` | 旧 schema 编辑器；不再是默认入口 |
 | 添加或查看关系 | 执行 `M-x supertag-add-link`（前缀参数输入关系名），再打开 Node View | 普通链接保留 `id`/`denote`；`[[supports:NODE-ID]]` 等命名链接是保存的文本，可使用配置名称或本会话新输入名称 |
 | 查找或明确新建节点 | `M-x supertag-find-node`；用 `C-u M-x supertag-find-node` 在另一窗口操作 | 已有节点只导航、不写入；无匹配时须明确选择 Create 并选择完整创建模板。Find 不在来源处插入链接，也不执行 Promote 监视 |
-| 用代码声明 Type、Field、Link（封存流程） | 显式加载 `supertag-ontology`，再使用 `supertag-defontology` 与 `M-x supertag-ontology-preview` / `M-x supertag-ontology-apply` | 旧 ontology 部署仍可从封存组件使用，不属于默认命令面 |
-| 执行封存的 Ontology Action | 显式加载 `supertag-ui-action`，再执行 `M-x supertag-action-run` | 旧 Policy-aware 实现仍可使用，但 Node View 不再加载、列出或执行这些 capabilities |
 | 合并重复标签 | 在当前标签工作流中预览并合并；Schema View 已封存 | 预览后合并到新/已有 tag；Schema 改名经预览确认后复用 Org writer，逐文件写入 |
 | 捕获新节点 | `M-x org-capture` | 使用标准 Org Capture；Supertag 模板可继续使用其内部收尾逻辑 |
 | 重新发现笔记 | `M-x supertag-discovery` | 默认打开 10 条随机完整正文；`s` 搜索全库并显示全部关键词匹配，`g` 刷新，并可将已选普通引用插回起始笔记 |
@@ -469,16 +467,12 @@ Agent 一侧通过 `supertag-api.el` 里的五个纯数据函数和 Supertag 对
 - **捕获系统**：`doc/CAPTURE-GUIDE_cn.md`
 - **虚拟列**：`doc/VIRTUAL_COLUMNS.md`
 - **插件开发**：`doc/SUPERTAG-PLUGIN-GUIDE_cn.md`
-- **架构深度解析**：`doc/ONTOLOGY-ARCHITECTURE_cn.md`
 - **视图框架**：`doc/VIEW_FRAMEWORK_DEV_GUIDE.md`
 - **新旧架构对比**：`doc/COMPARE-NEW-OLD-ARCHITECHTURE_cn.md`
 
 ---
 
 Supertag 以 GPLv3 自由软件协议开发。欢迎在 GitHub 上贡献代码、提交 bug 或功能请求。
-
-
-原 27 篇 doc/ 中 25 篇已加归档说明，ABOUT-QUERY-BLOCK 两篇为现役文档、语法整理留待；另新增 ARCHIVED-ONTOLOGY 两篇归档文档。
 
 ## 配置变量
 

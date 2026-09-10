@@ -121,7 +121,7 @@ See [[file:../test/README.md][test guidance]] for classification and limitations
 ** Unit Test
 - Write test cases for new features
 - Use ~ert~ framework
-- Test files live in ~test/~ and ~tests/~; only explicit manifest selectors are default
+- Test files live in ~test/~; only explicit manifest selectors are default (ontology-era suites live in ~archive/ontology/tests/~)
 
 ** Test Coverage
 - Ensure main features are covered by tests

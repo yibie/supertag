@@ -676,5 +676,4 @@ I document what I /stopped/ using so others don't waste time:
 - [[file:SYNC-CONFIGURATION.md][Sync Configuration]] — Performance tuning, vault mode, troubleshooting
 - [[file:VIEW_FRAMEWORK_DEV_GUIDE.md][View Framework]] — Build custom dashboards
 - [[file:VIRTUAL_COLUMNS.md][Virtual Columns]] — Computed fields API
-- [[file:ONTOLOGY-ARCHITECTURE_cn.md][Architecture]] — Internal design (Chinese)
 - [[file:SUPERTAG-PLUGIN-GUIDE.md][Plugin Guide]] — Build your own extractors and services

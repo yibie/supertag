@@ -5,7 +5,7 @@
 (require 'supertag-core-store)
 (require 'supertag-core-index)
 (require 'supertag-ops-link-definition)
-(require 'supertag-ops-relation)
+(require 'supertag-link)
 (require 'supertag-ontology)
 (require 'supertag-migration)
 

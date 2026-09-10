@@ -4,9 +4,8 @@
 (require 'cl-lib)
 (require 'org)
 (require 'supertag-core-transform)
-(require 'supertag-ui-completion)
+(require 'supertag-tag)
 (require 'supertag-view-helper)
-(require 'supertag-view-svg-tag)
 
 (defun test-inline-tag-filter--matches (text)
   "Return renderable inline tag matches in TEXT."

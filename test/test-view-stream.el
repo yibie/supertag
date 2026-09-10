@@ -31,10 +31,10 @@
    (list :id id :type :node :title title :tags tags :content content
          :created-at created-at :file file :level (or level 1))))
 
-(defun supertag-view-stream-test--put-tag (id &optional parent)
-  "Put a Stream fixture Tag ID with optional PARENT."
+(defun supertag-view-stream-test--put-tag (id)
+  "Put a Stream fixture Tag ID whose name is its path."
   (supertag-store-put-entity
-   :tags id (list :id id :name id :type :tag :extends parent)))
+   :tags id (list :id id :name id :type :tag)))
 
 (defun supertag-view-stream-test--kill-buffers ()
   "Kill Stream test buffers without prompting."
@@ -48,26 +48,27 @@
       (kill-buffer buffer))))
 
 (ert-deftest supertag-view-stream-state-includes-real-descendants-and-sorts ()
-  "Stream state must include transitive :extends descendants only."
+  "Stream uses transitive path descendants only; persisted :extends is inert."
   (supertag-view-stream-test--with-store
     (supertag-view-stream-test--put-tag "diary")
-    (supertag-view-stream-test--put-tag "happy" "diary")
-    (supertag-view-stream-test--put-tag "private" "diary")
-    (supertag-view-stream-test--put-tag "day" "private")
+    (supertag-view-stream-test--put-tag "diary/happy")
+    (supertag-view-stream-test--put-tag "diary/private")
+    (supertag-view-stream-test--put-tag "diary/private/day")
     (supertag-view-stream-test--put-tag "diaryx")
-    (supertag-view-stream-test--put-tag "diary/legacy")
+    (supertag-store-put-entity :tags "legacy"
+                               '(:id "legacy" :name "legacy" :type :tag :extends "diary"))
     (supertag-view-stream-test--put-node
      "late" "Late" '("diary") "late" '(0 30 0 0))
     (supertag-view-stream-test--put-node
-     "early" "Early" '("happy") "early" '(0 10 0 0))
+     "early" "Early" '("diary/happy") "early" '(0 10 0 0))
     (supertag-view-stream-test--put-node
      "lookalike" "Wrong" '("diaryx") "wrong" '(0 1 0 0))
     (supertag-view-stream-test--put-node
-     "flat-slash" "Wrong" '("diary/legacy") "wrong" '(0 2 0 0))
+     "flat-extends" "Wrong" '("legacy") "wrong" '(0 2 0 0))
     (supertag-view-stream-test--put-node
-     "untimed-b" "B" '("day") "b" nil)
+     "untimed-b" "B" '("diary/private/day") "b" nil)
     (supertag-view-stream-test--put-node
-     "untimed-a" "A" '("private") "a" nil)
+     "untimed-a" "A" '("diary/private") "a" nil)
     (let ((state (supertag-view-stream--build-state '(:tag "diary"))))
       (should-not (plist-member state :layout))
       (should
@@ -193,13 +194,13 @@
     (unwind-protect
         (save-window-excursion
           (supertag-view-stream-test--put-tag "diary")
-          (supertag-view-stream-test--put-tag "happy" "diary")
+          (supertag-view-stream-test--put-tag "diary/happy")
           (supertag-view-stream-test--put-node
            "node-1" "First title" '("diary")
            "First body"
            '(0 10 0 0))
           (supertag-view-stream-test--put-node
-           "node-2" "Second title" '("happy") "Second body" '(0 20 0 0))
+           "node-2" "Second title" '("diary/happy") "Second body" '(0 20 0 0))
           (let ((main (supertag-view-stream "diary")))
             (should (buffer-live-p main))
             (should-not (get-buffer "*Supertag Stream Index: diary*"))
@@ -363,7 +364,7 @@
               (with-current-buffer base
                 (should (string-match-p "Changed in Stream"
                                         (buffer-string)))
-                (should (buffer-modified-p)))
+                (should-not (buffer-modified-p)))
               (should (equal (plist-get
                               (supertag-store-get-entity :nodes "edit-node")
                               :created-at)
@@ -376,8 +377,8 @@
                            "")))
               (with-temp-buffer
                 (insert-file-contents file)
-                (should-not (string-match-p "Changed in Stream"
-                                            (buffer-string))))))
+                (should (string-match-p "Changed in Stream"
+                                        (buffer-string))))))
         (when (buffer-live-p edit)
           (with-current-buffer edit (set-buffer-modified-p nil))
           (kill-buffer edit))

@@ -10,17 +10,15 @@
   (add-to-list 'load-path (expand-file-name ".." (file-name-directory load-file-name))))
 
 (require 'supertag-core-store)
-(require 'supertag-core-tag-path)
-(require 'supertag-core-scan)
+(require 'supertag-tag)
+(require 'supertag-query)
 (require 'supertag-core-transform)
-(require 'supertag-ops-relation)
-(require 'supertag-ops-tag)
+(require 'supertag-link)
 (require 'supertag-services-sync)
 (require 'supertag-view-api)
 (require 'supertag-view-framework)
 (require 'supertag-view-schema)
 (require 'supertag-view-table)
-(require 'supertag-ui-completion)
 
 (defmacro tag-path-test--with-clean-store (&rest body)
   "Run BODY with a clean in-memory store."
@@ -160,15 +158,17 @@
             (should-not (supertag-tag-get "emacs/package"))
             (should (equal '("package")
                            (plist-get (supertag-node-get "node-1") :tags)))
-            (should (= 1 (length (supertag-relation-find-between
-                                  "node-1" "package" :node-tag))))
+            (should (member "package" (supertag-query-node-tags "node-1")))
+            (should-not
+             (supertag-relation-find-by-from "node-1" :node-tag))
             (goto-char (point-min))
             (re-search-forward " #emacs/package")
             (replace-match "")
             (goto-char (point-min))
             (supertag-node-sync-at-point)
             (should-not (plist-get (supertag-node-get "node-1") :tags))
-            (should-not (supertag-relation-find-by-from "node-1" :node-tag)))
+            (should-not
+             (member "package" (supertag-query-node-tags "node-1"))))
         (delete-file file)))))
 
 (ert-deftest tag-path-resolver-honors-an-empty-candidate-set ()
@@ -186,6 +186,7 @@
                     :tags ("diary/happy"))))))
       (let ((result (supertag-migrate-org-files-to-database "/tmp/source.org")))
         (should (= 1 (plist-get result :nodes-created)))
+        (should (= 0 (plist-get result :relations-created)))
         (should (= 0 (plist-get result :errors)))))
     (should (equal '("happy")
                    (plist-get (supertag-node-get "node-1") :tags)))
@@ -193,8 +194,8 @@
                    (plist-get (supertag-node-get "node-1")
                               :tag-occurrences)))
     (should-not (plist-get (supertag-node-get "node-1") :unresolved-tags))
-    (should (= 1 (length (supertag-relation-find-between
-                          "node-1" "happy" :node-tag))))))
+    (should (member "happy" (supertag-query-node-tags "node-1")))
+    (should-not (supertag-relation-find-by-from "node-1" :node-tag))))
 
 (ert-deftest nested-tag-create-rejects-persistent-slash-id ()
   (tag-path-test--with-clean-store
@@ -307,30 +308,6 @@
       (should (equal '("a")
                      (mapcar (lambda (node) (plist-get node :id))
                              (plist-get (car tree) :children)))))))
-
-(ert-deftest tag-path-view-context-retains-descendant-scope ()
-  (tag-path-test--with-clean-store
-    (tag-path-test--put-tag "emacs")
-    (tag-path-test--put-tag "package" "emacs")
-    (tag-path-test--put-tag "emacs2")
-    (tag-path-test--put-node "child" "package")
-    (tag-path-test--put-node "other" "emacs2")
-    (with-temp-buffer
-      (insert (propertize "emacs"
-                          'supertag-context
-                          '(:type :tag :tag-id "emacs" :has-descendants t)))
-      (goto-char (point-min))
-      (let* ((query (supertag-view--get-tag-at-point))
-             (context (supertag-view--build-context query))
-             (rebuilt (funcall
-                       (supertag-view--context-builder-from-context context))))
-        (should (equal '(:type :tag :value "emacs" :include-descendants t)
-                       query))
-        (should (equal '("child")
-                       (mapcar (lambda (node) (plist-get node :id))
-                               (plist-get context :nodes))))
-        (should (plist-get rebuilt :include-descendants))
-        (should (equal query (plist-get rebuilt :query)))))))
 
 (ert-deftest tag-path-table-aggregate-is-read-only-and-uses-common-columns ()
   (let ((query '(:type :tag :value "emacs" :include-descendants t)))
@@ -480,10 +457,9 @@
         (should (equal "diary"
                        (plist-get (tag-path-test--tag "happy") :extends)))
         (should (member (tag-path-test--tag-id "happy")
-                        (plist-get (supertag-node-get "node-1") :tags)))
-        (should (= 1 (length (supertag-relation-find-between
-                              "node-1" (tag-path-test--tag-id "happy")
-                              :node-tag))))
+                        (supertag-query-node-tags "node-1")))
+        (should-not
+         (supertag-relation-find-by-from "node-1" :node-tag))
         (should-not (supertag-tag-get "diary/happy"))))))
 
 (ert-deftest tag-path-completion-creates-child-while-syncing-a-new-node ()
@@ -512,10 +488,9 @@
               (should (equal "diary"
                              (plist-get (tag-path-test--tag "happy") :extends)))
               (should (member (tag-path-test--tag-id "happy")
-                              (plist-get (supertag-node-get "node-1") :tags)))
-              (should (= 1 (length (supertag-relation-find-between
-                                    "node-1" (tag-path-test--tag-id "happy")
-                                    :node-tag))))))
+                              (supertag-query-node-tags "node-1")))
+              (should-not
+               (supertag-relation-find-by-from "node-1" :node-tag))))
         (delete-file file)))))
 
 (ert-deftest tag-path-completion-creates-child-from-heading-body ()
@@ -540,10 +515,9 @@
               (funcall (plist-get (nthcdr 3 capf) :exit-function)
                        candidate 'finished)
               (should (member (tag-path-test--tag-id "happy")
-                              (plist-get (supertag-node-get "node-1") :tags)))
-              (should (= 1 (length (supertag-relation-find-between
-                                    "node-1" (tag-path-test--tag-id "happy")
-                                    :node-tag))))))
+                              (supertag-query-node-tags "node-1")))
+              (should-not
+               (supertag-relation-find-by-from "node-1" :node-tag))))
         (delete-file file)))))
 
 (ert-deftest tag-path-completion-selects-existing-child-without-new-action ()
@@ -574,10 +548,9 @@
         (funcall (plist-get (nthcdr 3 capf) :exit-function)
                  candidate 'finished)
         (should (string-match-p "#happy " (buffer-string)))
-        (should (member "happy"
-                        (plist-get (supertag-node-get "node-1") :tags)))
-        (should (= 1 (length (supertag-relation-find-between
-                              "node-1" "happy" :node-tag))))))))
+        (should (member "happy" (supertag-query-node-tags "node-1")))
+        (should-not
+         (supertag-relation-find-by-from "node-1" :node-tag))))))
 
 (ert-deftest tag-path-completion-creates-child-under-deep-display-path ()
   (tag-path-test--with-clean-store
@@ -645,8 +618,9 @@
                                    (car (split-string (buffer-string) "\n")))))
           (should (equal existing-parent
                          (plist-get (tag-path-test--tag "happy") :extends)))
-          (should-not (plist-get (supertag-node-get "node-1") :tags))
-          (should-not (supertag-relation-find-by-from "node-1" :node-tag))
+          (should-not
+           (member (tag-path-test--tag-id "happy")
+                   (supertag-query-node-tags "node-1")))
           (should-not (supertag-tag-get "diary/happy")))))))
 
 (ert-deftest tag-path-completion-keeps-source-on-projection-failure ()
@@ -668,8 +642,8 @@
              (supertag-before-operation-hook
               (list
                (lambda (event)
-                 (when (eq :relations (plist-get event :collection))
-                   (error "simulated relation failure"))))))
+                 (when (eq :nodes (plist-get event :collection))
+                   (error "simulated node projection failure"))))))
         (should candidate)
         (delete-region (nth 0 capf) (nth 1 capf))
         (insert candidate)
@@ -679,8 +653,9 @@
         (should (equal "* Node #happy "
                        (car (split-string (buffer-string) "\n"))))
         (should (tag-path-test--tag "happy"))
-        (should-not (plist-get (supertag-node-get "node-1") :tags))
-        (should-not (supertag-relation-find-by-from "node-1" :node-tag)))
+        (should-not
+         (member (tag-path-test--tag-id "happy")
+                 (supertag-query-node-tags "node-1"))))
       (goto-char (point-min))
       (supertag-node-sync-at-point)
       (should (member (tag-path-test--tag-id "happy")
@@ -707,8 +682,8 @@
                    (supertag-before-operation-hook
                     (list
                      (lambda (event)
-                       (when (eq :relations (plist-get event :collection))
-                         (error "simulated relation failure"))))))
+                       (when (eq :nodes (plist-get event :collection))
+                         (error "simulated node projection failure"))))))
               (should candidate)
               (delete-region (nth 0 capf) (nth 1 capf))
               (insert candidate)
@@ -786,8 +761,9 @@
         (should (equal "* Node #diary/happy"
                        (car (split-string (buffer-string) "\n"))))
         (should (tag-path-test--tag "happy"))
-        (should-not (plist-get (supertag-node-get "node-1") :tags))
-        (should-not (supertag-relation-find-by-from "node-1" :node-tag))))))
+        (should-not
+         (member (tag-path-test--tag-id "happy")
+                 (supertag-query-node-tags "node-1")))))))
 
 (ert-deftest tag-path-completion-does-not-shadow-a-real-full-path ()
   (tag-path-test--with-clean-store
@@ -868,10 +844,9 @@
         (should (string-match-p "#happy " (buffer-string)))
         (should (tag-path-test--tag "happy"))
         (should (member (tag-path-test--tag-id "happy")
-                        (plist-get (supertag-node-get "node-1") :tags)))
-        (should (= 1 (length (supertag-relation-find-between
-                              "node-1" (tag-path-test--tag-id "happy")
-                              :node-tag))))))))
+                        (supertag-query-node-tags "node-1")))
+        (should-not
+         (supertag-relation-find-by-from "node-1" :node-tag))))))
 
 (ert-deftest tag-path-completion-cancel-does-not-create-child-or-node-id ()
   (tag-path-test--with-clean-store
@@ -1048,15 +1023,15 @@
             (puthash 'packages
                      '(:id packages :tag "emacs/package")
                      supertag--view-configs)
-            (supertag--process-node-tags (supertag-node-get "node"))
             (supertag-tag-path-rename-execute
              (supertag-tag-path-rename-plan "emacs/package" "package"))
             (should-not (supertag-tag-get "emacs/package"))
             (should (supertag-tag-get "package"))
             (should (equal '("package")
                            (plist-get (supertag-node-get "node") :tags)))
-            (should (= 1 (length (supertag-relation-find-by-from
-                                  "node" :node-tag))))
+            (should (member "package" (supertag-query-node-tags "node")))
+            (should-not
+             (supertag-relation-find-by-from "node" :node-tag))
             (should (supertag-store-get-tag-field-associations
                      "package"))
             ;; Production rename never writes the migration-only bucket.

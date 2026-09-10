@@ -15,12 +15,12 @@
 
 (require 'supertag-core-store)
 (require 'supertag-core-index)
-(require 'supertag-ops-node)
-(require 'supertag-ops-tag)
+(require 'supertag-node)
+(require 'supertag-tag)
 (require 'supertag-ops-field)
 (require 'supertag-ops-global-field)
-(require 'supertag-ops-relation)
-(require 'supertag-ops-tag-merge)
+(require 'supertag-link)
+(require 'supertag-query)
 (require 'supertag-view-schema)
 
 (defmacro tag-merge-test--with-store (&rest body)
@@ -66,10 +66,8 @@
   (supertag-tag-get id))
 
 (defun tag-merge-test--create-node (id file tags)
-  "Create node ID in FILE with TAGS and matching relations."
+  "Create node ID in FILE with TAGS."
   (supertag-node-create (list :id id :title id :file file :tags tags))
-  (dolist (tag tags)
-    (supertag-relation-create (list :type :node-tag :from id :to tag)))
   id)
 
 (ert-deftest tag-cleanup-only-deletes-unreferenced-schema-free-tags ()
@@ -328,7 +326,8 @@
                         "n1" "task" "status" :missing)
                        "doing"))
         (should-not (supertag-tag-get-field "task" "status"))
-        (should (supertag-relation-find-between "n1" "work" :node-tag))
+        (should (member "work" (supertag-query-node-tags "n1")))
+        (should-not (supertag-relation-find-by-from "n1" :node-tag))
         (let ((automation (supertag-store-get-entity :automations "auto-1")))
           (should (equal (plist-get automation :condition)
                          '(and (has-tag "work") (has-any-tag "work" "other"))))
@@ -392,7 +391,8 @@
         (should (equal (supertag-field-get "n1" "work" "status") "done"))
         (should (equal (supertag-field-get "n1" "work" "owner") "alice"))
         (should (supertag-tag-get-field "work" "owner"))
-        (should (= 1 (length (supertag-relation-find-between "n1" "work" :node-tag))))))))
+        (should (member "work" (supertag-query-node-tags "n1")))
+        (should-not (supertag-relation-find-by-from "n1" :node-tag))))))
 
 (ert-deftest tag-merge-multi-value-field-keeps-global-node-value ()
   (tag-merge-test--with-store

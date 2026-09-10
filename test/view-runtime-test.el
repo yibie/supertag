@@ -308,20 +308,21 @@
       (when-let* ((buffer (get-buffer buffer-name)))
         (kill-buffer buffer)))))
 
-(ert-deftest test-view-runtime-search-show-results-opens-refreshable-buffer ()
-  "The existing Search entry must open a Runtime-managed results buffer."
+(ert-deftest test-view-runtime-discovery-show-results-opens-refreshable-buffer ()
+  "Discovery must open a Runtime-managed results buffer."
   (supertag-view-framework-init)
-  (let* ((buffer-name "*Supertag Search*")
+  (let* ((buffer-name "*Supertag Discovery*")
          (node '(:id "search-1" :title "First result"))
          (results (list (cons node nil))))
     (unwind-protect
         (cl-letf (((symbol-function 'display-buffer) #'ignore)
                   ((symbol-function 'supertag-search--get-node-tags) #'ignore))
-          (let ((buffer (supertag-search-show-results '("first") results)))
+          (let ((buffer (supertag-discovery--show-results
+                         :filter '("first") results)))
             (should (buffer-live-p buffer))
             (should (equal (buffer-name buffer) buffer-name))
             (with-current-buffer buffer
-              (should supertag-search-mode)
+              (should supertag-discovery-mode)
               (should (string-match-p "First result" (buffer-string))))
             (supertag-view-refresh buffer)
             (with-current-buffer buffer
@@ -329,16 +330,17 @@
       (when-let* ((buffer (get-buffer buffer-name)))
         (kill-buffer buffer)))))
 
-(ert-deftest test-view-runtime-search-refresh-preserves-selected-entity ()
-  "Search refresh must preserve the selected result by common entity ID."
+(ert-deftest test-view-runtime-discovery-refresh-preserves-selected-entity ()
+  "Discovery refresh must preserve the selected result by common entity ID."
   (supertag-view-framework-init)
-  (let* ((buffer-name "*Supertag Search*")
+  (let* ((buffer-name "*Supertag Discovery*")
          (results (list (cons '(:id "search-1" :title "First") nil)
                         (cons '(:id "search-2" :title "Second") nil))))
     (unwind-protect
         (cl-letf (((symbol-function 'display-buffer) #'ignore)
                   ((symbol-function 'supertag-search--get-node-tags) #'ignore))
-          (let ((buffer (supertag-search-show-results '("result") results)))
+          (let ((buffer (supertag-discovery--show-results
+                         :filter '("result") results)))
             (with-current-buffer buffer
               (goto-char (point-min))
               (let ((match (text-property-search-forward
@@ -354,10 +356,10 @@
       (when-let* ((buffer (get-buffer buffer-name)))
         (kill-buffer buffer)))))
 
-(ert-deftest test-view-runtime-search-command-refreshes-from-store ()
-  "The Search command must rebuild results from Store on manual refresh."
+(ert-deftest test-view-runtime-discovery-command-refreshes-from-store ()
+  "Discovery must rebuild its current sample from Store on refresh."
   (supertag-view-framework-init)
-  (let ((buffer-name "*Supertag Search*")
+  (let ((buffer-name "*Supertag Discovery*")
         (origin (generate-new-buffer " *supertag-search-origin*"))
         (supertag--store (make-hash-table :test 'equal))
         (supertag-search-history-file
@@ -369,11 +371,9 @@
           (supertag-store-put-entity
            :nodes "search-old"
            '(:id "search-old" :title "first old" :content ""))
-          (cl-letf (((symbol-function 'display-buffer) #'ignore)
-                    ((symbol-function 'supertag-search--get-keywords)
-                     (lambda () '("first"))))
+          (cl-letf (((symbol-function 'display-buffer) #'ignore))
             (let ((buffer (with-current-buffer origin
-                            (supertag-search))))
+                            (supertag-discovery))))
               (with-current-buffer buffer
                 (should (string-match-p "first old" (buffer-string))))
               (remhash "search-old" (supertag-store-get-collection :nodes))
@@ -389,23 +389,21 @@
       (when (buffer-live-p origin)
         (kill-buffer origin)))))
 
-(ert-deftest test-view-runtime-search-quit-restores-origin ()
-  "Search quit must kill results and restore the saved origin point."
+(ert-deftest test-view-runtime-discovery-quit-restores-origin ()
+  "Discovery quit must kill results and restore its live origin point."
   (supertag-view-framework-init)
-  (let ((buffer-name "*Supertag Search*")
+  (let ((buffer-name "*Supertag Discovery*")
         (origin (generate-new-buffer " *supertag-search-quit-origin*")))
     (unwind-protect
         (progn
           (with-current-buffer origin
             (insert "origin")
             (goto-char 4))
-          (setq supertag-search--original-buffer origin
-                supertag-search--original-point 4)
           (cl-letf (((symbol-function 'display-buffer) #'ignore)
                     ((symbol-function 'supertag-search--get-node-tags) #'ignore))
-            (let ((buffer (supertag-search-show-results '("none") nil)))
-              (with-current-buffer buffer
-                (supertag-search-quit))
+            (let ((buffer (with-current-buffer origin (supertag-discovery))))
+              (switch-to-buffer buffer)
+              (supertag-discovery-quit)
               (should-not (buffer-live-p buffer))
               (with-current-buffer origin
                 (should (= (point) 4))))))

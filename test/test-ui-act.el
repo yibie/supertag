@@ -9,7 +9,7 @@
 (require 'supertag-menu)
 ;; Load the reference module up front so tests can mock its functions
 ;; without a later lazy `require' overwriting the mocks.
-(require 'supertag-ui-reference)
+(require 'supertag-link)
 
 (ert-deftest supertag-act-region-target-offers-reference-actions ()
   "An active Org region is a target with reference actions."
@@ -25,10 +25,29 @@
       (should (eq (plist-get target :kind) :region))
       (should (= (plist-get target :begin) (match-beginning 0)))
       (let ((labels (mapcar #'car (supertag-act--actions target))))
-        (should (string-match-p "Create or link reference" (car labels)))
-        (should (member "Create node and replace selection with its link (no prompt)"
-                        labels))
+        (should (string-match-p "Add link" (car labels)))
+        (should-not (cl-find-if
+                     (lambda (label) (string-match-p "no prompt" label))
+                     labels))
         (should (member "Add tag to node..." labels))))))
+
+(ert-deftest supertag-act-region-default-runs-unified-add-link ()
+  (with-temp-buffer
+    (org-mode)
+    (insert "* Heading\nselected text\n")
+    (search-backward "selected")
+    (set-mark (point))
+    (search-forward "text")
+    (activate-mark)
+    (let* ((target (supertag-act--target-at-point))
+           (action (cdar (supertag-act--actions target)))
+           called)
+      (cl-letf (((symbol-function 'supertag-add-link)
+                 (lambda (&optional _named) (interactive) (setq called t)))
+                ((symbol-function 'supertag-reference-link-region)
+                 (lambda (&rest _) (ert-fail "retired region path called"))))
+        (funcall action))
+      (should called))))
 
 (ert-deftest supertag-act-concept-target-carries-bounds ()
   "A concept mention target records the mention's bounds."
@@ -178,8 +197,8 @@
 ;;; (ported from the retired supertag-smart-key tests)
 ;;;----------------------------------------------------------------------
 
-(ert-deftest supertag-act-prefers-supertag-context ()
-  "A specific field context wins over broader properties at point."
+(ert-deftest supertag-act-retired-field-context-is-unavailable ()
+  "Recognized legacy field contexts do not invoke archived editors."
   (with-temp-buffer
     (insert "status")
     (add-text-properties
@@ -192,8 +211,8 @@
                  (lambda () (interactive) (setq edited t)))
                 ((symbol-function 'supertag-goto-node)
                  (lambda (&rest _) (setq jumped t))))
-        (supertag-act-dwim)
-        (should edited)
+        (should-error (supertag-act-dwim) :type 'user-error)
+        (should-not edited)
         (should-not jumped)))
     (erase-buffer)
     (insert (propertize "field" 'supertag-context
@@ -202,8 +221,8 @@
     (let (edited)
       (cl-letf (((symbol-function 'supertag-schema--edit-field-definition-at-point)
                  (lambda () (interactive) (setq edited t))))
-        (supertag-act-dwim)
-        (should edited)))
+        (should-error (supertag-act-dwim) :type 'user-error)
+        (should-not edited)))
     (erase-buffer)
     (insert (propertize "concept" 'supertag-context t
                         'supertag-concept-node-id "concept-id"))
@@ -258,8 +277,8 @@
       (supertag-act-dwim)
       (should (eq pressed :ret)))))
 
-(ert-deftest supertag-act-dispatches-table-cells ()
-  "Table titles open source nodes; other cells keep their editor."
+(ert-deftest supertag-act-retired-table-cells-are-unavailable ()
+  "Recognized Table cells do not invoke archived navigation or editing."
   (with-temp-buffer
     (setq major-mode 'supertag-view-table-mode)
     (insert (propertize "title" 'entity-id "node-id"
@@ -272,20 +291,20 @@
                  (lambda () (interactive) (setq opened t)))
                 ((symbol-function 'supertag-view-table-edit-cell)
                  (lambda () (interactive) (setq edited t))))
-        (supertag-act-dwim)
-        (should opened)
+        (should-error (supertag-act-dwim) :type 'user-error)
+        (should-not opened)
         (should-not edited)
         (erase-buffer)
         (insert (propertize "status" 'entity-id "node-id"
                             'supertag-entity-id "node-id" 'col-key "status"))
         (goto-char (point-min))
         (setq opened nil)
-        (supertag-act-dwim)
-        (should edited)
+        (should-error (supertag-act-dwim) :type 'user-error)
+        (should-not edited)
         (should-not opened)))))
 
-(ert-deftest supertag-act-opens-inline-tag-and-org-heading ()
-  "Inline tags open their table; an Org heading opens its node view."
+(ert-deftest supertag-act-retires-inline-tag-default-but-keeps-heading ()
+  "Inline Tag default is unavailable; an Org heading still opens Node View."
   (with-temp-buffer
     (org-mode)
     (insert "* Paper #research\n:PROPERTIES:\n:ID: existing-id\n:END:\n")
@@ -296,8 +315,8 @@
                  (lambda (node-id) (setq node-view node-id)))
                 ((symbol-function 'supertag-view-node--focus-view) #'ignore))
         (search-backward "research")
-        (supertag-act-dwim)
-        (should (equal table '(:type :tag :value "research")))
+        (should-error (supertag-act-dwim) :type 'user-error)
+        (should-not table)
         (beginning-of-line)
         (supertag-act-dwim)
         (should (equal node-view "existing-id"))
@@ -403,15 +422,15 @@
       (cl-letf (((symbol-function 'supertag-view-table)
                  (lambda (value &rest _) (setq source value))))
         (search-backward "outer")
-        (supertag-act-dwim)
-        (should (equal source '(:type :tag :value "outer")))
+        (should-error (supertag-act-dwim) :type 'user-error)
+        (should-not source)
         (search-forward "label")
         (should-not (supertag-view-helper-get-tag-at-point))
         (search-forward "ai_suggestions")
         (backward-char (length "ai_suggestions"))
         (setq source nil)
-        (supertag-act-dwim)
-        (should (equal source '(:type :tag :value "ai_suggestions")))
+        (should-error (supertag-act-dwim) :type 'user-error)
+        (should-not source)
         (search-forward "[x]")
         (backward-char 2)
         (should-not (supertag-view-helper-get-tag-at-point))))))
@@ -433,7 +452,8 @@
           (supertag-act)
           (should (string-match-p "#paper" prompt))
           (should (equal renamed "paper"))
-          (should (member "Open tagged nodes (default)" choices))
+          (should (equal "All Supertag commands..." (car choices)))
+          (should-not (member "Open tagged nodes (default)" choices))
           (should (member "Rename tag..." choices))
           (should (member "Delete tag everywhere..." choices))
           (should (member "All Supertag commands..." choices))))))
@@ -472,18 +492,13 @@
   (should (eq (lookup-key supertag-act-mode-map (kbd "C-c S"))
               #'supertag-act)))
 
-(ert-deftest supertag-act-node-offers-whole-page-field-edit ()
-  "A node action can pass its stable ID to the whole-page field editor."
-  (let (edited)
-    (cl-letf (((symbol-function 'supertag-edit-fields)
-               (lambda (&optional node-id tag-id)
-                 (setq edited (list node-id tag-id)))))
-      (let* ((target '(:kind :node :node-id "node-1"))
-             (action (assoc "Edit fields (whole page)..."
-                            (supertag-act--actions target))))
-        (should action)
-        (funcall (cdr action))
-        (should (equal edited '("node-1" nil)))))))
+(ert-deftest supertag-act-node-does-not-offer-retired-field-editors ()
+  "Node actions do not advertise archived whole-page or quick field editors."
+  (let ((labels (mapcar #'car
+                        (supertag-act--actions
+                         '(:kind :node :node-id "node-1")))))
+    (should-not (member "Edit fields (whole page)..." labels))
+    (should-not (member "Quick edit field..." labels))))
 
 (defun supertag-test--transient-layout-commands (prefix)
   "Return every suffix command stored in PREFIX's transient layout."
@@ -537,13 +552,55 @@
             (when (get command 'transient--layout)
               (push command pending))))))))
 
-(ert-deftest supertag-menu-restores-whiteboard-and-graph-ui ()
-  "The reorganized Find & View menu retains both optional visual UIs."
+(ert-deftest supertag-menu-does-not-offer-archived-visual-uis ()
+  "Default menus do not advertise archived Board or Graph UIs."
   (let ((commands
          (supertag-test--transient-layout-commands
           'supertag-menu-find-more)))
-    (should (memq 'supertag-board-mode commands))
-    (should (memq 'supertag-graph-ui-open commands))))
+    (should-not (memq 'supertag-board-mode commands))
+    (should-not (memq 'supertag-graph-ui-open commands))))
+
+(ert-deftest supertag-menu-and-act-have-no-archived-lazy-entry ()
+  "Menus and Embark delegation cannot lazy-load retired standalone UIs."
+  (let ((commands (append
+                   (supertag-test--transient-layout-commands 'supertag-menu)
+                   (supertag-test--transient-layout-commands
+                    'supertag-menu-organize-more)
+                   (supertag-test--transient-layout-commands
+                    'supertag-menu-find-more)
+                   (supertag-test--transient-layout-commands
+                    'supertag-menu-maintain-more))))
+    (dolist (command '(supertag-menu--view-table
+                       supertag-menu--view-kanban
+                       supertag-menu--view-schema
+                       supertag-board-mode
+                       supertag-graph-ui-open
+                       supertag-menu--ontology-migration-preview
+                       supertag-menu--ontology-migration-apply
+                       supertag-menu--ontology-tool-list
+                       supertag-menu--quick-edit-field
+                       supertag-menu--edit-fields
+                       supertag-menu--capture
+                       supertag-menu--capture-with-template
+                       supertag-menu--insert-embed
+                       supertag-menu--convert-link-to-embed
+                       supertag-menu--virtual-column-create
+                       supertag-menu--virtual-column-edit
+                       supertag-menu--virtual-column-delete
+                       supertag-menu--virtual-column-list))
+      (should-not (memq command commands))))
+  (with-temp-buffer
+    (insert (propertize "tag" 'supertag-context t
+                        'type :tag 'tag-id "task"))
+    (goto-char (point-min))
+    (supertag-embark-target-finder)
+    (cl-letf (((symbol-function 'require)
+               (lambda (feature &rest _)
+                 (when (memq feature '(supertag-view-schema
+                                       supertag-view-table
+                                       supertag-view-kanban))
+                   (ert-fail "Retired UI was lazy-loaded")))))
+      (should-error (supertag-embark-act-dwim) :type 'user-error))))
 
 (provide 'test-ui-act)
 ;;; test-ui-act.el ends here

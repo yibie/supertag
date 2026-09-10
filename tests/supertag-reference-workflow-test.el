@@ -6,11 +6,10 @@
 (require 'org)
 (require 'supertag-core-store)
 (require 'supertag-core-index)
-(require 'supertag-ops-node)
-(require 'supertag-ops-relation)
-(require 'supertag-services-reference)
-(require 'supertag-ui-reference)
-(require 'supertag-view-reference)
+(require 'supertag-node)
+(require 'supertag-link)
+(require 'supertag-link)
+(require 'supertag-concept)
 
 (defmacro supertag-v6-test--isolated (&rest body)
   (declare (indent 0))
@@ -166,11 +165,12 @@
                         (get-text-property
                          0 'supertag-reference-create-title candidate)))
                new-candidates))
-      (should-not (cl-some
-                   (lambda (candidate)
-                     (get-text-property
-                      0 'supertag-reference-create-title candidate))
-                   exact-candidates)))))
+      (should (cl-some
+               (lambda (candidate)
+                 (equal "Project"
+                        (get-text-property
+                         0 'supertag-reference-create-title candidate)))
+               exact-candidates)))))
 
 (ert-deftest supertag-v6-completion-rewrites-shorthand-to-canonical-org-link ()
   (with-temp-buffer
@@ -243,47 +243,47 @@
                      (buffer-string))))))
 
 (ert-deftest supertag-v6-default-concept-target-is-non-interactive ()
-  (let* ((supertag-active-sync-directory nil)
-         (supertag-sync-directories '("/tmp/supertag-vault"))
+  (let* ((tmp (make-temp-file "supertag-default-template-" t))
+         (supertag-active-sync-directory nil)
+         (supertag-sync-directories (list tmp))
          (supertag-sync-directories-mode 'unified)
          (supertag-concept-default-file nil)
-         (supertag-concept-default-level 1)
-         (target (supertag-concept-default-create-target "Ontology")))
-    (should (equal "/tmp/supertag-vault/concepts.org"
-                   (plist-get target :file)))
-    (should (= 1 (plist-get target :level)))
-    (should-not (plist-get target :position))))
+         (supertag-creation-templates nil))
+    (unwind-protect
+        (let ((target (car (supertag-template-list))))
+          (should (equal (file-truename (expand-file-name "concepts.org" tmp))
+                         (file-truename (plist-get target :target-file))))
+          (should-not (fboundp 'supertag-concept-default-create-target)))
+      (delete-directory tmp t))))
 
 (ert-deftest supertag-v6-active-vault-wins-default-concept-target ()
-  (let* ((resolved-vault "/tmp/active-vault")
+  (let* ((resolved-vault (make-temp-file "supertag-template-vault-" t))
          (supertag-active-sync-directory "/tmp/stale-outside-vault")
          (supertag-sync-directories (list resolved-vault))
          (supertag-sync-directories-mode 'vaults)
          (supertag-concept-default-file nil)
-         target)
-    (cl-letf (((symbol-function 'supertag--effective-sync-directories)
-               (lambda () (list resolved-vault))))
-      (setq target (supertag-concept-default-create-target "Ontology")))
-    (should (equal "/tmp/active-vault/concepts.org"
-                   (plist-get target :file)))))
+         (supertag-creation-templates nil))
+    (unwind-protect
+        (should (equal (file-truename (expand-file-name "concepts.org" resolved-vault))
+                       (plist-get (car (supertag-template-list)) :target-file)))
+      (delete-directory resolved-vault t))))
 
 (ert-deftest supertag-v6-concept-target-falls-back-without-vault-config ()
   (let ((supertag-active-sync-directory nil)
         (supertag-sync-directories nil)
         (supertag-sync-directories-mode 'unified)
         (supertag-concept-default-file nil)
+        (supertag-creation-templates nil)
         (org-directory "/tmp/org-home"))
     (with-temp-buffer
       (setq buffer-file-name "/tmp/current-note/note.org")
       (should
        (equal "/tmp/org-home/concepts.org"
-              (plist-get (supertag-concept-default-create-target "Ontology")
-                         :file)))
-      (let ((org-directory nil))
+              (plist-get (car (supertag-template-list)) :target-file)))
+      (let ((org-directory nil) (default-directory "/tmp/current-note/"))
         (should
          (equal "/tmp/current-note/concepts.org"
-                (plist-get (supertag-concept-default-create-target "Ontology")
-                           :file)))))))
+                (plist-get (car (supertag-template-list)) :target-file)))))))
 
 (ert-deftest supertag-v6-contextual-view-carries-source-navigation-properties ()
   (supertag-v6-test--isolated

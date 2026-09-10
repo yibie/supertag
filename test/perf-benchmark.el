@@ -51,12 +51,12 @@
   (add-to-list 'load-path (expand-file-name ".." (file-name-directory load-file-name))))
 
 (require 'supertag-core-store)
-(require 'supertag-core-scan)
+(require 'supertag-query)
 (require 'supertag-core-index)
 (require 'supertag-core-persistence)
 (require 'supertag-view-api)
 (require 'supertag-view-table)
-(require 'supertag-services-mention)
+(require 'supertag-mention)
 (require 'supertag-ui-search)
 
 ;;; --- Dataset configuration (deterministic; do not use `random') ---

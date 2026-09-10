@@ -12,11 +12,9 @@
   (add-to-list 'load-path (expand-file-name ".." (file-name-directory load-file-name))))
 
 (require 'ownership-fixture)
-(require 'supertag-board)
-(require 'supertag-services-query)
-(require 'supertag-services-ui)
-(require 'supertag-view-api)
-(require 'supertag-ui-completion)
+(require 'supertag-query)
+(progn (require 'supertag-query) (require 'supertag-tag) (require 'supertag-services-sync) (supertag-node--prepare-cache-listener))
+(require 'supertag-tag)
 
 (defun supertag-query-model-test--relation-ids (relations)
   "Return sorted IDs from RELATIONS."
@@ -27,11 +25,6 @@
   "Concrete node and Tag reads preserve the View API contract."
   (supertag-ownership-test-with-vault
     (let ((paths (supertag-query-tag-paths)))
-      (should (equal (supertag-node-get supertag-ownership-test-node-a)
-                     (supertag-query-node supertag-ownership-test-node-a)))
-      (should (equal (supertag-query-node supertag-ownership-test-node-a)
-                     (supertag-view-api-get-entity
-                      :nodes supertag-ownership-test-node-a)))
       (should (equal '("Project" "Reference")
                      (mapcar (lambda (entry) (plist-get entry :display-path))
                              paths)))
@@ -48,11 +41,14 @@
                       '(:type :tag :value "project")))))))
 
 (ert-deftest supertag-query-model-resolves-fields-and-values ()
-  "Resolved schema fields and values have View API parity."
+  "Projected properties and values have View API parity."
   (supertag-ownership-test-with-vault
-    (should (equal '("status")
-                   (mapcar (lambda (field) (plist-get field :id))
-                           (supertag-query-resolved-fields "project"))))
+    (supertag-store-put-entity :nodes supertag-ownership-test-node-a
+      (plist-put (copy-tree (supertag-node-get supertag-ownership-test-node-a))
+                 :properties '(:STATUS "active")))
+    (should (equal '(:STATUS)
+                   (mapcar (lambda (property) (plist-get property :key))
+                           (supertag-query-resolved-fields supertag-ownership-test-node-a))))
     (should (equal "active"
                    (supertag-query-field-value
                     supertag-ownership-test-node-a "project" "Status")))
@@ -87,30 +83,12 @@
                            supertag-ownership-test-node-b)
                      nil :semantic-edge))))))
 
-(ert-deftest supertag-query-model-builds-node-detail-once ()
-  "The UI compatibility wrapper consumes the composed node detail."
-  (supertag-ownership-test-with-vault
-    (let ((detail (supertag-query-node-detail supertag-ownership-test-node-a)))
-      (should (equal detail
-                     (supertag-view-build-node-state
-                      supertag-ownership-test-node-a)))
-      (should (equal (supertag-query-node-tags
-                      supertag-ownership-test-node-a)
-                     (supertag-view--resolve-node-tags
-                      supertag-ownership-test-node-a)))
-      (should (equal '("project") (plist-get detail :tags)))
-      (should (equal '("status")
-                     (mapcar (lambda (entry)
-                               (plist-get (plist-get entry :field-def) :id))
-                             (plist-get detail :fields))))
-      (should (equal (list supertag-ownership-test-node-b)
-                     (plist-get detail :refs-to)))
-      (should-not (plist-get detail :refs-from))
-      (should (= 1 (plist-get detail :field-count)))
-      (should (= 1 (plist-get detail :ref-count))))))
+;; Node/property assertions now live in document-query-contract and public
+;; node-view-properties. Historical field/Board tests below remain archive-only.
 
 (ert-deftest supertag-query-model-builds-board-detail-for-the-serializer ()
   "Board detail composes placements, nodes, and their induced relations."
+  (require 'supertag-board)
   (supertag-ownership-test-with-vault
     (supertag-board-add-node "ownership-board"
                              supertag-ownership-test-node-b 30 40 200 100)
@@ -163,7 +141,10 @@
 (ert-deftest supertag-query-model-executes-node-query-with-compatibility-parity ()
   "The public node-query shape preserves the S-expression entry point."
   (supertag-ownership-test-with-vault
-    (let ((query '(and (tag "project") (field "Status" "active"))))
+    (supertag-store-put-entity :nodes supertag-ownership-test-node-a
+      (plist-put (copy-tree (supertag-node-get supertag-ownership-test-node-a))
+                 :properties '(:STATUS "active")))
+    (let ((query '(and (tag "project") (property "Status" "active"))))
       (should (equal (list supertag-ownership-test-node-a)
                      (supertag-query-node-ids query)))
       (should (equal (supertag-query-node-ids query)

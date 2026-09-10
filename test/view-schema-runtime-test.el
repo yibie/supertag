@@ -8,7 +8,7 @@
 (require 'supertag-core-store)
 (require 'supertag-ops-global-field)
 (require 'supertag-ops-schema)
-(require 'supertag-ops-tag)
+(require 'supertag-tag)
 (require 'supertag-view-framework)
 (require 'supertag-view-schema)
 

@@ -11,7 +11,7 @@
                (expand-file-name ".." (file-name-directory load-file-name))))
 
 (require 'supertag-core-store)
-(require 'supertag-ops-node)
+(require 'supertag-node)
 (require 'supertag-ui-commands)
 
 (defmacro supertag-document-command-test--with-file (contents &rest body)

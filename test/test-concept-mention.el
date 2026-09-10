@@ -13,10 +13,11 @@
   (add-to-list 'load-path (expand-file-name ".." (file-name-directory load-file-name))))
 
 (require 'supertag-core-store)
-(require 'supertag-ops-node)
-(require 'supertag-ops-relation)
+(require 'supertag-node)
+(require 'supertag-link)
 (require 'supertag-services-sync)
 (require 'supertag-concept)
+(require 'supertag-link)
 
 (defmacro concept-test--with-env (&rest body)
   "Run BODY with an isolated store and temp directory."
@@ -30,6 +31,7 @@
           (supertag-concept-default-file
            (expand-file-name "concepts.org" tmp))
           (supertag-active-sync-directory nil)
+          (supertag-creation-templates nil)
           (supertag-sync-directories nil)
           (org-id-locations nil)
           (org-id-files nil)
@@ -47,16 +49,16 @@
          (delete-directory tmp t)))))
 
 (defun concept-test--create-node (id title &optional aliases)
-  "Create a concept node with ID, TITLE and optional ALIASES."
-  (supertag-node-create
-   (list :id id
-         :title title
-         :file (expand-file-name "concepts.org" supertag-data-directory)
-         :level 1
-         :position 1
-         :properties (append (list :SUPERTAG_CONCEPT "t")
-                             (when aliases
-                               (list :SUPERTAG_ALIASES aliases))))))
+  "Save a real template-file heading with ID, TITLE and optional ALIASES."
+  (with-current-buffer (find-file-noselect supertag-concept-default-file)
+    (goto-char (point-max))
+    (let ((start (point)))
+      (insert (format "* %s\n:PROPERTIES:\n:ID: %s\n" title id))
+      (when aliases (insert ":SUPERTAG_ALIASES: " aliases "\n"))
+      (insert ":END:\n")
+      (save-buffer)
+      (goto-char start)
+      (supertag-node-sync-at-point))))
 
 (defun concept-test--text-property-at-search (text prop)
   "Search TEXT and return PROP at the match beginning."
@@ -65,7 +67,7 @@
   (get-text-property (match-beginning 0) prop))
 
 (ert-deftest concept-entries-use-title-and-alias-only-for-concepts ()
-  "Concept entries include title/aliases from marked nodes only."
+  "Concept entries include title/aliases from template-file headings only."
   (concept-test--with-env
     (concept-test--create-node "concept-id" "大语言模型" "LLM, 大模型")
     (supertag-node-create
@@ -146,23 +148,22 @@
     (concept-test--create-node "first-id" "First" "Shared")
     (concept-test--create-node "second-id" "Second" "Shared")
     (should-not (assoc "Shared" (supertag-concept-entries)))
-    (should-error (supertag-concept--find-concept-id-by-term "Shared")
-                  :type 'user-error)))
+    (should-not (fboundp 'supertag-concept--find-concept-id-by-term))))
 
-(ert-deftest concept-mark-node-persists-before-updating-store ()
-  "Marking a heading works without a pre-populated org-id location cache."
+(ert-deftest concept-old-marker-does-not-grant-position-membership ()
+  "Historical marker data is preserved but no longer determines membership."
   (concept-test--with-env
     (let ((file (expand-file-name "existing.org" supertag-data-directory)))
       (with-temp-file file
-        (insert "* Existing\n:PROPERTIES:\n:ID:       existing-id\n:END:\n"))
+        (insert "* Existing\n:PROPERTIES:\n:ID:       existing-id\n:SUPERTAG_CONCEPT: t\n:END:\n"))
       (supertag-node-create
        (list :id "existing-id" :title "Existing" :file file
              :position 1 :level 1 :properties nil))
-      (should (equal (supertag-concept--mark-node "existing-id") "existing-id"))
+      (should-not (fboundp 'supertag-concept--mark-node))
       (with-temp-buffer
         (insert-file-contents file)
         (should (re-search-forward "^:SUPERTAG_CONCEPT: t$" nil t)))
-      (should (supertag-concept-node-p (supertag-node-get "existing-id"))))))
+      (should-not (supertag-concept-node-p (supertag-node-get "existing-id"))))))
 
 (ert-deftest concept-create-node-works-with-empty-location-cache ()
   "Concept creation persists and projects identity without Org's cache."
@@ -175,7 +176,8 @@
                  (lambda (&rest _)
                    (ert-fail "Concept creation consulted org-id-find"))))
         (should (equal "concept-id"
-                       (supertag-concept--create-node "Concept"))))
+                       (supertag-reference--create-target
+                        "Concept" (car (supertag-template-list))))))
       (should (supertag-concept-node-p (supertag-node-get "concept-id")))
       (should (supertag-node-location-find "concept-id")))))
 
@@ -185,7 +187,7 @@
     (supertag-node-create
      '(:id "file-id" :title "Topic" :file "/tmp/topic.org"
        :position 1 :level 0 :properties nil))
-    (should-not (supertag-concept--find-node-id-by-title "Topic"))))
+    (should-not (supertag-concept-node-p (supertag-node-get "file-id")))))
 
 (ert-deftest promote-concept-materializes-one-document-link ()
   "Promoting selected text writes one link and derives one Document Link."
@@ -209,7 +211,11 @@
           (goto-char beg)
           (set-mark end)
           (activate-mark)
-          (call-interactively #'supertag-promote-concept))
+          (cl-letf (((symbol-function 'completing-read)
+                     (lambda (_prompt choices &rest _)
+                       (car (cl-find-if (lambda (choice) (cdr choice)) choices))))
+                    ((symbol-function 'yes-or-no-p) (lambda (&rest _) t)))
+            (supertag-promote "c")))
         (goto-char (point-min))
         (org-back-to-heading t)
         (let ((source-end (save-excursion (org-end-of-subtree t t))))
@@ -223,8 +229,8 @@
           (should (supertag-relation-document-link-p (car relations)))
           (should (eq :org (plist-get (car relations) :origin))))))))
 
-(ert-deftest promote-concept-inside-itself-is-a-friendly-no-op ()
-  "Promoting a concept's own title marks it but never creates a self-link."
+(ert-deftest promote-concept-inside-itself-rejects-before-mutation ()
+  "Explicit reuse of the containing heading cannot create a self-link or marker."
   (concept-test--with-env
     (let ((file (expand-file-name "self.org" supertag-data-directory))
           materialized)
@@ -240,11 +246,14 @@
           (cl-letf (((symbol-function 'supertag-reference-materialize)
                      (lambda (&rest _)
                        (setq materialized t))))
-            (should (equal "concept-id"
-                           (supertag-promote-concept beg end)))))
+            (goto-char beg) (set-mark end) (activate-mark)
+            (cl-letf (((symbol-function 'completing-read)
+                       (lambda (_prompt choices &rest _)
+                         (car (cl-find-if (lambda (choice) (cdr choice)) choices)))))
+              (should-error (supertag-promote "c") :type 'user-error))))
         (should-not materialized)
         (goto-char (point-min))
-        (should (equal "t" (org-entry-get nil "SUPERTAG_CONCEPT")))
+        (should-not (org-entry-get nil "SUPERTAG_CONCEPT"))
         (should-not (search-forward "[[id:concept-id]" nil t))))))
 
 (ert-deftest promote-empty-concept-does-not-create-source-id ()
@@ -260,7 +269,8 @@
         (let ((before (buffer-string))
               (beg (match-beginning 0))
               (end (match-end 0)))
-          (should-error (supertag-promote-concept beg end) :type 'user-error)
+          (goto-char beg) (set-mark end) (activate-mark)
+          (should-error (supertag-promote "c") :type 'user-error)
           (should (equal (buffer-string) before))
           (goto-char (point-min))
           (should-not (org-entry-get nil "ID")))))))

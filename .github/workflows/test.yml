@@ -4,21 +4,52 @@ on:
   push:
     branches:
       - main
-    paths-ignore:
-      - '**/*.md'
-      - '.phrase/**'
-  pull_request:
-    paths-ignore:
-      - '**/*.md'
-      - '.phrase/**'
+  pull_request: {}
   workflow_dispatch:
+    inputs:
+      archive_board:
+        description: 'Explicit historical Board npm/build check'
+        type: boolean
+        default: false
 
 concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
   cancel-in-progress: true
 
 jobs:
+  changes:
+    runs-on: ubuntu-latest
+    outputs:
+      runtime: ${{ steps.paths.outputs.runtime }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - id: paths
+        env:
+          BASE_SHA: ${{ github.event.pull_request.base.sha || github.event.before }}
+        run: |
+          if [[ "${{ github.event_name }}" == workflow_dispatch || -z "$BASE_SHA" || "$BASE_SHA" =~ ^0+$ ]]; then
+            echo 'runtime=true' >> "$GITHUB_OUTPUT"
+          else
+            git diff --name-only "$BASE_SHA" "$GITHUB_SHA" > /tmp/supertag-changed-paths
+            if grep -Eq '(\.el$|\.sh$|^\.github/workflows/test\.yml$)' /tmp/supertag-changed-paths; then
+              echo 'runtime=true' >> "$GITHUB_OUTPUT"
+            else
+              echo 'runtime=false' >> "$GITHUB_OUTPUT"
+            fi
+          fi
+
+  guidance:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Check current guidance and local entrypoint links
+        run: bash test/run-tests.sh --guidance
+
   test:
+    needs: changes
+    if: needs.changes.outputs.runtime == 'true'
     runs-on: ubuntu-latest
     strategy:
       fail-fast: false
@@ -45,16 +76,21 @@ jobs:
       # (verified via `git ls-files -s test/run-tests.sh`), so no chmod
       # step is needed here.
       - name: Run tests
-        run: ./test/run-tests.sh all
+        env:
+          TMPDIR: /tmp
+        run: bash test/run-tests.sh
 
       - name: Upload test results
-        if: failure()
+        if: always()
         uses: actions/upload-artifact@v4
         with:
           name: test-results-emacs-${{ matrix.emacs_version }}
-          path: test/test-results.txt
+          path: |
+            /tmp/supertag-tests.*/*.log
+            /tmp/supertag-entrypoints.*/*.log
+            /tmp/supertag-entrypoints.*/exit-codes.txt
 
-  board-ui:
+  gitignore:
     runs-on: ubuntu-latest
 
     steps:
@@ -74,6 +110,11 @@ jobs:
           ! grep -Fxq '.agent-relay/' .gitignore
           ! git check-ignore -q --no-index ext/board-ui/hooks/useWebSocket.ts
 
+  board-ui:
+    if: github.event_name == 'workflow_dispatch' && inputs.archive_board
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
         with:
           node-version: 20

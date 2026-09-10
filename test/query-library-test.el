@@ -30,7 +30,7 @@
   (add-to-list 'load-path (expand-file-name ".." (file-name-directory load-file-name))))
 
 (require 'supertag-core-store)
-(require 'supertag-services-query)
+(require 'supertag-query)
 (require 'supertag-query-library)
 
 ;;; --- 1. Builder assembly helpers -----------------------------------------

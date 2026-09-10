@@ -17,9 +17,9 @@
   (add-to-list 'load-path (expand-file-name ".." (file-name-directory load-file-name))))
 
 (require 'supertag-core-store)
-(require 'supertag-ops-node)
-(require 'supertag-ops-tag)
-(require 'supertag-ops-relation)
+(require 'supertag-node)
+(require 'supertag-tag)
+(require 'supertag-link)
 (require 'supertag-ops-field)
 (require 'supertag-services-sync)
 

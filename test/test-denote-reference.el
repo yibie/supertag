@@ -6,10 +6,13 @@
 (require 'org)
 (require 'org-id)
 (require 'supertag-core-store)
-(require 'supertag-ops-node)
-(require 'supertag-ops-relation)
+(require 'supertag-node)
+(require 'supertag-link)
+(require 'supertag-link)
 (require 'supertag-services-sync)
-(require 'supertag-ui-commands)
+(if (equal (getenv "SUPERTAG_SYA_STAGE") "before")
+      (require 'supertag-ui-commands)
+    (require 'supertag-services-sync))
 
 (defun test-denote-reference--extract (text)
   "Return references extracted from TEXT."

@@ -16,8 +16,8 @@
   (add-to-list 'load-path (expand-file-name ".." (file-name-directory load-file-name))))
 
 (require 'supertag-core-store)
-(require 'supertag-ops-node)
-(require 'supertag-ops-relation)
+(require 'supertag-node)
+(require 'supertag-link)
 
 ;;; --- Helpers ---
 
@@ -198,40 +198,42 @@
         (should (string= "/tmp/special.org" (plist-get updated :file)))
         (should (string= "Keep File" (plist-get updated :title)))))))
 
-(ert-deftest node-ops-relation-field-sync-uses-semantic-field-store ()
-  "Relation field sync never extends the Org-owned node plist."
+(ert-deftest node-ops-relation-field-sync-is-rejected-before-create ()
+  "New field synchronization relations are retired before Store mutation."
   (node-ops-test--with-clean-store
     (supertag-node-create
      '(:id "source" :title "Source" :file "/tmp/source.org"))
     (supertag-node-create
      '(:id "target" :title "Target" :file "/tmp/target.org"))
     (supertag-store-put-field-value "source" "status" "active")
-    (let ((relation
-           (supertag-relation-create-notion-style
-            '(:type :sync-field :from "source" :to "target"
-              :sync-fields ("status")))))
-      (should (eq :semantic-edge (plist-get relation :kind)))
-      (should (eq :semantic (plist-get relation :origin))))
-    (should (equal "active"
-                   (supertag-store-get-field-value "target" "status")))
-    (should-not
-     (plist-member (supertag-store-get-entity :nodes "target") :status))))
+    (let ((before (hash-table-count
+                   (supertag-store-get-collection :relations))))
+      (should-error
+       (supertag-relation-create-notion-style
+        '(:type :sync-field :from "source" :to "target"
+          :sync-fields ("status")))
+       :type 'user-error)
+      (should (= before
+                 (hash-table-count
+                  (supertag-store-get-collection :relations))))
+      (should-not (supertag-store-get-field-value "target" "status")))))
 
-(ert-deftest node-ops-relation-rollup-does-not-materialize-in-node ()
-  "A derived rollup result never becomes a node extension key."
+(ert-deftest node-ops-relation-rollup-is-rejected-before-create ()
+  "New rollup relations are retired before Store mutation."
   (node-ops-test--with-clean-store
     (supertag-node-create '(:id "source" :title "Source"))
     (supertag-node-create '(:id "target" :title "Target" :effort 3))
-    (let ((relation
-           (supertag-relation-create-notion-style
-            (list :type :rollup :from "source" :to "target"
-                  :rollup-field "effort"
-                  :rollup-function (lambda (values) (apply #'+ values))))))
-      (should (= 3 (supertag-relation-calculate-rollup
-                    (plist-get relation :id))))
-      (should-not
-       (plist-member (supertag-store-get-entity :nodes "target")
-                     :rollup-effort)))))
+    (let ((before (hash-table-count
+                   (supertag-store-get-collection :relations))))
+      (should-error
+       (supertag-relation-create-notion-style
+        (list :type :rollup :from "source" :to "target"
+              :rollup-field "effort"
+              :rollup-function (lambda (values) (apply #'+ values))))
+       :type 'user-error)
+      (should (= before
+                 (hash-table-count
+                  (supertag-store-get-collection :relations)))))))
 
 ;;; --- Node Get (as exists check) Tests ---
 

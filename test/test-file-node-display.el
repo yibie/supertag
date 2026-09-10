@@ -16,7 +16,7 @@
   ;; even when invoked without an explicit `-L .' flag.
   (add-to-list 'load-path (expand-file-name ".." (file-name-directory load-file-name))))
 
-(require 'supertag-services-ui)
+(progn (require 'supertag-query) (require 'supertag-tag) (require 'supertag-services-sync) (supertag-node--prepare-cache-listener))
 
 (ert-deftest format-file-node-with-title ()
   "File node with #+TITLE shows emoji prefix and title."

@@ -1,0 +1,12 @@
+;;; legacy-field-fixture.el --- Synthetic old-root data -*- lexical-binding: t; -*-
+(require 'supertag-core-store)
+(defun supertag-test-legacy-definition (id data)
+  (puthash id data (supertag-store-get-collection :field-definitions)))
+(defun supertag-test-legacy-value (node field value)
+  (let* ((root (supertag-store-get-collection :field-values))
+         (bucket (or (gethash node root) (make-hash-table :test 'equal))))
+    (puthash node bucket root) (puthash field value bucket)))
+(defun supertag-test-read-legacy-value (node field &optional default)
+  (let ((bucket (gethash node (gethash :field-values supertag--store))))
+    (if bucket (gethash field bucket default) default)))
+(provide 'legacy-field-fixture)

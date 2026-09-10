@@ -12,8 +12,8 @@
                (expand-file-name ".." (file-name-directory load-file-name))))
 
 (require 'supertag-core-store)
-(require 'supertag-ops-node)
-(require 'supertag-ops-relation)
+(require 'supertag-node)
+(require 'supertag-link)
 (require 'supertag-services-ui)
 (require 'supertag-services-sync)
 (require 'supertag-ui-commands)
@@ -248,7 +248,7 @@
             (should-error
              (supertag-add-reference-and-create
               (match-beginning 0) (match-end 0))
-             :type 'user-error))))
+             :type 'supertag-link-error))))
       (should-not (supertag-relation-find-between
                    "source-id" "target-id" :reference)))))
 

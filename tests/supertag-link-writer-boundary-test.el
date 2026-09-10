@@ -8,9 +8,9 @@
 (require 'supertag-ui-commands)
 (require 'supertag-service-org)
 (require 'supertag-ui-search)
-(require 'supertag-ui-reference)
+(require 'supertag-link)
 (require 'supertag-core-store)
-(require 'supertag-ops-relation)
+(require 'supertag-link)
 (require 'supertag-services-sync)
 
 (defun supertag-link-writer-test--replace (beg end target-id title)
@@ -80,13 +80,13 @@
           (should (equal (list at at "target" "Target") materialized))
           (should-not reprojected))))))
 
-(ert-deftest supertag-ui-move-and-link-delegates-leave-link-write ()
-  "The interactive move command delegates its replacement link."
+(ert-deftest supertag-ui-move-and-link-delegates-common-service ()
+  "The interactive move command delegates its replacement link to the service."
   (let* ((dir (make-temp-file "supertag-ui-move-link" t))
          (source (expand-file-name "source.org" dir))
          (target (expand-file-name "target.org" dir))
          source-buffer
-         materialized)
+         delegated)
     (unwind-protect
         (progn
           (with-temp-file source
@@ -101,19 +101,18 @@
                       ((symbol-function 'supertag-ui-select-insert-position)
                        (lambda (_file) '(:position 1 :level 1)))
                       ((symbol-function 'yes-or-no-p) (lambda (&rest _) t))
-                      ((symbol-function 'supertag-node-set-location) #'ignore)
-                      ((symbol-function 'supertag-reference-materialize)
-                       (lambda (beg end target-id title)
-                         (setq materialized (list target-id title))
-                         (supertag-link-writer-test--replace
-                          beg end target-id title)))
+                      ((symbol-function 'supertag-service-org-move-nodes)
+                       (lambda (sources file position level leave-link)
+                         (setq delegated
+                               (list sources file position level leave-link))
+                         '("node-id")))
                       ((symbol-function 'message) #'ignore))
               (supertag-move-node-and-link))
-            (goto-char (point-min))
-            (should (equal '("node-id" "Node") materialized))
-            (should (looking-at-p "\\* Node$"))
-            (forward-line 1)
-            (should (looking-at-p "\\[\\[id:node-id\\]\\[Node\\]\\]$"))))
+            (should (equal '("node-id") (nth 0 delegated)))
+            (should (equal target (nth 1 delegated)))
+            (should (markerp (nth 2 delegated)))
+            (should (= 1 (nth 3 delegated)))
+            (should (eq t (nth 4 delegated)))))
       (when (buffer-live-p source-buffer)
         (with-current-buffer source-buffer (set-buffer-modified-p nil))
         (kill-buffer source-buffer))
@@ -122,13 +121,13 @@
         (kill-buffer buffer))
       (delete-directory dir t))))
 
-(ert-deftest supertag-service-move-leave-link-delegates-physical-write ()
-  "The Org move service delegates its optional leave-link replacement."
+(ert-deftest supertag-service-move-leave-link-writes-independent-stub ()
+  "The Org move service writes a distinct stub without nested materialization."
   (let* ((dir (make-temp-file "supertag-service-move-link" t))
          (source (expand-file-name "source.org" dir))
          (target (expand-file-name "target.org" dir))
          source-buffer
-         materialized)
+         (materialized 0))
     (unwind-protect
         (progn
           (with-temp-file source
@@ -144,19 +143,21 @@
                       ((symbol-function 'supertag--mark-internal-modification)
                        #'ignore)
                       ((symbol-function 'supertag-reference-materialize)
-                       (lambda (beg end target-id title)
-                         (setq materialized (list target-id title))
-                         (supertag-link-writer-test--replace
-                          beg end target-id title)))
+                       (lambda (&rest _) (cl-incf materialized)))
+                      ((symbol-function 'supertag-reference-materialize-at-point)
+                       (lambda (&rest _) (cl-incf materialized)))
                       ((symbol-function 'message) #'ignore))
               (supertag-service-org-move-node-to-file
                "node-id" target t))
             (set-marker source-marker nil))
           (with-current-buffer source-buffer
             (goto-char (point-min))
-            (should (equal '("node-id" "Node") materialized))
+            (should (= 0 materialized))
             (should (looking-at-p "\\* Node$"))
-            (forward-line 1)
+            (let ((stub-id (org-entry-get nil "ID")))
+              (should stub-id)
+              (should-not (equal stub-id "node-id")))
+            (org-end-of-meta-data t)
             (should (looking-at-p "\\[\\[id:node-id\\]\\[Node\\]\\]$"))))
       (when (buffer-live-p source-buffer)
         (with-current-buffer source-buffer (set-buffer-modified-p nil))
@@ -223,9 +224,11 @@
             (should (= 1 (length relations)))
             (should (supertag-relation-document-link-p (car relations)))))))))
 
-(ert-deftest supertag-search-insert-delegates-each-link-to-materializer ()
-  "Inserting marked Search results delegates every physical link."
-  (let ((origin (generate-new-buffer " *supertag-search-origin*"))
+(ert-deftest supertag-discovery-insert-delegates-each-link-to-materializer ()
+  "Inserting marked Discovery results delegates every physical link."
+  (let* ((tmp (make-temp-file "supertag-discovery-boundary-" t))
+         (source (expand-file-name "source.org" tmp))
+         (origin (find-file-noselect source))
         (search-buffer (generate-new-buffer " *supertag-search-results*"))
         calls)
     (unwind-protect
@@ -233,28 +236,36 @@
           (with-current-buffer origin
             (org-mode)
             (insert "* Source\n")
-            (setq supertag-search--original-buffer origin
-                  supertag-search--original-point (point)))
+            (goto-char (point-max)))
           (with-current-buffer search-buffer
-            (cl-letf (((symbol-function 'supertag-search-get-selected-nodes)
-                       (lambda () '("one" "two")))
-                      ((symbol-function 'supertag-node-get)
+            (setq-local supertag-discovery--marked-nodes '("two" "one")
+                        supertag-discovery--origin-marker
+                        (with-current-buffer origin (copy-marker (point) t))
+                        supertag-discovery--origin-min-marker
+                        (with-current-buffer origin (copy-marker (point-min)))
+                        supertag-discovery--origin-max-marker
+                        (with-current-buffer origin (copy-marker (point-max) t)))
+            (cl-letf (((symbol-function 'supertag-node-get)
                        (lambda (id)
                          (list :id id :title (capitalize id))))
+                      ((symbol-function 'supertag-node-location-find)
+                       (lambda (_id)
+                         (with-current-buffer origin (copy-marker (point-min)))))
                       ((symbol-function 'supertag-reference-materialize)
                        (lambda (beg end target-id title)
                          (push (list target-id title) calls)
                          (supertag-link-writer-test--replace
                           beg end target-id title)))
                       ((symbol-function 'message) #'ignore))
-              (supertag-search-insert-at-point)))
+              (supertag-discovery-insert-references)))
           (should (equal '(("one" "One") ("two" "Two"))
                          (nreverse calls)))
           (with-current-buffer origin
             (should (equal "* Source\n- [[id:one][One]]\n- [[id:two][Two]]\n"
                            (buffer-string)))))
       (when (buffer-live-p origin) (kill-buffer origin))
-      (when (buffer-live-p search-buffer) (kill-buffer search-buffer)))))
+      (when (buffer-live-p search-buffer) (kill-buffer search-buffer))
+      (ignore-errors (delete-directory tmp t)))))
 
 (ert-deftest supertag-search-export-writes-a-generated-view-without-materializing ()
   "A new export is a generated view, not a source-owned reference assertion."

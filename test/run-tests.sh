@@ -1,175 +1,94 @@
-#!/bin/bash
-# Run all supertag ERT tests
-#
-# Usage:
-#   ./test/run-tests.sh              # Run all tests
-#   ./test/run-tests.sh extractor    # Run only extractor tests
-#   ./test/run-tests.sh node         # Run only node-ops tests
-#   ./test/run-tests.sh view         # Run only view-framework tests
-#   ./test/run-tests.sh view-refresh # Run single-path view refresh tests
-#   ./test/run-tests.sh view-schema  # Run Schema View Runtime tests
-#   ./test/run-tests.sh persist      # Run only persistence tests
-#   ./test/run-tests.sh schema-time  # Run only schema time validation tests
-#   ./test/run-tests.sh restore      # Run only snapshot restore tests
-#   ./test/run-tests.sh field-ref    # Run only node-reference field tests
-#   ./test/run-tests.sh query        # Run only query-block tests
-#   ./test/run-tests.sh query-model  # Run only concrete Query Model tests
-#   ./test/run-tests.sh smart-key    # Run only semantic activation tests
-#   ./test/run-tests.sh tag-merge    # Run only destructive tag merge tests
-#   ./test/run-tests.sh reference-migration # Run reciprocal migration tests
-#   ./test/run-tests.sh tag-membership # Run Org-first Tag membership tests
-#   ./test/run-tests.sh embed        # Run only embed/cache regression tests
-
+#!/usr/bin/env bash
+# One isolated executor for current contracts and named historical transitions.
 set -euo pipefail
-
 cd "$(dirname "$0")/.."
-
-# Check if emacs is available
-if ! command -v emacs &> /dev/null; then
-    echo "ERROR: Emacs not found in PATH. Tests require Emacs."
-    exit 1
+export SUPERTAG_TEST_TMP
+SUPERTAG_TEST_TMP="$(mktemp -d "${TMPDIR:-/tmp}/supertag-tests.XXXXXX")"
+echo "Logs and isolated data: $SUPERTAG_TEST_TMP"
+emacs_bin="${EMACS_BIN:-emacs}"
+if [[ ${1-} == --guidance ]]; then
+  exec bash test/development-entrypoints-test.sh --guidance
 fi
-
-EMACS_VERSION=$(emacs --version | head -1)
-echo "Emacs: $EMACS_VERSION"
-echo ""
-
-# Define test modules (stable, passing tests only)
-TEST_FILES=(
-    "test/extractor-test.el"
-    "test/node-ops-test.el"
-    "test/node-identity-test.el"
-    "test/view-framework-test.el"
-    "test/view-runtime-test.el"
-    "test/test-view-stream.el"
-    "test/test-view-table.el"
-    "test/test-view-kanban.el"
-    "test/test-view-node-runtime.el"
-    "test/view-refresh-single-path-test.el"
-    "test/view-schema-runtime-test.el"
-    "test/formula-test.el"
-    "test/aggregate-test.el"
-    "test/reference-test.el"
-    "test/virtual-column-test.el"
-    "test/test-field-node-reference.el"
-    "test/test-add-reference.el"
-    "test/test-denote-reference.el"
-    "test/persistence-hardening-test.el"
-    "test/schema-time-test.el"
-    "test/supertag-restore-test.el"
-    "test/canonical-serialization-test.el"
-    "test/query-block-test.el"
-    "test/query-library-test.el"
-    "test/query-model-test.el"
-    "test/transaction-test.el"
-    "test/merge-test.el"
-    "test/git-integration-test.el"
-    "test/git-sync-mode-test.el"
-    "test/conflicts-test.el"
-    "test/sync-worker-regression-test.el"
-    "test/tag-merge-test.el"
-    "test/reciprocal-migration-test.el"
-    "test/tag-membership-org-first-test.el"
-    "test/tag-path-test.el"
-    "test/test-ui-act.el"
-    "test/test-back-to-heading.el"
-    "test/test-concept-mention.el"
-    "test/embed-cache-test.el"
-    "test/ownership-separation-test.el"
-    "test/automation-condition-test.el"
-    "test/architecture-boundary-test.el"
-    "test/document-command-ownership-test.el"
-    "test/canonical-change-test.el"
-)
-
-# Allow filtering by keyword
-if [ $# -gt 0 ]; then
-    FILTER=""
-    for arg in "$@"; do
-        case "$arg" in
-            extractor) FILTER="$FILTER test/extractor-test.el" ;;
-            node)      FILTER="$FILTER test/node-ops-test.el" ;;
-            identity)  FILTER="$FILTER test/node-identity-test.el" ;;
-            view)      FILTER="$FILTER test/view-framework-test.el" ;;
-            view-runtime) FILTER="$FILTER test/view-runtime-test.el" ;;
-            view-stream) FILTER="$FILTER test/test-view-stream.el" ;;
-            view-table) FILTER="$FILTER test/test-view-table.el" ;;
-            view-kanban) FILTER="$FILTER test/test-view-kanban.el" ;;
-            view-node) FILTER="$FILTER test/test-view-node-runtime.el" ;;
-            view-refresh) FILTER="$FILTER test/view-refresh-single-path-test.el" ;;
-            view-schema) FILTER="$FILTER test/view-schema-runtime-test.el" ;;
-            formula)   FILTER="$FILTER test/formula-test.el" ;;
-            aggregate) FILTER="$FILTER test/aggregate-test.el" ;;
-            reference) FILTER="$FILTER test/reference-test.el" ;;
-            vc|virtual) FILTER="$FILTER test/virtual-column-test.el" ;;
-            field-ref) FILTER="$FILTER test/test-field-node-reference.el" ;;
-            add-reference) FILTER="$FILTER test/test-add-reference.el test/test-denote-reference.el" ;;
-            persist)   FILTER="$FILTER test/supertag-persistence-test.el test/persistence-hardening-test.el test/schema-time-test.el test/supertag-restore-test.el" ;;
-            schema-time) FILTER="$FILTER test/schema-time-test.el" ;;
-            restore)   FILTER="$FILTER test/supertag-restore-test.el" ;;
-            canon)     FILTER="$FILTER test/canonical-serialization-test.el" ;;
-            query)     FILTER="$FILTER test/query-block-test.el test/query-library-test.el test/query-model-test.el" ;;
-            query-model) FILTER="$FILTER test/query-model-test.el" ;;
-            tx)        FILTER="$FILTER test/transaction-test.el" ;;
-            merge)     FILTER="$FILTER test/merge-test.el" ;;
-            git)       FILTER="$FILTER test/git-integration-test.el test/git-sync-mode-test.el" ;;
-            conflicts) FILTER="$FILTER test/conflicts-test.el" ;;
-            cl-block|sync-worker) FILTER="$FILTER test/sync-worker-regression-test.el" ;;
-            act|smart-key) FILTER="$FILTER test/test-ui-act.el test/test-back-to-heading.el" ;;
-            concept)   FILTER="$FILTER test/test-concept-mention.el" ;;
-            tag-merge) FILTER="$FILTER test/tag-merge-test.el" ;;
-            reference-migration) FILTER="$FILTER test/reciprocal-migration-test.el" ;;
-            tag-membership) FILTER="$FILTER test/tag-membership-org-first-test.el" ;;
-            tag-path)  FILTER="$FILTER test/tag-path-test.el" ;;
-            embed)     FILTER="$FILTER test/embed-cache-test.el" ;;
-            ownership) FILTER="$FILTER test/ownership-separation-test.el" ;;
-            automation-condition) FILTER="$FILTER test/automation-condition-test.el" ;;
-            architecture) FILTER="$FILTER test/architecture-boundary-test.el" ;;
-            document-command) FILTER="$FILTER test/document-command-ownership-test.el" ;;
-            change) FILTER="$FILTER test/canonical-change-test.el" ;;
-            all)       FILTER="${TEST_FILES[*]}" ; break ;;
-            *)         echo "Unknown filter: $arg"; echo "Available: extractor node identity view view-runtime view-stream view-table view-kanban view-node view-refresh view-schema formula aggregate reference vc field-ref add-reference persist schema-time restore canon query query-model tx merge git conflicts cl-block sync-worker smart-key concept tag-merge reference-migration tag-membership tag-path embed ownership automation-condition architecture document-command change all"; exit 1 ;;
-        esac
-    done
-    TEST_FILES=($(printf '%s\n' $FILTER | awk '!seen[$0]++'))
-fi
-
-# Build -l args
-LOAD_ARGS=""
-for tf in "${TEST_FILES[@]}"; do
-    if [ -f "$tf" ]; then
-        LOAD_ARGS="$LOAD_ARGS -l $tf"
-    else
-        echo "WARNING: Test file not found: $tf"
-    fi
+# The static manifest is authoritative; this first process only expands names.
+export SUPERTAG_TEST_SELECTION="$*"
+for argument in "$@"; do
+  if [[ -z "$argument" ]]; then
+    echo 'Empty suite selection' >&2; exit 2
+  fi
 done
-
-if [ -z "$LOAD_ARGS" ]; then
-    echo "ERROR: No test files to run."
-    exit 1
-fi
-
-echo "Running: ${TEST_FILES[*]}"
-echo "================================"
-echo ""
-
-# Run tests (do NOT use set -e so we capture exit code)
-set +e
-emacs -batch \
-    -L . \
-    --eval "(setq load-prefer-newer t)" \
-    --eval "(package-initialize)" \
-    $LOAD_ARGS \
-    -f ert-run-tests-batch-and-exit 2>&1 | tee test/test-results.txt
-
-EXIT_CODE=${PIPESTATUS[0]}
-echo ""
-echo "Results saved to test/test-results.txt"
-
-if [ $EXIT_CODE -eq 0 ]; then
-    echo "All tests passed."
-else
-    echo "Some tests FAILED (exit code: $EXIT_CODE)."
-fi
-
-exit $EXIT_CODE
+"$emacs_bin" -Q --batch -l test/renovation-suites.el --eval '
+(let* ((input (getenv "SUPERTAG_TEST_SELECTION"))
+       (names (if (equal input "") supertag-renovation-default
+                (split-string input " " t))) resolved)
+  (dolist (name names)
+    (cond ((equal name "transition")
+           (setq resolved (append resolved (cddr supertag-renovation-default))))
+          ((assoc name supertag-renovation-suites)
+           (setq resolved (append resolved (list name))))
+          (t (error "Unknown suite: %s" name))))
+  (unless resolved (error "Empty suite set"))
+  (dolist (name (delete-dups resolved)) (princ (concat name "\n"))))' \
+  > "$SUPERTAG_TEST_TMP/suites.txt"
+while IFS= read -r suite; do
+  export SUPERTAG_TEST_SUITE="$suite"
+  echo "Suite: $suite"
+  "$emacs_bin" -Q --batch -L . -L test -L tests --eval '
+(progn
+  (require (quote package))
+  (package-initialize)
+  (setq user-emacs-directory (file-name-as-directory (getenv "SUPERTAG_TEST_TMP"))
+        supertag-data-directory (expand-file-name "data/" user-emacs-directory)
+        supertag--base-data-directory supertag-data-directory
+        supertag-db-file (expand-file-name "store.el" user-emacs-directory)
+        supertag-db-backup-directory (expand-file-name "backups/" user-emacs-directory)
+        supertag-sync-state-file (expand-file-name "sync-state.el" user-emacs-directory)
+        org-id-locations-file (expand-file-name "ids" user-emacs-directory)
+        load-prefer-newer t)
+  (dolist (dir (list "tests" "test" "."))
+    (let ((path (expand-file-name dir)))
+      (setq load-path (cons path (delete path load-path)))))
+  (when (equal (getenv "SUPERTAG_TEST_SUITE") "archive")
+    (dolist (directory (directory-files (expand-file-name "archive") t "^[^.].*"))
+      (when (and (file-directory-p directory)
+                 (not (equal (file-name-nondirectory directory) "legacy-v2")))
+        (add-to-list (quote load-path) directory))))
+  (require (quote ert))
+  ;; Explicit source-first candidate loads, even beside newer installed .elc.
+  (load (expand-file-name "supertag-query.el") nil nil t)
+  (load (expand-file-name "supertag-node.el") nil nil t)
+  (require (quote supertag-tag))
+  (require (quote supertag-services-sync))
+  (supertag-node--prepare-cache-listener t)
+  (load (expand-file-name "test/renovation-suites.el") nil nil t)
+  (let* ((name (getenv "SUPERTAG_TEST_SUITE"))
+         (entries (cdr (assoc name supertag-renovation-suites))) selected)
+    (unless entries (error "Empty or unknown suite: %s" name))
+    (dolist (entry entries)
+      (unless (file-regular-p (car entry))
+        (error "Missing required test: %s" (car entry)))
+      ;; Validate each file/selector on tests defined by that file, not a
+      ;; previously loaded suite. This rejects zero ERT even for selector t.
+      (let ((before (ert-select-tests t t)))
+        (load (expand-file-name (car entry)) nil nil t)
+        (let* ((owned (cl-set-difference (ert-select-tests t t) before))
+               (selector (cdr entry))
+               (matches (and selector
+                             (not (equal selector ""))
+                             (ert-select-tests selector owned))))
+          (unless matches (error "Zero ERT/empty selector: %S" entry))
+          (setq selected (append selected matches)))))
+    (let ((stats (ert-run-tests-batch
+                  (cons (quote member) (mapcar (function ert-test-name) selected)))))
+      ;; Check after execution too: a test can load archived code at runtime,
+      ;; including an absolute path outside a disposable runner fixture.
+      (unless (equal name "archive")
+        (dolist (loaded load-history)
+          (when (and (stringp (car loaded))
+                     (string-match-p "/archive/" (car loaded)))
+            (error "Default suite loaded archived code: %s" (car loaded)))))
+      (kill-emacs (if (zerop (ert-stats-completed-unexpected stats)) 0 1)))))' \
+    2>&1 | tee "$SUPERTAG_TEST_TMP/$suite.log"
+  if [[ "$suite" == contract ]]; then
+    bash test/development-entrypoints-test.sh 2>&1 | tee "$SUPERTAG_TEST_TMP/entrypoints.log"
+  fi
+done < "$SUPERTAG_TEST_TMP/suites.txt"

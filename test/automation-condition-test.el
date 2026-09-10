@@ -15,7 +15,7 @@
 
 (require 'supertag-core-store)
 (require 'supertag-ops-field)
-(require 'supertag-services-query)
+(require 'supertag-query)
 (require 'supertag-automation)
 
 (defmacro automation-condition-test--with-store (&rest body)

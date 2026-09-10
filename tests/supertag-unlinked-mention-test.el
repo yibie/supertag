@@ -4,8 +4,7 @@
 (require 'ht)
 (require 'org)
 (require 'supertag-core-store)
-(require 'supertag-services-mention)
-(require 'supertag-ui-mention)
+(require 'supertag-mention)
 
 (defmacro supertag-mention-v8-test--isolated (&rest body)
   (declare (indent 0) (debug t))

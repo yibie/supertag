@@ -8,9 +8,9 @@
 (require 'org-id)
 (require 'supertag-core-index)
 (require 'supertag-core-store)
-(require 'supertag-ops-relation)
-(require 'supertag-ui-link)
-(require 'supertag-ui-mention)
+(require 'supertag-link)
+(require 'supertag-link)
+(require 'supertag-mention)
 (require 'supertag-view-framework)
 (require 'supertag-view-node)
 
@@ -85,8 +85,8 @@
     (setcar counter 0)
     counter))
 
-(ert-deftest supertag-view-refresh-link-add-renders-once ()
-  "A typed-Link add must reach Node View through one Runtime refresh path."
+(ert-deftest supertag-view-refresh-archived-link-add-renders-once-without-display ()
+  "An archived typed-Link add refreshes Node View without reviving its UI."
   (supertag-view-refresh-test--with-clean-env
     (supertag-view-refresh-test--seed-link-model)
     (cl-letf (((symbol-function 'display-buffer) #'ignore)
@@ -102,10 +102,11 @@
             (supertag-link-add "source-node")))
         (should (= (car counter) 1))
         (with-current-buffer (get-buffer supertag-view-node--buffer-name)
-          (should (string-match-p "Target Node" (buffer-string))))))))
+          (should-not (string-match-p "Target Node" (buffer-string)))
+          (should-not (string-match-p "Typed Links" (buffer-string))))))))
 
-(ert-deftest supertag-view-refresh-link-remove-renders-once ()
-  "A typed-Link removal must reach Node View through one Runtime refresh path."
+(ert-deftest supertag-view-refresh-archived-link-remove-renders-once ()
+  "An archived typed-Link removal still emits one Runtime refresh."
   (supertag-view-refresh-test--with-clean-env
     (supertag-view-refresh-test--seed-link-model)
     (supertag-link-create "relates" "source-node" "target-node")
@@ -122,7 +123,7 @@
         (should (= (car counter) 1))
         (with-current-buffer (get-buffer supertag-view-node--buffer-name)
           (should-not (string-match-p "Target Node" (buffer-string)))
-          (should (string-match-p "No typed Links" (buffer-string))))))))
+          (should-not (string-match-p "typed Links" (buffer-string))))))))
 
 (ert-deftest supertag-view-refresh-mention-reproject-renders-once ()
   "Mention reprojection must reach Node View through one Runtime refresh path."

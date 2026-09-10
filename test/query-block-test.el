@@ -25,10 +25,10 @@
   (add-to-list 'load-path (expand-file-name ".." (file-name-directory load-file-name))))
 
 (require 'supertag-core-store)
-(require 'supertag-ops-node)
-(require 'supertag-ops-tag)
+(require 'supertag-node)
+(require 'supertag-tag)
 (require 'supertag-ops-field)
-(require 'supertag-services-query)
+(require 'supertag-query)
 (require 'supertag-ui-query-block)
 
 ;;; --- Shared helpers ---

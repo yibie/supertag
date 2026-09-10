@@ -7,6 +7,7 @@
 
 ;;; Code:
 
+(require 'legacy-field-fixture)
 (require 'cl-lib)
 (require 'ht)
 (require 'supertag-core-store)
@@ -79,12 +80,12 @@ FILES must be the project/reference pair returned by
        :tags (car tag)
        (list :id (car tag) :type :tag :name (cadr tag) :extends nil
              :fields nil :created-at stamp :modified-at stamp)))
-    (supertag-store-put-field-definition
+    (supertag-test-legacy-definition
      "status" '(:id "status" :name "Status" :type :enum
                  :options ("active" "done") :default "active"))
-    (supertag-store-put-tag-field-associations
-     "project" '((:field-id "status" :order 0)))
-    (supertag-store-put-field-value supertag-ownership-test-node-a "status" "active")
+    (supertag-store-put-entity
+     :tag-field-associations "project" '((:field-id "status" :order 0)))
+    (supertag-test-legacy-value supertag-ownership-test-node-a "status" "active")
     ;; :kind/:origin make the ownership distinction explicit in this fixture;
     ;; production migration to these shapes belongs to task007/task015.
     (supertag-store-put-entity

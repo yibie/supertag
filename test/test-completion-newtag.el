@@ -4,10 +4,9 @@
 (require 'cl-lib)
 (setq supertag-data-directory (make-temp-file "supertag-test-" t))
 (require 'org)
-(require 'supertag-ui-completion)
+(require 'supertag-tag)
 (require 'supertag-core-store)
-(require 'supertag-ops-tag)
-(require 'supertag-ops-node)
+(require 'supertag-node)
 
 ;; ponytail: simulate a buffer with an org node + a typed "#newtag" and
 ;; drive the CAPF :exit-function directly, the same way completion-at-point

@@ -617,15 +617,8 @@ provided explicitly.  This preserves aliases and sentence wording."
                         'help-echo (format "Jump to %s" source-title)
                         'supertag-source-id source-id)
     (insert "\n")
-    (when-let ((context (supertag-view-mention--context-text candidate)))
-      (let ((excerpt (truncate-string-to-width
-                      (replace-regexp-in-string "[[:space:]\n]+" " " (string-trim context))
-                      200 nil nil "…")))
-        (unless (string-empty-p excerpt)
-          (let ((excerpt-start (point)))
-            (insert "      " excerpt "\n")
-            (add-text-properties excerpt-start (point)
-                                 '(face supertag-view-excerpt wrap-prefix "      "))))))
+    (supertag-view-helper-insert-excerpt
+     (supertag-view-mention--context-text candidate))
     (insert "    ")
     (supertag-view-helper-insert-action-button
      "[Link]" #'supertag-view-mention--link candidate

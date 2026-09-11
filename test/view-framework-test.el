@@ -688,6 +688,7 @@
   '((supertag-view-apply-palette defun)
     (supertag-view-helper-insert-action-button defun)
     (supertag-view-helper-insert-section-chip defun)
+    (supertag-view-helper-insert-excerpt defun)
     (supertag-view-helper-format-value defun)
     (supertag-view-helper-render-org-links defun)
     (supertag-view-helper-format-boolean-value defun)
@@ -805,6 +806,16 @@
        (supertag-view-helper-insert-section-chip "References" 2 'supertag-view-chip1)
        (should (equal (buffer-string) " REFERENCES / 02 \n"))
        (should (get-text-property (point-min) 'supertag-view-section)))
+     (with-temp-buffer
+       (supertag-view-helper-insert-excerpt nil)
+       (supertag-view-helper-insert-excerpt "  \n\t ")
+       (should (string-empty-p (buffer-string)))
+       (supertag-view-helper-insert-excerpt
+        (concat " first\n second " (make-string 240 ?x)))
+       (should (string-prefix-p "      first second " (buffer-string)))
+       (should (string-suffix-p "…\n" (buffer-string)))
+       (should (eq (get-text-property (point-min) 'face) 'supertag-view-excerpt))
+       (should (equal (get-text-property (point-min) 'wrap-prefix) "      ")))
      (with-temp-buffer
        (insert "one\ntwo\n") (goto-char (point-min))
        (supertag-view-helper-highlight-current-line)

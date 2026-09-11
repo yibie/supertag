@@ -78,8 +78,10 @@ format if it was never resaved since upgrading this package.")
       (supertag--validate-time time-value)))
 
 (defun supertag--validate-time (time-value)
-  "验证时间值是否为有效的 Emacs 时间格式。
-TIME-VALUE 应该是四元素列表 (high low micro pico)。"
+  "Return non-nil when TIME-VALUE is a four-element (HIGH LOW USEC PSEC) list.
+Production code obtains such values from `supertag-current-time' in
+supertag-core-store.el; on Emacs 32 `current-time' itself returns
+\(TICKS . HZ) and would fail this check."
   (and (listp time-value)
        (= (length time-value) 4)
        (cl-every #'integerp time-value)))
@@ -1557,7 +1559,7 @@ Signals an error if the file cannot be read or parsed."
                :active-sync-directory (when (boundp 'supertag-active-sync-directory)
                                         supertag-active-sync-directory)
                :nodes-count (supertag--count-nodes)
-               :captured-at (current-time))
+               :captured-at (supertag-current-time))
          context)))
 
 (defun supertag--persistence-guard-violations (&optional file)
@@ -2123,12 +2125,7 @@ Useful for diagnosing why nodes aren't loading properly."
         (error
          (message "Error reading database file: %s" (error-message-string err))))))))
 
-;;; --- Time Format Standardization ---
-
-(defun supertag-current-time ()
-  "Get the standardized current time.
-Returns Emacs standard time format (high low micro pico)."
-  (current-time))
+;;; --- Time comparison ---
 
 (defun supertag-time-equal (time1 time2)
   "Safe time comparison function.

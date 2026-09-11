@@ -136,6 +136,7 @@ Files without the selected persistent identity remain ordinary Org files."
 (require 'supertag-concept)
 (require 'supertag-view-node)
 (require 'supertag-view-stream)
+(require 'supertag-view-tags)
 (require 'supertag-ai)
 (require 'supertag-semantic)
 (require 'supertag-embark)

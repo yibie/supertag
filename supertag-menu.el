@@ -34,7 +34,7 @@
 ;; supertag-menu-organize-more, supertag-menu-find-more, supertag-menu-maintain-more;
 ;; supertag-menu--* target wrappers are local menu actions.
 ;; Dependencies: transient only at load time. Native-autoload targets: supertag-view-node,
-;; supertag-view-stream, supertag-tag, supertag-node, supertag-link, supertag-concept,
+;; supertag-view-stream, supertag-view-tags, supertag-tag, supertag-node, supertag-link, supertag-concept,
 ;; supertag-discovery, supertag-query, supertag-semantic, supertag-ai, supertag-services-sync,
 ;; supertag-git, supertag-automation, supertag-vault. Direct migration targets use
 ;; supertag-migrate in an initialized session; supertag-migrate-tag-ids remains a known
@@ -61,6 +61,8 @@
 ;; Tag management is loaded lazily from its feature.
 (declare-function supertag-tag-rename "supertag-tag" (&optional old-id new-name))
 (declare-function supertag-delete-tag-everywhere "supertag-tag" (&optional tag-name))
+(declare-function supertag-tag-set-parent "supertag-tag" (&optional tag-id parent-id))
+(declare-function supertag-view-tags "supertag-view-tags" ())
 (declare-function supertag-find-node "supertag-node" (&optional other-window))
 (declare-function supertag-add-link "supertag-link"
                   (&optional choose-target))
@@ -145,6 +147,14 @@ errors propagate unchanged. DOC is the generated wrapper's docstring."
 (supertag-menu--defwrapper supertag-menu--delete-tag
   supertag-tag supertag-delete-tag-everywhere
   "Run `supertag-delete-tag-everywhere', loading its feature first if needed.")
+
+(supertag-menu--defwrapper supertag-menu--set-tag-parent
+  supertag-tag supertag-tag-set-parent
+  "Run `supertag-tag-set-parent', loading its feature first if needed.")
+
+(supertag-menu--defwrapper supertag-menu--view-tags
+  supertag-view-tags supertag-view-tags
+  "Open `supertag-view-tags', loading its feature first if needed.")
 
 (supertag-menu--defwrapper supertag-menu--discovery
   supertag-discovery supertag-discovery
@@ -262,7 +272,9 @@ errors propagate unchanged. DOC is the generated wrapper's docstring."
   "Less-frequent commands for reorganizing tags."
   [["Tags"
     ("r" "Rename tag everywhere" supertag-menu--rename-tag)
-    ("D" "Delete tag everywhere" supertag-menu--delete-tag)]
+    ("D" "Delete tag everywhere" supertag-menu--delete-tag)
+    ("P" "Set tag parent" supertag-menu--set-tag-parent)
+    ("T" "Tag manager" supertag-menu--view-tags)]
    ])
 
 ;;;###autoload

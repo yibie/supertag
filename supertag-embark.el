@@ -291,6 +291,11 @@ Delegates to the single physical-link writer in supertag-link."
   (supertag-tag-rename
    (plist-get (supertag-embark--require-target :tag) :tag-id)))
 
+(defun supertag-embark-tag-set-parent (&optional _target)
+  "Set the `:extends' parent of this tag."
+  (supertag-tag-set-parent
+   (plist-get (supertag-embark--require-target :tag) :tag-id)))
+
 (defun supertag-embark-tag-delete (&optional _target)
   "Preview and delete this tag throughout the managed documents."
   (supertag-delete-tag-everywhere
@@ -387,7 +392,8 @@ Delegates to the single physical-link writer in supertag-link."
   "r" #'supertag-embark-tag-remove
   "c" #'supertag-embark-tag-change
   "R" #'supertag-embark-tag-rename
-  "D" #'supertag-embark-tag-delete)
+  "D" #'supertag-embark-tag-delete
+  "P" #'supertag-embark-tag-set-parent)
 
 (defvar-keymap supertag-embark-link-map
   "RET" #'supertag-embark-link-open

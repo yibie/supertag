@@ -4,7 +4,7 @@
 (defconst supertag-renovation-default
   '("contract" "compat" "identity" "vault" "view-framework" "node-view-extra" "automation-actions" "extractor" "persistence-restore" "mention-extra" "saved-projection" "property-automation"
     "move" "promote" "stream" "find-node" "add-link" "discovery"
-    "query-links" "query-tag-completion" "legacy-query-compat" "migrate" "storage-format" "property-consumers" "tag-change" "named-link-query" "svg-tag" "tag-path" "tag-merge-plan" "embark" "ai" "semantic" "git"))
+    "query-links" "query-tag-completion" "legacy-query-compat" "migrate" "storage-format" "property-consumers" "tag-change" "named-link-query" "svg-tag" "tag-path" "tag-merge-plan" "tag-manager" "embark" "ai" "semantic" "git"))
 (defconst supertag-renovation-suites
   '(("migrate" ("test/migrate-test.el" . t) ("test/migrate-fields-test.el" . t))
     ("storage-format"
@@ -20,6 +20,7 @@
     ("embark" ("test/embark-test.el" . t))
     ("tag-merge-plan" ("test/tag-merge-plan-test.el" . t))
     ("tag-path" ("test/tag-path-hierarchy-test.el" . t))
+    ("tag-manager" ("test/tag-manager-test.el" . t))
     ("svg-tag" ("test/svg-tag-test.el" . t))
     ("named-link-query" ("test/named-link-query-test.el" . "^supertag-named-link-query-"))
     ("tag-change" ("test/tag-rename-delete-test.el" . t))

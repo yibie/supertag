@@ -29,7 +29,7 @@
 ;; supertag-tag-create, supertag-tag-get, supertag-tag-update,
 ;; supertag-tag-delete, supertag-tag-resolve-occurrence,
 ;; supertag-tag-display-name, supertag-tag-parent, supertag-tag-ancestors,
-;; supertag-tag-descendants,
+;; supertag-tag-descendants, supertag-tag-set-parent,
 ;; supertag-tag-index-clear, supertag-tag-index-rebuild,
 ;; supertag-tag-orphaned-ids, supertag-tag-delete-orphans,
 ;; supertag-ops-add-tag-to-node, supertag-sanitize-tag-name,
@@ -3451,6 +3451,38 @@ Preview is always shown before confirmation, whatever the caller."
                        (not (supertag-find-nodes-by-tag old-id)))
               (supertag-tag-delete old-id))
             new-id))))))
+
+(cl-defun supertag-tag-set-parent
+    (&optional (tag-id nil tag-id-supplied-p) (parent-id nil parent-id-supplied-p))
+  "Set TAG-ID's `:extends' parent to PARENT-ID, or clear it.
+Interactively, TAG-ID defaults to the inline tag at point, falling back to
+`supertag-ui-read-tag'.  PARENT-ID is then read the same way, with an extra
+\"(none)\" candidate that clears the parent.  Cycle and existence validation
+come from `supertag-tag-update'; a bad request signals `user-error'."
+  (interactive)
+  (let* ((tag-id
+          (if tag-id-supplied-p
+              tag-id
+            (or (let ((at-point (supertag-view-helper-get-tag-at-point)))
+                  (and at-point (supertag-service-org--semantic-tag-id at-point)))
+                (supertag-ui-read-tag
+                 "Tag: " (supertag-view-api-list-tag-ids) nil nil))))
+         (none-label "(none)")
+         (parent-id
+          (if parent-id-supplied-p
+              parent-id
+            (let ((answer
+                   (supertag-ui-read-tag
+                    (format "Parent for '%s': " tag-id)
+                    (cons none-label
+                          (remove tag-id (supertag-view-api-list-tag-ids)))
+                    nil nil)))
+              (unless (equal answer none-label) answer)))))
+    (supertag-tag-update tag-id (lambda (tag) (plist-put tag :extends parent-id)))
+    (message (if parent-id
+                 (format "Tag '%s' now extends '%s'." tag-id parent-id)
+               (format "Tag '%s' has no parent." tag-id)))
+    parent-id))
 
 (defun supertag-delete-tag-everywhere (&optional tag-name)
   "Preview and confirm removing TAG-NAME from Org and its projection.

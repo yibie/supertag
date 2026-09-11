@@ -198,6 +198,7 @@ Table、Schema、Kanban、Board、Graph 入口已封存，不属于当前工作�
 | 打标签 | `M-x supertag-add-tag` | 添加 `#tag` 到标题，节点自动出现在该标签的表格里 |
 | 看一个标签的所有节点（封存 UI） | 显式加载 `supertag-view-table`，再执行 `M-x supertag-view-table` | 旧电子表格视图；默认不加载、不展示入口 |
 | 按时间浏览一个标签 | `M-x supertag-view-stream` | 完整标签及后代标题集合；`e` 编辑源节点，`C-c C-c` 保存整文件再投影，`C-c C-k` 撤销未保存会话编辑并保留原生成功保存 |
+| 管理语义标签 | `M-x supertag-view-tags` | 树形视图；`m`/`u`/`U` 标记、取消标记或清空标记，`D` 删除已标记标签（或光标所在行） |
 | 查看节点的 Org properties | `M-x supertag-view-node` | 只读显示已保存的投影属性、标签、引用与提及 |
 | 定义类型化关系（封存 UI） | 显式加载 `supertag-view-schema`，再在 Schema View 中按 `a l` | 旧 schema 编辑器；不再是默认入口 |
 | 添加或查看关系 | 执行 `M-x supertag-add-link`（前缀参数输入关系名），再打开 Node View | 普通链接保留 `id`/`denote`；`[[supports:NODE-ID]]` 等命名链接是保存的文本，可使用配置名称或本会话新输入名称 |

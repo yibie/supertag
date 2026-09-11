@@ -3476,10 +3476,11 @@ come from `supertag-tag-update'; a bad request signals `user-error'."
                (format "Tag '%s' has no parent." tag-id)))
     parent-id))
 
-(defun supertag-delete-tag-everywhere (&optional tag-name)
+(defun supertag-delete-tag-everywhere (&optional tag-name skip-confirm)
   "Preview and confirm removing TAG-NAME from Org and its projection.
 Only delete the old entity after no projected node owns it.
-Preview is always shown before confirmation, whatever the caller."
+Preview is always shown before confirmation, whatever the caller.
+When SKIP-CONFIRM is non-nil, the caller already obtained confirmation."
   (interactive)
   (let* ((name (or tag-name (supertag-ui-read-tag
                             "Delete tag permanently: " (supertag-view-api-list-tag-ids) nil nil)))
@@ -3490,7 +3491,8 @@ Preview is always shown before confirmation, whatever the caller."
       (let* ((groups (supertag-tag-change-preview
                       id nil t))
              (count (apply #'+ (mapcar (lambda (group) (length (cadr group))) groups))))
-        (when (yes-or-no-p (format "Delete '%s' in %d nodes / %d files? " name count (length groups)))
+        (when (or skip-confirm
+                  (yes-or-no-p (format "Delete '%s' in %d nodes / %d files? " name count (length groups))))
           (dolist (group groups)
             (dolist (entry (cadr group))
               (supertag-service-org-remove-tag (car entry) id (null (nth 2 entry)))))

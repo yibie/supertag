@@ -316,9 +316,9 @@ closes the Node View.  RET and mouse-1 visit entry targets."
   (setq-local line-spacing 0.1)
   (setq-local mode-line-format
               '(" " (:eval (or supertag-view-node--current-title "Node"))
-                "   palette: " (:eval (symbol-name supertag-view-palette))))
-  (when (fboundp 'evil-local-mode)
-    (ignore-errors (evil-local-mode -1))))
+                "   palette: " (:eval (symbol-name supertag-view-palette)))))
+
+(supertag-view-register-modal-state 'supertag-view-node-mode)
 
 ;;; --- Rendering helpers ---
 
@@ -556,7 +556,6 @@ closes the Node View.  RET and mouse-1 visit entry targets."
               (win (get-buffer-window buf)))
     (select-window win)
     (when (featurep 'evil)
-      (when (fboundp 'evil-local-mode) (ignore-errors (evil-local-mode -1)))
       (when (fboundp 'evil-emacs-state) (ignore-errors (evil-emacs-state))))))
 
 (defun supertag-view-node--refresh-view ()
@@ -614,14 +613,6 @@ closes the Node View.  RET and mouse-1 visit entry targets."
       (if node-id
           (supertag-view-node-open node-id)
         (user-error "No node detected at point")))))
-
-;; If Evil is installed, set an initial state that won't override this mode's keys.
-(with-eval-after-load 'evil
-  (when (fboundp 'evil-set-initial-state)
-    (evil-set-initial-state 'supertag-view-node-mode 'emacs))
-  ;; Also register the mode as emacs-state to avoid normal/motion takeover
-  (when (boundp 'evil-emacs-state-modes)
-    (add-to-list 'evil-emacs-state-modes 'supertag-view-node-mode)))
 
 (provide 'supertag-view-node)
 

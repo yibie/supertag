@@ -76,6 +76,8 @@
   (setq buffer-read-only t
         truncate-lines nil))
 
+(supertag-view-register-modal-state 'supertag-view-stream-mode)
+
 (defvar supertag-view-stream-edit-mode-map
   (let ((map (make-sparse-keymap)))
     (define-key map (kbd "C-c C-c") #'supertag-view-stream-edit-finish)

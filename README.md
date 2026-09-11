@@ -207,6 +207,7 @@ Write participants, discussion, and decisions in the body; use ordinary lists fo
 | Tag something | `M-x supertag-add-tag` | Adds `#tag` inline, node appears in that tag's table |
 | See all nodes of a tag | `M-x supertag-view-stream` | Browse source-backed nodes chronologically |
 | Browse a tag chronologically | `M-x supertag-view-stream` | Complete tag/descendant title collection; `e` edits source, `C-c C-c` saves the whole file then projects, `C-c C-k` cancels unsaved session edits while retaining successful native saves |
+| Manage semantic tags | `M-x supertag-view-tags` | Tree view; `m`/`u`/`U` mark, unmark, or clear marks, then `D` deletes marked tags (or the row at point) |
 | Inspect a node's Org properties | `M-x supertag-view-node` | Read-only detail view of saved projected properties, tags, references, and mentions |
 | Follow named links | `M-x supertag-view-node` | Inspect relations on a node |
 | Add or view relationships | `M-x supertag-add-link` (prefix argument for a relation name), then open Node View | Ordinary links keep `id`/`denote`; a named link such as `[[supports:NODE-ID]]` is saved text and can use a configured or newly entered session name |

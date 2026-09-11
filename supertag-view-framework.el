@@ -148,6 +148,26 @@
   (insert-text-button label 'action action 'follow-link t 'face 'widget-button
                       'help-echo help (or prop 'supertag-action) data))
 
+(defun supertag-view--apply-modal-state (mode)
+  "Apply available modal-state setup to MODE."
+  (when (featurep 'evil)
+    (when (fboundp 'evil-set-initial-state)
+      (evil-set-initial-state mode 'emacs))
+    (when (boundp 'evil-emacs-state-modes)
+      (add-to-list 'evil-emacs-state-modes mode)))
+  (when (featurep 'meow)
+    (when (boundp 'meow-mode-state-list)
+      (cl-pushnew (cons mode 'motion) meow-mode-state-list
+                  :key #'car :test #'eq))))
+
+(defun supertag-view-register-modal-state (mode)
+  "Register MODE as an Emacs/motion state with supported modal packages."
+  (supertag-view--apply-modal-state mode)
+  (with-eval-after-load 'evil
+    (supertag-view--apply-modal-state mode))
+  (with-eval-after-load 'meow
+    (supertag-view--apply-modal-state mode)))
+
 (defun supertag-view-helper-insert-section-chip (label count face)
   "Insert a foldable section chip for LABEL, COUNT, and FACE."
   (let ((start (point)))

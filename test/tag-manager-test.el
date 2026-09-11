@@ -12,6 +12,8 @@
 (require 'supertag-view-framework)
 (require 'supertag-view-tags)
 
+(defvar evil-emacs-state-modes)
+
 (defmacro supertag-tag-manager-test--with-store (&rest body)
   "Run BODY with an isolated Store and subscriber table."
   (declare (indent 0))
@@ -141,12 +143,12 @@
             (with-current-buffer buffer
               (should (derived-mode-p 'supertag-view-tags-mode))
               (let ((text (buffer-string)))
-                (should (string-match-p "^media  (1 个节点)$" text))
-                (should (string-match-p "^  book  (1 个节点)$" text))
+                (should (string-match-p "^  media  (1 个节点)$" text))
+                (should (string-match-p "^    book  (1 个节点)$" text))
                 (should (string-match-p
-                         "^    novel  (0 个节点)  别名: fiction$" text))
-                (should (string-match-p "^work  (0 个节点)$" text))
-                (should (string-match-p "^ghost  (0 个节点)  \\[Orphan" text)))
+                         "^      novel  (0 个节点)  别名: fiction$" text))
+                (should (string-match-p "^  work  (0 个节点)$" text))
+                (should (string-match-p "^  ghost  (0 个节点)  \\[Orphan" text)))
               (supertag-view-tags-quit))))
       (supertag-tag-manager-test--kill-buffers))))
 
@@ -164,7 +166,7 @@
                 (supertag-view-tags-create-child))
               (should (equal "media" (supertag-tag-parent
                                        (supertag-tag-resolve-occurrence "book"))))
-              (should (string-match-p "^  book  (0 个节点)$" (buffer-string)))
+              (should (string-match-p "^    book  (0 个节点)$" (buffer-string)))
               (supertag-view-tags-quit))))
       (supertag-tag-manager-test--kill-buffers))))
 
@@ -177,13 +179,13 @@
           (let ((buffer (supertag-view-tags)))
             (with-current-buffer buffer
               (goto-char (point-min))
-              (should (string-match-p "^book  (0 个节点)$" (buffer-string)))
+              (should (string-match-p "^  book  (0 个节点)$" (buffer-string)))
               (search-forward "book")
               (cl-letf (((symbol-function 'completing-read)
                          (lambda (&rest _) "media")))
                 (supertag-view-tags-set-parent))
               (should (equal "media" (supertag-tag-parent "book")))
-              (should (string-match-p "^  book  (0 个节点)$" (buffer-string)))
+              (should (string-match-p "^    book  (0 个节点)$" (buffer-string)))
               (supertag-view-tags-quit))))
       (supertag-tag-manager-test--kill-buffers))))
 
@@ -227,6 +229,104 @@
               (supertag-view-tags-quit))
             (should-not (buffer-live-p buffer))))
       (supertag-tag-manager-test--kill-buffers))))
+
+(ert-deftest supertag-view-tags-marks-render-and-clear ()
+  (supertag-tag-manager-test--with-store
+    (unwind-protect
+        (save-window-excursion
+          (dolist (id '("alpha" "beta"))
+            (supertag-tag-create (list :id id :name id)))
+          (let ((buffer (supertag-view-tags)))
+            (with-current-buffer buffer
+              (goto-char (point-min)) (search-forward "alpha") (beginning-of-line)
+              (supertag-view-tags-mark)
+              (should (equal supertag-view-tags--marked-ids '("alpha")))
+              (should (string-match-p "^\\* alpha" (buffer-string)))
+              (goto-char (point-min)) (search-forward "alpha") (beginning-of-line)
+              (supertag-view-tags-unmark)
+              (should-not supertag-view-tags--marked-ids)
+              (should (string-match-p "^  alpha" (buffer-string)))
+              (goto-char (point-min)) (search-forward "alpha") (beginning-of-line)
+              (supertag-view-tags-mark)
+              (goto-char (point-min)) (search-forward "beta") (beginning-of-line)
+              (supertag-view-tags-mark)
+              (should (= 2 (length supertag-view-tags--marked-ids)))
+              (supertag-view-tags-unmark-all)
+              (should-not supertag-view-tags--marked-ids)
+              (should-not (string-match-p "^\\* " (buffer-string)))
+              (supertag-view-tags-quit))))
+      (supertag-tag-manager-test--kill-buffers))))
+
+(ert-deftest supertag-view-tags-delete-marks-with-one-confirmation ()
+  (supertag-tag-manager-test--with-store
+    (unwind-protect
+        (save-window-excursion
+          (dolist (id '("alpha" "beta" "gamma"))
+            (supertag-tag-create (list :id id :name id)))
+          (let ((buffer (supertag-view-tags)) prompts)
+            (with-current-buffer buffer
+              (setq supertag-view-tags--marked-ids '("alpha" "beta"))
+              (cl-letf (((symbol-function 'yes-or-no-p)
+                         (lambda (prompt) (push prompt prompts) t)))
+                (supertag-view-tags-delete))
+              (should (equal 1 (length prompts)))
+              (should (string-match-p "Delete 2 tags (alpha, beta) everywhere?" (car prompts)))
+              (should-not (supertag-tag-get "alpha"))
+              (should-not (supertag-tag-get "beta"))
+              (should (supertag-tag-get "gamma"))
+              (should-not supertag-view-tags--marked-ids)
+              (supertag-view-tags-quit))))
+      (supertag-tag-manager-test--kill-buffers))))
+
+(ert-deftest supertag-view-tags-delete-current-row-without-marks ()
+  (supertag-tag-manager-test--with-store
+    (unwind-protect
+        (save-window-excursion
+          (dolist (id '("alpha" "beta"))
+            (supertag-tag-create (list :id id :name id)))
+          (let ((buffer (supertag-view-tags)) (confirmations 0))
+            (with-current-buffer buffer
+              (goto-char (point-min)) (search-forward "alpha") (beginning-of-line)
+              (cl-letf (((symbol-function 'yes-or-no-p)
+                         (lambda (_prompt) (cl-incf confirmations) t)))
+                (supertag-view-tags-delete))
+              (should (= 1 confirmations))
+              (should-not (supertag-tag-get "alpha"))
+              (should (supertag-tag-get "beta"))
+              (supertag-view-tags-quit))))
+      (supertag-tag-manager-test--kill-buffers))))
+
+(ert-deftest supertag-view-register-modal-state-is-idempotent-for-evil ()
+  (let ((evil-emacs-state-modes nil)
+        calls)
+    (let ((real-featurep (symbol-function 'featurep)))
+      (cl-letf (((symbol-function 'featurep)
+                 (lambda (feature)
+                   (or (eq feature 'evil) (funcall real-featurep feature))))
+                ((symbol-function 'evil-set-initial-state)
+                 (lambda (mode state) (push (cons mode state) calls))))
+      (supertag-view-register-modal-state 'supertag-view-tags-mode)
+      (supertag-view-register-modal-state 'supertag-view-tags-mode)))
+    (should (equal evil-emacs-state-modes '(supertag-view-tags-mode)))
+    (should (equal calls '((supertag-view-tags-mode . emacs)
+                           (supertag-view-tags-mode . emacs))))))
+
+(ert-deftest supertag-view-tags-mode-disables-meow ()
+  (unless (fboundp 'meow-mode)
+    (define-minor-mode meow-mode
+      "Dummy buffer-local Meow mode for Tag Manager tests."
+      :init-value nil
+      :lighter nil))
+  (let ((old-default (default-value 'meow-mode)))
+    (unwind-protect
+        (progn
+          ;; A major-mode transition clears buffer locals, so use the default
+          ;; value to model a globally enabled buffer-local mode.
+          (setq-default meow-mode t)
+          (with-temp-buffer
+            (supertag-view-tags-mode)
+            (should-not meow-mode)))
+      (setq-default meow-mode old-default))))
 
 (provide 'tag-manager-test)
 ;;; tag-manager-test.el ends here

@@ -199,6 +199,8 @@ Handles both time stamps (list) and date strings."
     (setq buffer-read-only t)
     (use-local-map supertag-discovery-mode-map)))
 
+(supertag-view-register-modal-state 'supertag-discovery-mode)
+
 ;;; --- Search Functions ---
 
 (defun supertag-discovery-find-nodes (keywords)

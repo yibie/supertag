@@ -33,6 +33,9 @@
 (defvar-local supertag-view-tags--origin-window-configuration nil
   "Window configuration to restore when the Tag Manager quits.")
 
+(defvar-local supertag-view-tags--marked-ids nil
+  "Tag IDs marked for a batch Tag Manager operation.")
+
 ;;; --- Rows: `:extends' tree construction ---
 
 (defun supertag-view-tags--extra-aliases (tag id)
@@ -87,7 +90,9 @@ is treated as a root and marked `:orphan'."
          (name (or (plist-get tag :name) id))
          (count (length (supertag-find-nodes-by-tag id)))
          (extra (supertag-view-tags--extra-aliases tag id)))
-    (concat (make-string (* 2 (plist-get row :depth)) ?\s)
+    (concat (propertize (if (member id supertag-view-tags--marked-ids) "* " "  ")
+                        'face 'supertag-view-accent)
+            (make-string (* 2 (plist-get row :depth)) ?\s)
             name
             (format "  (%d 个节点)" count)
             (if extra (format "  别名: %s" (string-join extra ", ")) "")
@@ -108,11 +113,19 @@ is treated as a root and marked `:orphan'."
 
 (defun supertag-view-tags--render (state)
   "Render Tag Manager STATE in the current Runtime buffer."
+  (let ((ids (mapcar (lambda (row) (plist-get row :id))
+                     (plist-get state :rows))))
+    (setq supertag-view-tags--marked-ids
+          (cl-remove-if-not (lambda (id) (member id ids))
+                            supertag-view-tags--marked-ids)))
   (supertag-view-widget--render-tree
    (supertag-view-tags--widgets state) state)
   (setq header-line-format
-        (format " Tag Manager   %d tags "
-                (length (plist-get state :rows))))
+        (format " Tag Manager   %d tags%s "
+                (length (plist-get state :rows))
+                (if supertag-view-tags--marked-ids
+                    (format "   %d marked" (length supertag-view-tags--marked-ids))
+                  "")))
   (font-lock-flush))
 
 ;;; --- Row lookup and navigation ---
@@ -190,10 +203,55 @@ is treated as a root and marked `:orphan'."
   (interactive)
   (supertag-tag-rename (supertag-view-tags--current-id)))
 
-(defun supertag-view-tags-delete ()
-  "Delete the Tag Manager row at point everywhere."
+(defun supertag-view-tags--refresh-and-next-line ()
+  "Refresh the Tag Manager and advance to the next row."
+  (supertag-view-refresh)
+  (forward-line 1))
+
+(defun supertag-view-tags-mark ()
+  "Toggle a mark on the Tag Manager row at point and move down."
   (interactive)
-  (supertag-delete-tag-everywhere (supertag-view-tags--current-id)))
+  (let ((id (supertag-view-tags--current-id)))
+    (if (member id supertag-view-tags--marked-ids)
+        (setq supertag-view-tags--marked-ids
+              (delete id supertag-view-tags--marked-ids))
+      (push id supertag-view-tags--marked-ids))
+    (supertag-view-tags--refresh-and-next-line)))
+
+(defun supertag-view-tags-unmark ()
+  "Remove the mark from the Tag Manager row at point and move down."
+  (interactive)
+  (setq supertag-view-tags--marked-ids
+        (delete (supertag-view-tags--current-id) supertag-view-tags--marked-ids))
+  (supertag-view-tags--refresh-and-next-line))
+
+(defun supertag-view-tags-unmark-all ()
+  "Clear every Tag Manager mark."
+  (interactive)
+  (setq supertag-view-tags--marked-ids nil)
+  (supertag-view-refresh))
+
+(defun supertag-view-tags-delete ()
+  "Delete marked Tag Manager rows, or the row at point, everywhere."
+  (interactive)
+  (let ((buffer (current-buffer)))
+    (if supertag-view-tags--marked-ids
+      (let* ((ids (copy-sequence supertag-view-tags--marked-ids))
+             (names (mapcar (lambda (id)
+                              (or (plist-get (supertag-tag-get id) :name) id))
+                            ids)))
+        (when (yes-or-no-p
+               (format "Delete %d tags (%s) everywhere? "
+                       (length ids) (string-join names ", ")))
+          (dolist (id ids)
+            (supertag-delete-tag-everywhere id t))
+          (with-current-buffer buffer
+            (setq supertag-view-tags--marked-ids nil)
+            (supertag-view-refresh))))
+      (let ((id (supertag-view-tags--current-id)))
+        (when (supertag-delete-tag-everywhere id)
+          (with-current-buffer buffer
+            (supertag-view-refresh)))))))
 
 (defun supertag-view-tags-edit-aliases ()
   "Edit the alias list of the Tag Manager row at point."
@@ -236,22 +294,37 @@ is treated as a root and marked `:orphan'."
     (define-key map (kbd "P") #'supertag-view-tags-set-parent)
     (define-key map (kbd "r") #'supertag-view-tags-rename)
     (define-key map (kbd "D") #'supertag-view-tags-delete)
+    (define-key map (kbd "m") #'supertag-view-tags-mark)
+    (define-key map (kbd "u") #'supertag-view-tags-unmark)
+    (define-key map (kbd "U") #'supertag-view-tags-unmark-all)
     (define-key map (kbd "a") #'supertag-view-tags-edit-aliases)
     (define-key map (kbd "c") #'supertag-view-tags-create-child)
     (define-key map (kbd "n") #'next-line)
     (define-key map (kbd "p") #'previous-line)
     (define-key map (kbd "g") #'supertag-view-refresh)
     (define-key map (kbd "q") #'supertag-view-tags-quit)
+    (define-key map (kbd "h") #'describe-mode)
+    (define-key map (kbd "?") #'describe-mode)
     map)
   "Keymap for `supertag-view-tags-mode'.")
 
 (define-derived-mode supertag-view-tags-mode special-mode "Supertag-Tags"
   "Major mode for the Supertag Tag Manager.
 
+RET opens the Stream.  m/u/U mark rows, D deletes, r renames, P sets a
+parent, a edits aliases, c creates a child, g refreshes, and q quits.  h and
+? describe this mode.
+
 \\{supertag-view-tags-mode-map}"
   :keymap supertag-view-tags-mode-map
   (setq buffer-read-only t
-        truncate-lines t))
+        truncate-lines t)
+  (when (bound-and-true-p meow-mode)
+    (meow-mode -1))
+  (when (fboundp 'evil-local-mode)
+    (ignore-errors (evil-local-mode -1))))
+
+(supertag-view-register-modal-state 'supertag-view-tags-mode)
 
 (supertag-view-tags--register-view)
 

@@ -276,11 +276,11 @@ Embark情景等产品门已解决。
 | 删 | `supertag-delete-node` | 已确认：删除节点使用 Org 原生子树编辑，保存后同步投影；不保留专门删除命令 |
 | 留 | `supertag-delete-tag-everywhere` | 已确认保留：全库移除指定标签，保留笔记；先预览文本改动，确认后经活 buffer 修改 Org 文本，数据库跟随重建 |
 | 删 | `supertag-disable-org-capture-integration` | 已确认：退出日常交互入口，保留内部生命周期与必要配置；自动接入和清理，避免重复触发，不改变用户 capture 模板 |
-| 删 | `supertag-disable-org-id-open-link-integration` | 已确认：退出日常交互入口，保留内部生命周期与必要配置；自动接入和清理，避免重复触发，不改变用户 capture 模板 |
+| 删 | `supertag-disable-org-id-find-integration` | 已确认：退出日常交互入口，保留内部生命周期与必要配置；自动接入和清理，避免重复触发，不改变用户 capture 模板 |
 | 删 | `supertag-embark-act` | 删除再打开 Supertag 菜单的包装入口，情景动作直接呈现在 Embark 中；必要动作适配函数保留 |
 | 删 | `supertag-embark-act-dwim` | 不再作为独立用户入口，默认动作由 Embark 集成承接；必要内部适配保留 |
 | 删 | `supertag-enable-org-capture-integration` | 已确认：退出日常交互入口，保留内部生命周期与必要配置；自动接入和清理，避免重复触发，不改变用户 capture 模板 |
-| 删 | `supertag-enable-org-id-open-link-integration` | 已确认：退出日常交互入口，保留内部生命周期与必要配置；自动接入和清理，避免重复触发，不改变用户 capture 模板 |
+| 删 | `supertag-enable-org-id-find-integration` | 已确认：退出日常交互入口，保留内部生命周期与必要配置；自动接入和清理，避免重复触发，不改变用户 capture 模板 |
 | 改 | `supertag-find-node` | 已确认统一查找入口：默认当前窗口，前缀参数时在另一窗口预览、打开；minibuffer 提示当前方式及另一种用法。找不到时允许主动新建，沿用 promote-concept 的目标文件机制，直接放入对应文件 |
 | 删 | `supertag-find-node-other-window` | 已确认删除独立入口，能力并入 supertag-find-node 的前缀参数用法，minibuffer 提供提示 |
 | 改 | `supertag-git-clone` | 已确认保留 Git 同步能力：克隆后从 Org 文本建立本地缓存，改造现有数据库加载与语义恢复流程 |
@@ -364,7 +364,7 @@ Embark情景等产品门已解决。
 |---|---|---|---|
 | Automation 生命周期 | automation-init、automation-cleanup、rebuild-rule-index | 删除日常交互入口，保留内部能力 | [supertag-automation.el](./supertag-automation.el) 加载时已初始化，索引有源状态检查；由生命周期与规则变化处理，用户不维护索引 |
 | Automation 事件接入 | automation-sync--register-commit-hooks、automation-sync--unregister-commit-hooks、automation-sync-enable、automation-sync-disable、automation-sync-toggle-async | 删除日常交互入口，必要配置和内部接入保留 | [supertag-automation-sync.el](./supertag-automation-sync.el) 明确防止 store 订阅与 commit hook 双重触发；实施时选择一致事件路径，不能把两个通道都自动启用。异步执行是实现策略，不是用户任务 |
-| Org 集成生命周期 | enable-org-capture-integration、disable-org-capture-integration、enable-org-id-open-link-integration、disable-org-id-open-link-integration | 删除成对日常入口，按配置与功能生命周期自动接入、清理 | [supertag-services-capture.el](./supertag-services-capture.el)、[supertag-service-org.el](./supertag-service-org.el) 分别注册 hook 与 advice；保留必要内部清理，不擅自改用户所有 capture 模板或处理库外节点 |
+| Org 集成生命周期 | enable-org-capture-integration、disable-org-capture-integration、enable-org-id-find-integration、disable-org-id-find-integration | 删除成对日常入口，按配置与功能生命周期自动接入、清理 | [supertag-services-capture.el](./supertag-services-capture.el)、[supertag-service-org.el](./supertag-service-org.el) 分别注册 hook 与 advice；保留必要内部清理，不擅自改用户所有 capture 模板或处理库外节点 |
 | 诊断与缓存 | completion-debug、db-inspect-file、svg-tag--clear-cache、concept-refresh | 转为内部诊断或自动刷新，不列日常命令 | [supertag-ui-completion.el](./supertag-ui-completion.el)、[supertag-core-persistence.el](./supertag-core-persistence.el)、[supertag-view-svg-tag.el](./supertag-view-svg-tag.el)、[supertag-concept.el](./supertag-concept.el)。db-inspect-file 检查的是数据库文件结构，不是某一 Org 文件的解析视图；主题变化和概念变化已有内部刷新调用 |
 | SVG 显示开关 | svg-tag-mode-enable、svg-tag-mode-disable、svg-tag-mode-toggle | 只保留一个用户切换入口，启用/停用函数内部保留；最终名 toggle-tag-style | [supertag-view-svg-tag.el](./supertag-view-svg-tag.el) 的 toggle 已调用 enable/disable。完整显示长标签是已确认的独立修复要求，不因入口合并而遗漏 |
 | 手动补全包装 | complete-tag、reference-complete | 已确认退出独立用户入口，保留 # 与 [[ 的补全、add-tag 与 add-link | [supertag-ui-completion.el](./supertag-ui-completion.el)、[supertag-ui-reference.el](./supertag-ui-reference.el)。前者转到 completion-at-point 或 org-cycle，后者转到补全或引用添加。实施时验证现有补全触发与 TAB 行为，不以“删命令”破坏输入 |

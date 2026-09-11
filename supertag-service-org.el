@@ -17,7 +17,7 @@
 (require 'cl-lib)
 (require 'org)
 (require 'org-element)
-(require 'org-id) ;; Required for org-id-goto
+(require 'org-id) ;; Backs org-id-goto and the org-id-find advice below
 (require 'subr-x)
 (require 'supertag-core-store)
 (require 'supertag-vault)
@@ -352,26 +352,38 @@ missing in-file ID fails closed; it never falls back to a stale cache entry."
   "Document saved, but its Supertag projection could not be reconciled")
 (define-error 'supertag-document-save-error
   "Document edit is retained in memory, but could not be saved")
-(defcustom supertag-org-id-open-link-auto-enable t
-  "When non-nil, let `org-id-open-link` resolve IDs via Supertag first.
+(defcustom supertag-org-id-find-auto-enable t
+  "When non-nil, let `org-id-find' resolve IDs via the Supertag Store first.
 
-This avoids depending on `org-id-locations` when the target node exists in the
-Supertag store. The fallback remains the original Org behavior when the node is
-unknown to Supertag or the recorded file is missing."
+This lets `org-id-find' answer from the Supertag Store instead of falling
+back to `org-id-update-id-locations', a full rescan of every tracked file,
+when the target node is already projected. `org-id-open', `org-id-goto',
+Agenda and every other caller of `org-id-find' benefit automatically. The
+fallback remains the original Org behavior when the node is unknown to
+Supertag, Supertag is not initialized, or this switch is off."
   :type 'boolean
   :group 'supertag-org-link)
 
 
 
-(defun supertag-service-org--org-id-open-link-advice (orig-fn &rest args)
-  "Advice for `org-id-open-link` that prefers Supertag lookup when available."
-  (let ((node-id (car args)))
-    (if (and supertag-org-id-open-link-auto-enable
-             (bound-and-true-p supertag--initialized)
-             (stringp node-id)
-             (supertag-service-org-follow-id node-id))
-        t
-      (apply orig-fn args))))
+(defun supertag-service-org--org-id-find-advice (orig-fn id &optional markerp)
+  "Advice for `org-id-find' that resolves ID via the Store before rescanning.
+
+When `supertag-org-id-find-auto-enable' is non-nil, Supertag is initialized,
+ID is a string, and `supertag-node-location--store-marker' can locate it,
+return the result directly per MARKERP: a marker, or a cons of the marker
+buffer's `buffer-file-name' and the marker's `marker-position'. ORIG-FN is
+not called in that case. Otherwise call ORIG-FN with ID and MARKERP, which
+is the original `org-id-find', unchanged."
+  (let ((marker (and supertag-org-id-find-auto-enable
+                      (bound-and-true-p supertag--initialized)
+                      (stringp id)
+                      (supertag-node-location--store-marker id))))
+    (if marker
+        (if markerp
+            marker
+          (cons (buffer-file-name (marker-buffer marker)) (marker-position marker)))
+      (funcall orig-fn id markerp))))
 
 (defun supertag-service-org--adjust-subtree-level (content from-level to-level)
   "Adjust Org subtree CONTENT from FROM-LEVEL to TO-LEVEL.
@@ -855,22 +867,20 @@ LEAVE-LINK, TARGET-LEVEL and recovery semantics."
   "Automation adapter for `supertag-service-org-move-node-to-file`."
   (supertag-service-org-move-node-to-file node-id target-file leave-link target-level))
 
-(defun supertag-enable-org-id-open-link-integration ()
-  "Enable Supertag integration for `org-id-open-link`."
-  (setq supertag-org-id-open-link-auto-enable t)
-  (when (fboundp 'org-id-open-link)
-    (advice-add 'org-id-open-link :around #'supertag-service-org--org-id-open-link-advice))
-  (message "[supertag] org-id-open-link integration enabled"))
+(defun supertag-enable-org-id-find-integration ()
+  "Enable Supertag integration for `org-id-find'."
+  (setq supertag-org-id-find-auto-enable t)
+  (advice-add 'org-id-find :around #'supertag-service-org--org-id-find-advice)
+  (message "[supertag] org-id-find integration enabled"))
 
-(defun supertag-disable-org-id-open-link-integration ()
-  "Disable Supertag integration for `org-id-open-link`."
-  (setq supertag-org-id-open-link-auto-enable nil)
-  (when (fboundp 'org-id-open-link)
-    (advice-remove 'org-id-open-link #'supertag-service-org--org-id-open-link-advice))
-  (message "[supertag] org-id-open-link integration disabled"))
+(defun supertag-disable-org-id-find-integration ()
+  "Disable Supertag integration for `org-id-find'."
+  (setq supertag-org-id-find-auto-enable nil)
+  (advice-remove 'org-id-find #'supertag-service-org--org-id-find-advice)
+  (message "[supertag] org-id-find integration disabled"))
 
-(when supertag-org-id-open-link-auto-enable
-  (supertag-enable-org-id-open-link-integration))
+(when supertag-org-id-find-auto-enable
+  (supertag-enable-org-id-find-integration))
 
 (defun supertag-service-org--normalize-plist (data)
   "Return DATA as a plist. Convert hash tables into plists."

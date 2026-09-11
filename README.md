@@ -127,7 +127,7 @@ Org properties are optional. They live in Org files and enter the database as re
 
 ### 3. Read, search, and keep writing in views
 
-- **Node View** (`M-x supertag-view-node`): Inspect a node's saved Org properties, tags, references, and mentions in a read-only detail view.
+- **Node View** (`M-x supertag-view-node`): Inspect a node's tags, references, and mentions in a read-only detail view.
 - **Stream View** (`M-x supertag-view-stream`): Browse the complete chronological, single-column list grouped by creation day, with `title  #tags` rows for a tag and all tags below it in the slash path (`#media` includes `#media/book`). Use `n`/`p` to move, `e` to edit the source heading and its own body (file-level nodes expose the whole file), or `v` for the read-only Node View. `C-c C-c` saves the **whole source file, including other existing drafts**, then projects the node and returns to Stream. `C-c C-k` cancels only pending session edits: a successful native `C-x C-s` becomes the new cancellation baseline, and outside edits are preserved. Save failure leaves the edit open; post-save projection failure keeps the saved text and exposes the existing retry.
 
 Legacy Table, Schema, Kanban, Board, and Graph tool UIs are
@@ -669,7 +669,7 @@ The following table is generated from the loaded source; purposes use each docst
 
 | Variable | Default | Purpose |
 |---|---|---|
-| `supertag-org-id-open-link-auto-enable` | `t` | When non-nil, let `org-id-open-link` resolve IDs via Supertag first. |
+| `supertag-org-id-find-auto-enable` | `t` | When non-nil, let `org-id-find` resolve IDs via the Supertag Store first. |
 
 **supertag-services-capture.el**
 

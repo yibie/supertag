@@ -312,8 +312,8 @@
                           (unwind-protect ,body
                             (setq emacs-startup-hook nil kill-emacs-hook nil org-mode-hook nil
                                   org-capture-after-finalize-hook nil enable-theme-functions nil)
-                            (when (fboundp 'org-id-open-link)
-                              (advice-remove 'org-id-open-link 'supertag-service-org--org-id-open-link-advice))
+                            (when (fboundp 'org-id-find)
+                              (advice-remove 'org-id-find 'supertag-service-org--org-id-find-advice))
                             (mapc #'cancel-timer (append timer-list timer-idle-list))
                             (dolist (b (buffer-list))
                               (when (or (member (buffer-name b) '(" *query-a-ordinary*"))

@@ -296,6 +296,48 @@
             (should (equal "Node"
                            (org-get-heading t t t t)))))))))
 
+(ert-deftest node-identity-org-id-find-advice-answers-from-store-before-rescan ()
+  "The `org-id-find' advice resolves a projected node without a full rescan.
+
+Disabling the integration and calling `org-id-find' again falls through to
+`org-id-update-id-locations', proving that path is what used to run before
+the advice was in place."
+  (node-identity-test--with-clean-env
+    (let ((file (expand-file-name "rescan.org" tmp))
+          (org-id-locations (make-hash-table :test 'equal))
+          (rescan-count 0)
+          ;; `supertag--initialized' must be set with `setq', not shadowed by
+          ;; a lexical `let': the advice reads it from a different file's
+          ;; compilation unit via `symbol-value', which never sees a lexical
+          ;; binding. Save and restore the prior global state by hand.
+          (had-init (boundp 'supertag--initialized))
+          (prior-init (and (boundp 'supertag--initialized) supertag--initialized)))
+      (with-temp-file file
+        (insert "* Node\n:PROPERTIES:\n:ID: rescan-node\n:END:\n"))
+      (supertag-store-put-entity
+       :nodes "rescan-node"
+       `(:id "rescan-node" :title "Node" :file ,file :position 99999 :level 1))
+      (let ((watch (lambda (&rest _) (cl-incf rescan-count))))
+        (advice-add 'org-id-update-id-locations :before watch)
+        (unwind-protect
+            (progn
+              (setq supertag--initialized t)
+              (let ((marker (org-id-find "rescan-node" 'marker)))
+                (should (markerp marker))
+                (should (equal file (buffer-file-name (marker-buffer marker))))
+                (with-current-buffer (marker-buffer marker)
+                  (should (equal "Node" (org-get-heading t t t t)))))
+              (should (= 0 rescan-count))
+              (supertag-disable-org-id-find-integration)
+              (unwind-protect
+                  (progn
+                    (org-id-find "rescan-node" 'marker)
+                    (should (= 1 rescan-count)))
+                (supertag-enable-org-id-find-integration)))
+          (advice-remove 'org-id-update-id-locations watch)
+          (if had-init (setq supertag--initialized prior-init)
+            (makunbound 'supertag--initialized)))))))
+
 (ert-deftest node-location-places-file-node-at-file-start ()
   "File-node navigation uses the Store projection and stays at point-min."
   (node-identity-test--with-clean-env
@@ -933,13 +975,13 @@
                       supertag-sync-directories nil supertag-active-sync-directory nil
                       make-backup-files nil auto-save-default nil load-prefer-newer t
                       supertag-node-location-org-id-fallback ,preset
-                      supertag-org-id-open-link-auto-enable ,preset)
+                      supertag-org-id-find-auto-enable ,preset)
                 (let ((oi-root ,node-identity-test--root) (oi-tmp ,tmp))
                   (condition-case error-data
                       (unwind-protect
                           (progn
                             (princ (format "ORG-IDENTITY-BEGIN %s preset=%S host=%S\n"
-                                           ,label ,preset (fboundp 'org-id-open-link)))
+                                           ,label ,preset (fboundp 'org-id-find)))
                             ,body
                             (princ ,(format "ORG-IDENTITY-DONE %s\n" label)))
                         (setq kill-emacs-hook nil emacs-startup-hook nil org-mode-hook nil)
@@ -1008,39 +1050,45 @@
         (should-not (file-exists-p supertag-db-file))))))
 
 (ert-deftest node-identity-shared-org-require-reload-and-native-advice-seam ()
-  "A supplied host is an existence seam, not this Emacs's native Org command."
+  "Advice on the real `org-id-find' is idempotent and coexists with foreign advice."
   (dolist (preset '(nil t))
     (node-identity-test--shared-org-child
      (format "advice-%S" preset) preset
-     `(let ((foreign-calls 0))
+     `(let ((foreign-calls 0) (text-quoting-style 'grave))
         (princ "ORG-IDENTITY-HOST-EXISTENCE-SEAM native-advice\n")
-        (fset 'org-id-open-link (lambda (&rest args) (cons 'original args)))
-        (let ((foreign (lambda (original &rest args)
-                         (cl-incf foreign-calls) (apply original args))))
-          (advice-add 'org-id-open-link :around foreign)
+        (let ((foreign (lambda (orig &rest args)
+                         (cl-incf foreign-calls) (apply orig args))))
+          (advice-add 'org-id-find :around foreign)
           (require 'supertag-service-org)
           (princ "ORG-IDENTITY-ENTRY native-advice seam\n")
-          (should (eq ,preset (not (null (advice-member-p #'supertag-service-org--org-id-open-link-advice 'org-id-open-link)))))
-          (should (advice-member-p foreign 'org-id-open-link))
+          (should (eq ,preset (not (null (advice-member-p #'supertag-service-org--org-id-find-advice 'org-id-find)))))
+          (should (advice-member-p foreign 'org-id-find))
           (let ((cell (symbol-function 'supertag-node-location-find)))
             (require 'supertag-service-org)
             (should (eq cell (symbol-function 'supertag-node-location-find))))
-          (should (equal '(original "unknown" extra) (org-id-open-link "unknown" 'extra)))
+          ;; Supertag is never initialized here, so the advice always defers
+          ;; to ORIG-FN; with `org-id-track-globally' off, the real fallback
+          ;; reliably signals instead of silently rescanning.
+          (should (equal '(error "Please turn on `org-id-track-globally' if you want to track IDs")
+                         (should-error (org-id-find "unknown" 'extra) :type 'error)))
           (should (= 1 foreign-calls))
           (load (expand-file-name "supertag-service-org.el" oi-root) nil nil t)
           (should (eq ,preset supertag-node-location-org-id-fallback))
-          (should (eq ,preset supertag-org-id-open-link-auto-enable))
-          (supertag-enable-org-id-open-link-integration)
-          (supertag-enable-org-id-open-link-integration)
+          (should (eq ,preset supertag-org-id-find-auto-enable))
+          (supertag-enable-org-id-find-integration)
+          (supertag-enable-org-id-find-integration)
           (load (expand-file-name "supertag-service-org.el" oi-root) nil nil t)
           (let ((count 0))
-            (advice-mapc (lambda (ad _props) (when (eq ad #'supertag-service-org--org-id-open-link-advice) (cl-incf count))) 'org-id-open-link)
+            (advice-mapc (lambda (ad _props) (when (eq ad #'supertag-service-org--org-id-find-advice) (cl-incf count))) 'org-id-find)
             (should (= count 1)))
-          (supertag-disable-org-id-open-link-integration)
+          (supertag-disable-org-id-find-integration)
           (load (expand-file-name "supertag-service-org.el" oi-root) nil nil t)
-          (should-not (advice-member-p #'supertag-service-org--org-id-open-link-advice 'org-id-open-link))
-          (should (advice-member-p foreign 'org-id-open-link))
-          (should (equal '(original "unknown" extra) (org-id-open-link "unknown" 'extra)))
-          (should (= 2 foreign-calls))
+          (should-not (advice-member-p #'supertag-service-org--org-id-find-advice 'org-id-find))
+          (should (advice-member-p foreign 'org-id-find))
+          (setq foreign-calls 0)
+          (should (equal '(error "Please turn on `org-id-track-globally' if you want to track IDs")
+                         (should-error (org-id-find "unknown" 'extra) :type 'error)))
+          (should (= 1 foreign-calls))
+          (advice-remove 'org-id-find foreign)
           (dolist (feature '(supertag-node supertag-tag supertag-services-sync supertag-query supertag))
             (should-not (featurep feature))))))))

@@ -122,7 +122,7 @@ Supertag 只建立在三个简单想法上：
 
 ### 3. 在视图中阅读、搜索和继续写
 
-- **节点视图** (`M-x supertag-view-node`)：只读查看节点已保存的 Org properties、标签、引用与提及。
+- **节点视图** (`M-x supertag-view-node`)：只读查看节点的标签、引用与提及。
 - **Stream View** (`M-x supertag-view-stream`)：把一个标签及其斜杠路径下的所有子标签（`#media` 含 `#media/book`）节点的完整集合显示为单列时间标题流。用 `n`/`p` 移动，按 `e` 编辑源标题及其自身正文（文件级节点显示整份文件），按 `v` 进入只读 Node View。`C-c C-c` 保存**整个源文件，包括其他已有草稿**，再投影节点并返回 Stream。`C-c C-k` 只撤销本会话尚未保存的编辑：原生 `C-x C-s` 成功保存后会成为新的取消基线，范围外编辑保留。保存失败保持编辑会话；保存后投影失败保留已落盘正文，并提供既有重试入口。
 
 ---
@@ -605,7 +605,7 @@ Supertag 以 GPLv3 自由软件协议开发。欢迎在 GitHub 上贡献代码�
 
 | Variable | Default | Purpose |
 |---|---|---|
-| `supertag-org-id-open-link-auto-enable` | `t` | When non-nil, let `org-id-open-link` resolve IDs via Supertag first. |
+| `supertag-org-id-find-auto-enable` | `t` | When non-nil, let `org-id-find` resolve IDs via the Supertag Store first. |
 
 **supertag-services-capture.el**
 

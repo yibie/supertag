@@ -405,14 +405,20 @@ This is a stopgap, not a solution — real multi-machine sync needs something th
 ## Migration from older versions
 
 Loading a supported 5.x/6.x database automatically upgrades its data version to
-7.0.0. Before any migration changes, SuperTag copies the database into
+7.1.0. Before any migration changes, SuperTag copies the database into
 `backups/supertag-db-premigrate-<old-version>-*.el` and verifies the snapshot
-byte for byte. Database-only conversion preserves old fields and inheritance
-as pending records; it does not edit Org files. For versions before 5.0, use
+byte for byte. Database-only conversion preserves old fields as pending
+records; it does not edit Org files. For versions before 5.0, use
 SuperTag 6.x to upgrade first.
 
+Legacy tag inheritance (old `:extends` records) is resolved automatically and
+directly into the `:extends` field on the matching Tag entity — no rename, no
+confirmation step; whatever cannot be resolved (a missing parent, a cycle, or
+a tag that already extends something else) stays visible in
+`M-x supertag-migrate-status` under `:unresolved-extends`, each with a reason.
+
 1. Run `M-x supertag-migrate-preview` to review old fields, live Org conflicts,
-   and proposed tag path renames.
+   and any parent/child `:extends` records that are still unresolved.
 2. Run `M-x supertag-migrate-apply` and confirm the changes. It saves through the
    existing Org writers; live drafts in the affected buffers are saved too.
    Conflicts and unexportable records remain available in

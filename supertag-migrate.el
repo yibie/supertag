@@ -2,8 +2,8 @@
 ;; Commands: supertag-migrate-run, supertag-migrate-status,
 ;;           supertag-migrate-preview, supertag-migrate-apply.
 ;; Dependencies: cl-lib, subr-x, org, supertag-core-persistence (snapshot reader/saved Store),
-;; supertag-service-org (confirmed property writer), supertag-tag (actual Tag reads/rename);
-;; supertag-core-store through these owners.
+;; supertag-service-org (confirmed property writer), supertag-tag (Tag reads and
+;; `:extends' resolution); supertag-core-store through these owners.
 (require 'cl-lib)
 (require 'subr-x)
 (require 'org)
@@ -11,8 +11,6 @@
 (require 'supertag-service-org)
 (require 'supertag-tag)
 (declare-function supertag-tag-stable-id-p "supertag-tag" (value))
-
-(autoload 'supertag-tag-rename "supertag-tag" nil t)
 
 (defconst supertag-migrate--field-roots
   '(:fields :field-definitions :tag-field-associations :field-values :field-provenance))
@@ -158,6 +156,73 @@
     (if (> (hash-table-count result) 0) (puthash :legacy-extends result store)
       (remhash :legacy-extends store))))
 
+(defun supertag-migrate--legacy-extends-resolve (token tags)
+  "Resolve TOKEN to a live Tag ID in TAGS: entity ID first, then `:name'
+or alias (via `supertag-tag-resolve-occurrence', which already indexes both).
+A ghost entry (a Tag ID present in TAGS with a nil value) never resolves,
+even though its own ID stays indexed as an occurrence token."
+  (when (stringp token)
+    (let ((id (or (and (gethash token tags) token)
+                  (condition-case nil (supertag-tag-resolve-occurrence token) (error nil)))))
+      (and id (gethash id tags) id))))
+
+(defun supertag-migrate--legacy-extends-cycle-p (child-id parent-id tags)
+  "Non-nil when CHILD-ID extending PARENT-ID would create an `:extends' cycle.
+Walks PARENT-ID's current ancestor chain in TAGS, which already reflects any
+edge this same migration pass applied to an earlier record."
+  (let ((current parent-id) (seen (list child-id)))
+    (catch 'cycle
+      (while current
+        (when (member current seen) (throw 'cycle t))
+        (push current seen)
+        (setq current (plist-get (supertag--ensure-plist (gethash current tags)) :extends)))
+      nil)))
+
+(defun supertag-migrate--apply-legacy-extends (store)
+  "Resolve `:legacy-extends' records into real Tag `:extends' edges in STORE.
+DB-only and idempotent.  For each pending record, the child key and the
+`:parent' name are resolved to live Tag IDs (entity ID, then `:name'/alias).
+A record whose child already carries that identical `:extends' is dropped
+without writing.  A record whose child and parent both resolve, do not
+already differ, and would not form a cycle has `:extends' written onto the
+child Tag entity and is then dropped.  Everything else is kept, annotated
+with `:conflict', for `supertag-migrate-status' to report under
+`:unresolved-extends'.  Return non-nil when any record's disposition
+changed."
+  (let ((pending (gethash :legacy-extends store))
+        (tags (gethash :tags store))
+        rows changed)
+    (when (and pending (hash-table-p tags))
+      (maphash (lambda (key entry) (push (cons key entry) rows)) pending)
+      (dolist (row (nreverse rows))
+        (let* ((key (car row)) (entry (cdr row))
+               (child-id (supertag-migrate--legacy-extends-resolve key tags))
+               (parent-name (plist-get entry :parent))
+               (parent-id (and (stringp parent-name)
+                                (supertag-migrate--legacy-extends-resolve parent-name tags)))
+               (child-tag (and child-id (supertag--ensure-plist (gethash child-id tags))))
+               (current (and child-tag (plist-get child-tag :extends)))
+               (conflict
+                (cond
+                 ((not child-id) "Missing child tag")
+                 ((not parent-id) "Missing parent tag")
+                 ((and current (not (equal current parent-id)))
+                  "Tag already extends a different parent")
+                 ((supertag-migrate--legacy-extends-cycle-p child-id parent-id tags)
+                  "Would create an :extends cycle"))))
+          (cond
+           (conflict
+            (let ((updated (plist-put (copy-sequence entry) :conflict conflict)))
+              (unless (equal updated entry) (setq changed t))
+              (puthash key updated pending)))
+           ((equal current parent-id) (remhash key pending) (setq changed t))
+           (t
+            (puthash child-id (plist-put child-tag :extends parent-id) tags)
+            (remhash key pending)
+            (setq changed t)))))
+      (when (= (hash-table-count pending) 0) (remhash :legacy-extends store)))
+    changed))
+
 (defun supertag-migrate--db-steps (store)
   "Perform DB-only steps before the version stamp; never write Org."
   (supertag--migrate-4x-to-5x store)
@@ -171,6 +236,7 @@
                (puthash id node (gethash :nodes store)))) (gethash :nodes store))
   (supertag-migrate--extract-fields store)
   (supertag-migrate--explain-extends store)
+  (supertag-migrate--apply-legacy-extends store)
   (let (nil-ids)
     (maphash (lambda (id tag) (unless tag (push id nil-ids))) (gethash :tags store))
     (dolist (id nil-ids) (remhash id (gethash :tags store)))))
@@ -244,7 +310,7 @@
         (push key roots)))
     (let ((report (list :version (supertag--get-data-version supertag--store)
                         :fields (gethash :legacy-fields supertag--store)
-                        :extends (gethash :legacy-extends supertag--store)
+                        :unresolved-extends (gethash :legacy-extends supertag--store)
                         :duplicates duplicates :invalid-nodes invalid :unstable-tags unstable
                         :ghost-tags ghosts :unexpected-roots roots
                         :error supertag-migrate--last-error :snapshot supertag-migrate--last-snapshot)))
@@ -423,13 +489,17 @@
             (when (eq (plist-get item :reason) (car group))
               (insert (format "  %s %s %s\n" (plist-get item :file)
                               (plist-get item :id) (plist-get item :field))))))
-        (insert "\n继承路径改名（逐项确认）\n")
-        (dolist (row (supertag-migrate--extends-plan))
-          (insert (format "  #%s → #%s [%s]%s\n"
-                          (plist-get row :name) (plist-get row :path)
-                          (plist-get row :id)
-                          (if (plist-get row :conflict)
-                              (format " 冲突：%s" (plist-get row :conflict)) ""))))
+        (insert "\n将写入的父子关系（DB-only，写入标签 :extends，无需确认）\n")
+        (let ((pending (gethash :legacy-extends supertag--store)))
+          (when pending
+            (maphash
+             (lambda (key entry)
+               (if (plist-get entry :conflict)
+                   (insert (format "  未解析 %s → %s：%s\n" key
+                                   (or (plist-get entry :parent) "?")
+                                   (plist-get entry :conflict)))
+                 (insert (format "  %s → %s\n" key (or (plist-get entry :parent) "?")))))
+             pending)))
         (insert "\nAutomation 字段引用（请手动修改）\n")
         (dolist (rule (plist-get report :automations))
           (insert (format "%s: %S\n" (plist-get rule :name) (plist-get rule :references))))
@@ -446,121 +516,14 @@
   "Map ENTRY's name to the inherited Org property spelling."
   (replace-regexp-in-string "[[:space:]:]" "_" (upcase (plist-get entry :name))))
 
-(defun supertag-migrate--extends-plan ()
-  "Return pending path renames without changing registry or Org."
-  (let ((pending (gethash :legacy-extends supertag--store)) rows)
-    (when pending
-      (maphash
-       (lambda (id entry)
-         (let* ((tag (supertag-tag-get id))
-                (path (plist-get entry :path))
-                (target (and path (supertag-tag-resolve-occurrence path))))
-           (push (list :id id :name (plist-get tag :name) :path path
-                       :entry (copy-tree entry)
-                       :conflict (or (plist-get entry :conflict)
-                                     (and (not tag) "Missing child tag")
-                                     (and (not path) "Missing path")
-                                     (and target
-                                          (not (equal path (supertag-service-org--tag-token target)))
-                                          "Path resolves to a different canonical name"))) rows)))
-       pending))
-    ;; Children first: completing a parent must not invalidate a queued child.
-    (sort rows (lambda (a b)
-                 (let ((alen (length (plist-get a :path)))
-                       (blen (length (plist-get b :path))))
-                   (if (= alen blen) (string< (plist-get a :id) (plist-get b :id))
-                     (> alen blen)))))))
-
-(defun supertag-migrate--save-with-restore (restore)
-  "Save migration state, restoring it when the writer returns or signals."
-  (condition-case err
-      (unless (supertag-save-store)
-        (funcall restore)
-        (error "Migration bookkeeping save deferred"))
-    (error
-     (funcall restore)
-     (signal (car err) (cdr err)))))
-
-(defun supertag-migrate--apply-extends ()
-  "Confirm each pending rename using the Org writer, then rekey its records."
-  (catch 'cancel
-    (dolist (row (supertag-migrate--extends-plan))
-      (unless (plist-get row :conflict)
-        (let* ((old (plist-get row :id)) (path (plist-get row :path))
-               (pending (gethash :legacy-extends supertag--store))
-               (old-entry (gethash old pending))
-               (renamed-to (plist-get old-entry :renamed-to))
-               (same (equal old (supertag-tag-resolve-occurrence path)))
-               ;; A prior bookkeeping failure leaves this marker durable.  The
-               ;; Org rename has already completed, so retry only persists the
-               ;; metadata and never invokes the destructive rename flow again.
-               (new (or renamed-to (if same old (supertag-tag-rename old path)))))
-          (unless new (throw 'cancel nil))
-          (if renamed-to
-            ;; The prior attempt already performed the writer and rekeyed
-            ;; metadata.  This retry only removes the durable marker; it never
-            ;; invokes the 3b rename a second time.
-            (progn
-              (supertag-mark-dirty)
-              (supertag-migrate--save-with-restore #'ignore)
-              (remhash old pending)
-              (when (= 0 (hash-table-count pending))
-                (remhash :legacy-extends supertag--store))
-              (supertag-mark-dirty)
-              (supertag-migrate--save-with-restore
-               (lambda ()
-                 (puthash old old-entry pending)
-                 (puthash :legacy-extends pending supertag--store)
-                 (supertag-mark-dirty))))
-            (progn
-            (unless (and (equal path (supertag-service-org--tag-token new))
-                         (equal (plist-get row :entry) (gethash old pending))
-                         (or same (not (supertag-find-nodes-by-tag old))))
-              (user-error "Migration state changed; preview again")))
-          ;; Existing canonical tag may survive a partial rename or own path.
-          (when (plist-member (supertag-tag-get new) :extends)
-            (supertag-tag-update
-             new (lambda (tag)
-                   (let (result)
-                     (while tag
-                       (unless (eq (car tag) :extends)
-                         (setq result (append result (list (car tag) (cadr tag)))))
-                       (setq tag (cddr tag)))
-                     result))))
-          ;; Keep a retry marker in the pending record until the final cleanup
-          ;; save succeeds.  This is deliberately written before any removal.
-          (puthash old (plist-put (copy-sequence old-entry) :renamed-to new) pending)
-          (puthash :legacy-fields
-                   (mapcar (lambda (entry)
-                             (if (equal old (plist-get entry :tag))
-                                 (plist-put (copy-sequence entry) :tag new) entry))
-                           (gethash :legacy-fields supertag--store))
-                   supertag--store)
-          (unless (gethash :legacy-fields supertag--store)
-            (remhash :legacy-fields supertag--store))
-          (maphash (lambda (id entry)
-                     (when (equal old (plist-get entry :parent))
-                       (puthash id (plist-put (copy-sequence entry) :parent new) pending)))
-                   pending)
-          (supertag-mark-dirty)
-          (unless (supertag-save-store) (error "Migration record save deferred"))
-          ;; Only after the marked state is durable may the pending record be
-          ;; retired.  A failure here leaves the marker in memory for retry.
-          (let ((removed-entry (gethash old pending)))
-            (remhash old pending)
-            (when (= 0 (hash-table-count pending)) (remhash :legacy-extends supertag--store))
-            (supertag-mark-dirty)
-            (supertag-migrate--save-with-restore
-             (lambda ()
-               (puthash old removed-entry pending)
-               (puthash :legacy-extends pending supertag--store)
-               (supertag-mark-dirty))))))
-          ))))
-
 ;;;###autoload
 (defun supertag-migrate-apply ()
-  "Confirm property export and path renames, then retire completed records."
+  "Confirm property export, resolve any pending `:legacy-extends' edges as a
+fallback, then retire completed records."
   (interactive)
+  (when (supertag-migrate--apply-legacy-extends supertag--store)
+    (supertag-mark-dirty)
+    (unless (supertag-save-store) (error "Migration bookkeeping save deferred")))
   (let ((report (supertag-migrate-preview)))
     (when (yes-or-no-p (format "写入 %d 键，待保存/待投影 %d；保存并重投影？ "
                               (plist-get report :write-count) (plist-get report :pending-count)))
@@ -606,37 +569,6 @@
                           (remhash :legacy-fields supertag--store))
                         (supertag-mark-dirty)
                         (supertag-save-store))))))))))
-      ;; A previous attempt may have completed the Org rename and rekeyed
-      ;; memory, but failed while saving bookkeeping.  Flush those durable
-      ;; retry markers first; this path performs no second rename.
-      (let ((pending (gethash :legacy-extends supertag--store)) changed markers)
-        (when pending
-          (maphash (lambda (id entry)
-                     (when (plist-get entry :renamed-to)
-                       (setq changed t)
-                       (push (cons id entry) markers))) pending)
-          (when changed
-            (supertag-mark-dirty)
-            (unless (supertag-save-store)
-              (error "Migration bookkeeping save deferred")))))
-      (supertag-migrate--apply-extends)
-      ;; Final safety net for a marker left by a prior attempt: cleanup is
-      ;; transactional at the record level and restores the exact marker if
-      ;; this save fails.
-      (let ((pending (gethash :legacy-extends supertag--store)) removed)
-        (when pending
-          (maphash (lambda (id entry)
-                     (when (plist-get entry :renamed-to)
-                       (push (cons id entry) removed)
-                       (remhash id pending))) pending)
-          (when removed
-            (when (= 0 (hash-table-count pending)) (remhash :legacy-extends supertag--store))
-            (supertag-mark-dirty)
-            (supertag-migrate--save-with-restore
-             (lambda ()
-               (dolist (pair removed) (puthash (car pair) (cdr pair) pending))
-               (puthash :legacy-extends pending supertag--store)
-               (supertag-mark-dirty))))))
       (supertag-migrate-preview))))
 
 (defun supertag-migrate--reset-runtime ()

@@ -30,9 +30,16 @@ The primary customization is in supertag-vault.el.")
 
 (defvar supertag--config-guard-allow)
 
-(defconst supertag-data-version "7.0.0"
+(defconst supertag-data-version "7.1.0"
   "Current data format version.
 Used for data format compatibility checks and automatic migration.
+
+Bumped 7.0.0 -> 7.1.0: `supertag-migrate--apply-legacy-extends' now resolves
+`:legacy-extends' records directly into `:extends' on Tag entities (DB-only,
+idempotent) instead of leaving them for an interactive path-rename step.
+Records that cannot be resolved (missing child/parent, a cycle, or a
+conflicting existing `:extends') remain in `:legacy-extends' and are reported
+by `supertag-migrate-status' under `:unresolved-extends'.
 
 7.0.0 preserves retired field data as pending migration records.
 The verified migration chain stamps this version only after DB steps succeed.

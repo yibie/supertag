@@ -359,11 +359,13 @@ scheduler 与 discovery 历史文件按当前库的数据目录动态计算。�
 
 ## 从旧版本迁移
 
-加载受支持的 5.x/6.x 数据库时，自动升级到数据版本 7.0.0。任何迁移变更之前，
+加载受支持的 5.x/6.x 数据库时，自动升级到数据版本 7.1.0。任何迁移变更之前，
 
-SuperTag 都先把数据库复制到 `backups/supertag-db-premigrate-<old-version>-*.el`，再逐字节核验快照。仅修改数据库的转换把旧字段和继承关系保留为待迁移记录，不改 Org 文件。5.0 之前的版本请先用 SuperTag 6.x 升级。
+SuperTag 都先把数据库复制到 `backups/supertag-db-premigrate-<old-version>-*.el`，再逐字节核验快照。仅修改数据库的转换把旧字段保留为待迁移记录，不改 Org 文件。5.0 之前的版本请先用 SuperTag 6.x 升级。
 
-1. 运行 `M-x supertag-migrate-preview`，审阅旧字段、活 Org 冲突和标签路径改名。
+旧版继承关系（`:extends` 记录）会自动直接解析并写入对应标签实体的 `:extends` 字段，无需改名、无需确认；解析不到父标签、会成环、或标签已有不同 `:extends` 的记录，会继续保留在 `M-x supertag-migrate-status` 的 `:unresolved-extends` 里，并各自带上原因。
+
+1. 运行 `M-x supertag-migrate-preview`，审阅旧字段、活 Org 冲突，以及仍未解析的父子 `:extends` 关系。
 2. 运行 `M-x supertag-migrate-apply` 并确认变更，复用既有 Org writer 保存；受影响 buffer 中的活草稿也会一起保存。冲突及无法导出的记录继续保留，可用 `M-x supertag-migrate-status` 查看。请先完成 apply，再清理孤儿标签。
 
 待导出提示只在版本迁移完成当次显示。若关闭自动迁移，可用 `M-x supertag-migrate-run` 显式执行同一条带快照核验的数据库迁移。

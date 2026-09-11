@@ -41,7 +41,7 @@
     (with-temp-file file
       (insert (if file-level
                   ":PROPERTIES:\n:ID: source\n:END:\n#+FILETAGS: :diary:\n"
-                "* Source :diary:\n:PROPERTIES:\n:ID: source\n:END:\n"))
+                "* Source #diary\n:PROPERTIES:\n:ID: source\n:END:\n"))
       (insert "Original body\n")
       (unless file-level
         (insert "* Outside\n:PROPERTIES:\n:ID: outside\n:END:\nOutside body\n")))
@@ -240,7 +240,7 @@
       (let ((file (expand-file-name (format "collection-%s.org" file-index) tmp)))
         (with-temp-file file
           (dotimes (i 12)
-            (insert (format "* Entry %s-%s :diary:\n:PROPERTIES:\n:ID: entry-%s-%s\n:END:\nBody\n"
+            (insert (format "* Entry %s-%s #diary\n:PROPERTIES:\n:ID: entry-%s-%s\n:END:\nBody\n"
                             file-index i file-index i))))
         (with-current-buffer (find-file-noselect file)
           (org-mode)
@@ -254,12 +254,14 @@
       (dotimes (_ 23) (call-interactively #'supertag-view-stream-previous-node))
       (should (equal id (supertag-view-stream--current-node-id)))
       (supertag-view-stream-edit)
-      (org-edit-headline "Updated title")
+      (org-edit-headline "Updated title #diary")
       (supertag-view-stream-edit-finish)
       (should (equal id (supertag-view-stream--current-node-id)))
       (should (string-match-p "Updated title" (buffer-string)))
+      ;; Membership lives in the inline #tag, so dropping it from the
+      ;; headline removes the node from the Stream.
       (supertag-view-stream-edit)
-      (org-set-tags nil)
+      (org-edit-headline "Updated title")
       (supertag-view-stream-edit-finish)
       (should (= 23 (length (supertag-view-stream--node-ids stream))))
       (should-not (member id (supertag-view-stream--node-ids stream)))

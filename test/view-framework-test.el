@@ -349,13 +349,14 @@
 (require 'document-fixture)
 (ert-deftest supertag-view-framework-tag-reader-real-path-stream-and-cancel ()
   (supertag-document-test-with-vault
-    (dolist (pair '(("stable-parent" . "topic") ("stable-child" . "topic/child")
-                    ("stable-grand" . "topic/child/grand") ("stable-leaf" . "solo")
-                    ("virtual-child" . "virtual/child")))
-      (supertag-tag-create (list :id (car pair) :name (cdr pair))))
+    ;; Hierarchy is the explicit `:extends' relation; names stay flat.
+    (dolist (spec '(("stable-parent" "topic" nil) ("stable-child" "child" "stable-parent")
+                    ("stable-grand" "grand" "stable-child") ("stable-leaf" "solo" nil)))
+      (supertag-tag-create (append (list :id (nth 0 spec) :name (nth 1 spec))
+                                   (when (nth 2 spec) (list :extends (nth 2 spec))))))
     (with-current-buffer (find-file-noselect file)
       (erase-buffer)
-      (insert "* Parent #topic\n:PROPERTIES:\n:ID: p\n:END:\nParent body\n* Child #topic/child\n:PROPERTIES:\n:ID: c\n:END:\nChild body\n* Grand #topic/child/grand\n:PROPERTIES:\n:ID: g\n:END:\nGrand body\n* Leaf #solo\n:PROPERTIES:\n:ID: l\n:END:\nLeaf body\n")
+      (insert "* Parent #topic\n:PROPERTIES:\n:ID: p\n:END:\nParent body\n* Child #child\n:PROPERTIES:\n:ID: c\n:END:\nChild body\n* Grand #grand\n:PROPERTIES:\n:ID: g\n:END:\nGrand body\n* Leaf #solo\n:PROPERTIES:\n:ID: l\n:END:\nLeaf body\n")
       (save-buffer))
     (should (eq 'complete (plist-get (supertag-reindex-org) :status)))
     (let ((facts (prin1-to-string supertag--store))
@@ -376,7 +377,7 @@
                 (with-current-buffer buffer
                   (dolist (title '("Parent" "Child" "Grand")) (should (string-match-p title (buffer-string))))))
             (when (buffer-live-p buffer) (kill-buffer buffer)))))
-      ;; Empty/virtual parent are not silently promoted into semantic entities.
+      ;; Empty/unknown answers are not silently promoted into semantic entities.
       (dolist (answer '("" "virtual"))
         (cl-letf (((symbol-function 'completing-read) (lambda (&rest _) answer)))
           (should-error (supertag-view--read-tag) :type 'user-error)))

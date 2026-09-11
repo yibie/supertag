@@ -318,8 +318,8 @@ Returns the created automation data with assigned ID."
                                     :enabled (if (plist-member automation-data :enabled)
                                                (plist-get automation-data :enabled)
                                              t)
-                                    :created-at (current-time)
-                                    :modified-at (current-time))))
+                                    :created-at (supertag-current-time)
+                                    :modified-at (supertag-current-time))))
 
         ;; Store automation
         (supertag-store-put-entity :automations id automation-plist t)
@@ -361,7 +361,7 @@ UPDATER is a function that receives current data and returns updated data."
                            (supertag-automation--normalize-trigger
                             (plist-get updated-automation :trigger))))
           (supertag--add-rule-to-index updated-automation)
-          (let ((final-automation (plist-put updated-automation :modified-at (current-time))))
+          (let ((final-automation (plist-put updated-automation :modified-at (supertag-current-time))))
             (supertag--validate-automation-data final-automation)
             (supertag-store-put-entity :automations id final-automation t)
             ;; Re-register if still scheduled
@@ -1550,7 +1550,7 @@ Should be called once during Supertag initialization."
 (defun supertag-scheduler--check-tasks ()
   "Master timer function - check and execute pending tasks.
 Prevents thundering herd by running only one daily task per cycle."
-  (let ((now (current-time))
+  (let ((now (supertag-current-time))
         (daily-task-ran nil))
     (maphash
      (lambda (id task)

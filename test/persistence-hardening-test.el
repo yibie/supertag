@@ -119,6 +119,14 @@ and internal state variables, so tests never touch the real
    (format "\\`%s-retired-[0-9]\\{8\\}\\(?:-[0-9]+\\)?\\'"
            (regexp-quote name))))
 
+(ert-deftest supertag-hardening-test-store-time-is-a-four-element-list ()
+  "Store timestamp creation stays compatible with the canonical time validator."
+  (let ((timestamp (supertag-current-time)))
+    (should (listp timestamp))
+    (should (= 4 (length timestamp)))
+    (should (cl-every #'integerp timestamp))
+    (should (supertag--validate-time timestamp))))
+
 ;;; --- Breaking rename data-root guard ---
 
 (ert-deftest supertag-hardening-test-legacy-data-root-fails-before-creation ()

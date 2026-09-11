@@ -375,7 +375,7 @@ Returns the created relation data."
 
     ;; Ensure created-at exists but don't overwrite if caller provided it.
     (unless (plist-get relation-plist :created-at)
-      (setq relation-plist (plist-put relation-plist :created-at (current-time))))
+      (setq relation-plist (plist-put relation-plist :created-at (supertag-current-time))))
 
     ;; Strict validation
     (supertag--validate-relation-data relation-plist)
@@ -435,7 +435,7 @@ Returns the updated relation data."
                              (final-relation
                               (supertag-relation--validate-owner
                                (plist-put updated-relation :modified-at
-                                          (current-time)))))
+                                          (supertag-current-time)))))
                         (dolist (identity-key
                                  '(:from :to :type :kind :field-id
                                    :link-definition-id :relation-name))

@@ -103,7 +103,7 @@ The default filename search-history.el stays unchanged to read existing history.
 
 (defun supertag-discovery--update-keyword-frequency (input)
   "Update frequency of search INPUT in history."
-  (let* ((now (current-time))
+  (let* ((now (supertag-current-time))
          (query-str (if (stringp input) input (prin1-to-string input)))
          (existing-entry (cl-find query-str supertag-discovery--history
                                 :key (lambda (x) (plist-get x :query))

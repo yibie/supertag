@@ -533,8 +533,8 @@ Returns the created tag data."
                              :aliases ,aliases
                              :type :tag
                              :extends ,extends
-                             :created-at ,(current-time)
-                             :modified-at ,(current-time))))
+                             :created-at ,(supertag-current-time)
+                             :modified-at ,(supertag-current-time))))
         (supertag--validate-tag-data final-props)
         (supertag-tag--assert-tokens-unique id aliases)
         (supertag-ops-commit
@@ -682,7 +682,7 @@ Returns the updated tag data."
                                   (plist-get updated-tag :aliases))))
                                (normalized-tag
                                 (plist-put updated-tag :aliases aliases))
-                               (final-tag (plist-put normalized-tag :modified-at (current-time))))
+                               (final-tag (plist-put normalized-tag :modified-at (supertag-current-time))))
                           (supertag-tag--assert-tokens-unique id aliases)
                           (supertag-tag--validate-extends
                            id (plist-get final-tag :extends))

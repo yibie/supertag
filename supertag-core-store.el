@@ -18,6 +18,10 @@
 
 (require 'cl-lib)
 (require 'ht) ; Ensures `ht` API availability
+
+(defun supertag-current-time ()
+  "Return the current time as a four-element list for Store timestamps."
+  (time-convert nil 'list))
 ;;; --- Shared Core State Variables ---
 
 (defvar supertag--suppress-notifications nil

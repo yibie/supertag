@@ -387,7 +387,7 @@ FILE should be an absolute path. This function records the current time
 to prevent sync from re-parsing the file we just modified."
   (when file
     (let ((abs-file (file-truename (expand-file-name file))))
-      (puthash abs-file (current-time) supertag-sync--internal-modifications))))
+      (puthash abs-file (supertag-current-time) supertag-sync--internal-modifications))))
 
 (defun supertag--clear-internal-modification (file)
   "Forget the internal modification marker for FILE."
@@ -532,7 +532,7 @@ Returns a plist with :status, :files, :scope, :errors, :observed-at."
             :files nil
             :scope nil
             :errors (list "sync directories not configured")
-            :observed-at (current-time)))
+            :observed-at (supertag-current-time)))
      (t
       (let ((unavailable nil))
         (dolist (dir sync-dirs)
@@ -545,7 +545,7 @@ Returns a plist with :status, :files, :scope, :errors, :observed-at."
                   :files nil
                   :scope sync-dirs
                   :errors (nreverse errors)
-                  :observed-at (current-time))
+                  :observed-at (supertag-current-time))
           (let ((partial nil)
                 (files '()))
             (dolist (dir sync-dirs)
@@ -563,7 +563,7 @@ Returns a plist with :status, :files, :scope, :errors, :observed-at."
                   :files (cl-delete-duplicates files :test #'string-equal)
                   :scope sync-dirs
                   :errors (nreverse errors)
-                  :observed-at (current-time)))))))))
+                  :observed-at (supertag-current-time)))))))))
 
 (defun supertag-sync--snapshot-new-files (snapshot-files)
   "Return files that are in SNAPSHOT-FILES but missing from sync state."

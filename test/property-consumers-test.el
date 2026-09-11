@@ -41,8 +41,10 @@
     (supertag-test-legacy-value "document-node" "LEGACY_ONLY" "hidden")
     (supertag-view-node-open "document-node")
     (with-current-buffer supertag-view-node--buffer-name
-      (should (string-match-p "ALPHA[ \t]+first" (buffer-string)))
-      (should-not (string-match-p "LEGACY_ONLY\\|No fields defined" (buffer-string)))
+      ;; Node View shows discovered context only: neither projected Org
+      ;; properties nor legacy field values are rendered.
+      (should-not (string-match-p "ALPHA[ \t]+first" (buffer-string)))
+      (should-not (string-match-p "LEGACY_ONLY\\|No fields defined\\|Properties" (buffer-string)))
       (should-not (text-property-not-all (point-min) (point-max) 'field-name nil)))))
 (ert-deftest supertag-property-consumers-auto-columns ()
   (supertag-document-test-with-vault

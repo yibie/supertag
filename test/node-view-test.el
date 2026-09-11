@@ -1,141 +1,58 @@
-;;; node-view-properties-test.el --- Public document view contracts -*- lexical-binding: t; -*-
+;;; node-view-test.el --- Public document view contracts -*- lexical-binding: t; -*-
 (require 'ert)
 (require 'cl-lib)
 (require 'document-fixture)
 (require 'supertag-query)
 (require 'supertag-view-node)
 
-(defun supertag-document-view-test-mode-line-values ()
-  "Evaluate the real mode-line expressions in batch Emacs.
-Batch `format-mode-line' returns an empty string; use its installed expressions."
-  (mapcar (lambda (item) (eval (cadr item) t))
-          (cl-remove-if-not (lambda (item) (eq (car-safe item) :eval))
-                            mode-line-format)))
-
-(ert-deftest supertag-node-view-renders-only-real-projected-properties ()
-  "The public window renders Q's title, ordered metadata and both counts."
-  (supertag-document-test-with-vault
-    (with-current-buffer (find-file-noselect file)
-      (let ((disk (supertag-document-test-disk file))
-            (live (buffer-string))
-            (store (prin1-to-string supertag--store)))
-        (cl-letf (((symbol-function 'supertag-query-node-detail)
-                   (lambda (&rest _) (ert-fail "Public builder used old detail"))))
-          (let ((view (supertag-view-node-open "document-node")))
-            (should (get-buffer-window view))
-            (with-current-buffer view
-              (should (string-match-p "Property Node" (buffer-string)))
-              (should (string-match-p "3 properties" (buffer-string)))
-              (should (string-match-p "ALPHA +first" (buffer-string)))
-              (should (string-match-p "EMPTY +\n" (buffer-string)))
-              (should (string-match-p "ZETA +last" (buffer-string)))
-              (should (string-match-p "ALPHA\\(?:.\\|\n\\)*EMPTY\\(?:.\\|\n\\)*ZETA"
-                                      (buffer-string)))
-              (should (equal '("document-node" "3" "0→0")
-                             (mapcar #'substring-no-properties
-                                     (supertag-document-view-test-mode-line-values)))))
-            (kill-buffer view)))
-        (set-buffer (find-file-noselect file))
-        (should (equal live (buffer-string)))
-        (should-not (buffer-modified-p))
-        (should (equal disk (supertag-document-test-disk file)))
-        (should (equal store (prin1-to-string supertag--store)))
-        (should-not (memq #'supertag-view-node--post-command post-command-hook))))))
-
-(ert-deftest supertag-node-view-refreshes-saved-property-change-and-deletion ()
-  "Native saves, real queue/projection and subscribed public view stay current."
-  (supertag-document-test-with-vault
-    (let ((view (with-current-buffer (find-file-noselect file)
-                  (supertag-view-node-open "document-node"))))
-      (with-current-buffer view
-        (goto-char (point-min)) (search-forward "ZETA")
-        (beginning-of-line))
-      (supertag-document-test-save-property file "ZETA" "changed")
-      (supertag-document-test-drain)
-      (with-current-buffer view
-        (should (string-match-p "ZETA +changed" (buffer-string)))
-        (should (looking-at-p " +ZETA")))
-      (supertag-document-test-save-property file "ZETA" nil)
-      (supertag-document-test-drain)
-      (with-current-buffer view
-        (should-not (string-match-p "ZETA\\|changed" (buffer-string)))
-        (should (looking-at-p " +ALPHA"))
-        (should (string-match-p "2 properties" (buffer-string)))
-        (should (equal "2" (nth 1 (supertag-document-view-test-mode-line-values))))
-        (supertag-view-node-refresh)
-        (should (string-match-p "2 properties" (buffer-string))))
-      (kill-buffer view)
-      (should-not (get-buffer "*Supertag Node*"))
-      (with-current-buffer (find-file-noselect file)
-        (should-not (memq #'supertag-view-node--post-command post-command-hook))))))
-
-(ert-deftest supertag-node-view-consumes-q-values-and-projection-version ()
-  "Q output is observed by header, metadata and mode-line; live drafts are separate."
-  (supertag-document-test-with-vault
-    (supertag-document-test-save-property file "ALPHA" "saved-S1")
-    (with-current-buffer (find-file-noselect file)
-      (goto-char (point-min)) (org-entry-put nil "ALPHA" "live-S2"))
-    (supertag-document-test-drain)
-    (let ((view (supertag-view-node-open "document-node")))
-      (with-current-buffer view
-        (should (string-match-p "saved-S1" (buffer-string)))
-        (should-not (string-match-p "live-S2" (buffer-string))))
-      (let ((original (symbol-function 'supertag-note-query-read-node)))
-        (cl-letf (((symbol-function 'supertag-note-query-read-node)
-                   (lambda (id)
-                     (let ((result (funcall original id)))
-                       (setf (plist-get (plist-get result :node) :title) "Q sentinel"
-                             (plist-get result :properties)
-                             '((:key :PROBE :name "PROBE" :value "from-Q"))
-                             (plist-get result :property-count) 1)
-                       result))))
-          (with-current-buffer view
-            (supertag-view-node-refresh)
-            (should (string-match-p "Q sentinel" (buffer-string)))
-            (should (string-match-p "PROBE +from-Q" (buffer-string)))
-            (should (string-match-p "1 properties" (buffer-string)))
-            (should (equal "1" (nth 1 (supertag-document-view-test-mode-line-values)))))))
-      (kill-buffer view))))
-
-(provide 'node-view-properties-test)
-;;; node-view-properties-test.el ends here
-
-(ert-deftest supertag-node-view-many-saved-properties-at-default-depth ()
-  "303 saved properties reach the public window through the native queue."
-  (supertag-document-test-with-vault
-    (let ((depth max-lisp-eval-depth))
-      (with-current-buffer (find-file-noselect file)
-        (goto-char (point-min))
-        (dotimes (n 300)
-          (org-entry-put nil (format "P%04d" n) (format "v-%d" n)))
-        (setq-local after-save-hook nil)
-        (supertag-sync-setup-realtime-hooks)
-        (save-buffer))
-      (should (member (file-truename file) supertag-async--queue))
-      (supertag-document-test-drain)
-      (should (= 606 (length (plist-get
-                             (supertag-store-get-entity :nodes "document-node")
-                             :properties))))
-      (with-current-buffer (find-file-noselect file)
-        (let ((live (buffer-string))
-              (disk (supertag-document-test-disk file))
-              (store (prin1-to-string supertag--store))
-              (view (supertag-view-node-open "document-node")))
-          (with-current-buffer view
-            (should (get-buffer-window view))
-            (should (string-match-p "303 properties" (buffer-string)))
-            (should (string-match-p "P0000 +v-0" (buffer-string)))
-            (should (string-match-p "P0299 +v-299" (buffer-string)))
-            (should (equal "303" (nth 1 (supertag-document-view-test-mode-line-values))))
-            (supertag-view-node-refresh)
-            (should (string-match-p "P0299 +v-299" (buffer-string))))
-          (kill-buffer view)
-          (set-buffer (find-file-noselect file))
-          (should (equal live (buffer-string)))
-          (should-not (buffer-modified-p))
-          (should (equal disk (supertag-document-test-disk file)))
-          (should (equal store (prin1-to-string supertag--store)))))
-      (should (= depth max-lisp-eval-depth)))))
+(ert-deftest supertag-node-view-hides-org-properties-shows-only-discovered-context ()
+  "Node View renders a node's discovered tag but never its Org properties."
+  (let* ((tmp (file-name-as-directory
+               (file-truename (make-temp-file "supertag-node-view-props-" t))))
+         (file (expand-file-name "ready-item.org" tmp))
+         (supertag-data-directory (expand-file-name "data/" tmp))
+         (supertag-db-file (expand-file-name "store.el" supertag-data-directory))
+         (supertag-db-backup-directory
+          (expand-file-name "backups/" supertag-data-directory))
+         (supertag-sync-directories (list tmp))
+         (supertag-active-sync-directory tmp)
+         (supertag--store nil)
+         (supertag--store-origin nil)
+         (supertag--subscribers (make-hash-table :test 'equal))
+         (supertag-sync--state (list :sync-state (make-hash-table :test 'equal)))
+         (supertag-sync--state-source (expand-file-name "sync-state.el" tmp))
+         (supertag-sync-state-file (expand-file-name "sync-state.el" tmp))
+         (supertag-sync--deferred-files (make-hash-table :test 'equal))
+         (supertag-sync--internal-modifications (make-hash-table :test 'equal))
+         (supertag-async--queue nil)
+         (org-id-locations nil)
+         (org-id-locations-file (expand-file-name "ids" tmp))
+         (org-id-track-globally nil)
+         (make-backup-files nil)
+         (auto-save-default nil))
+    (unwind-protect
+        (progn
+          (supertag--ensure-store)
+          (supertag-tag-create '(:id "ready-work" :name "ready-work"))
+          (with-temp-file file
+            (insert "* Ready Item #ready-work\n"
+                    ":PROPERTIES:\n:ID: ready-item\n:STAGE: ready\n:END:\n"
+                    "Body.\n"))
+          (should (eq 'complete (plist-get (supertag-reindex-org) :status)))
+          (let ((state (supertag-view-build-node-state "ready-item")))
+            (should-not (plist-member state :properties))
+            (should-not (plist-member state :property-count))
+            (should (equal '("ready-work") (plist-get state :tags))))
+          (let ((view (supertag-view-node-open "ready-item"))
+                (case-fold-search nil))
+            (unwind-protect
+                (with-current-buffer view
+                  (should (string-match-p "ready-work" (buffer-string)))
+                  (should-not (string-match-p "Properties" (buffer-string)))
+                  (should-not (string-match-p "STAGE" (buffer-string))))
+              (when (buffer-live-p view) (kill-buffer view)))))
+      (when (get-buffer "*Supertag Node*") (kill-buffer "*Supertag Node*"))
+      (delete-directory tmp t))))
 
 ;;; VWA independent view ownership controls.
 (defconst supertag-node-view-vwa--root
@@ -304,19 +221,15 @@ Batch `format-mode-line' returns an empty string; use its installed expressions.
             (should-not (supertag-view-build-node-state "missing"))
             (should (equal "document-node" (plist-get state :id)))
             (should (equal '("vwa-tag") (plist-get state :tags)))
-            (should (equal '("ALPHA" "EMPTY" "ZETA")
-                           (mapcar (lambda (p) (plist-get p :name)) (plist-get state :properties))))
-            (should (equal '("first" "" "last")
-                           (mapcar (lambda (p) (plist-get p :value)) (plist-get state :properties))))
+            (should-not (plist-member state :properties))
+            (should-not (plist-member state :property-count))
             (should (equal '("vwa-other") (plist-get state :refs-to)))
             (should (equal '("vwa-in") (plist-get state :refs-from)))
             (should (= 2 (plist-get state :ref-count)))
-            (should (= 3 (plist-get state :property-count)))
             (should (= 1 (length (supertag-query-named-links-from "document-node"))))
             (should (= 1 (length (supertag-query-named-links-to "document-node"))))
-            ;; Only Q-detached node/properties are promised deeply isolated.
+            ;; Only Q-detached node data is promised deeply isolated.
             (aset (plist-get (plist-get state :node) :title) 0 ?X)
-            (aset (plist-get (car (plist-get state :properties)) :value) 0 ?X)
             (should (equal store (prin1-to-string supertag--store)))
             (should (equal disks (mapcar #'supertag-document-test-disk files)))
             (with-current-buffer (find-file-noselect file)
@@ -329,23 +242,25 @@ Batch `format-mode-line' returns an empty string; use its installed expressions.
                   (should (= (1+ baseline) (length (gethash :store-changed supertag--subscribers))))
                   (with-current-buffer view
                     (should (string-match-p "Property Node" (buffer-string)))
-                    (should (string-match-p "3 properties" (buffer-string)))
-                    (should (string-match-p "ALPHA +first" (buffer-string)))
+                    (should-not (string-match-p "Properties" (buffer-string)))
+                    (should-not (string-match-p "ALPHA" (buffer-string)))
+                    (should (string-match-p "vwa-tag" (buffer-string)))
                     (should (string-match-p "supports" (buffer-string)))
-                    (goto-char (point-min)) (search-forward "ZETA") (beginning-of-line)
+                    (goto-char (point-min)) (search-forward "vwa-tag") (beginning-of-line)
                     (princ (format "VWA-WINDOW before point=%s start=%S\n"
                                    (point) (window-start (get-buffer-window view)))))
-                  (supertag-document-test-save-property file "ZETA" "updated")
+                  ;; A real save that does not touch tags still triggers a
+                  ;; Runtime-owned refresh; the tag selection survives it.
+                  (supertag-document-test-save-property file "ALPHA" "updated")
                   (supertag-document-test-drain)
                   (with-current-buffer view
-                    (should (looking-at-p " +ZETA"))
-                    (should (string-match-p "ZETA +updated" (buffer-string)))
+                    (should (looking-at-p " +vwa-tag"))
                     (supertag-view-node-refresh)
                     (princ (format "VWA-WINDOW after point=%s start=%S\n"
                                    (point) (window-start (get-buffer-window view)))))
                   (supertag-view-node-open "document-node")
                   (should (= (1+ baseline) (length (gethash :store-changed supertag--subscribers))))
-                  (princ "VWA-REAL-OUTPUT refs=2 properties=3 title=Property Node\n")
+                  (princ "VWA-REAL-OUTPUT refs=2 title=Property Node\n")
                   (should (= 2 (plist-get (supertag-view-build-node-state "document-node") :ref-count))))
               (when (buffer-live-p view) (kill-buffer view)))
             (should (= baseline (length (gethash :store-changed supertag--subscribers))))

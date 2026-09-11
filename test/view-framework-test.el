@@ -602,7 +602,13 @@
                (setq nv (supertag-view-node-open "document-node") stream (supertag-view-stream "T"))
                (should (= (length (gethash :store-changed supertag--subscribers)) (+ baseline 2)))
                (with-current-buffer nv
-                 (should (supertag-view-node--goto-property-in-buffer nv :ALPHA)))
+                 (let ((pos (point-min)) found)
+                   (while (and (< pos (point-max)) (not found))
+                     (if (equal (get-text-property pos 'id) "T")
+                         (setq found pos)
+                       (setq pos (or (next-single-property-change pos 'id nil (point-max))
+                                     (point-max)))))
+                   (should (goto-char found))))
                (let ((stream-session (buffer-local-value 'supertag-view-stream--origin-window-configuration stream)))
                  (supertag-store-put-entity :nodes "document-node"
                                            (plist-put (copy-tree (supertag-node-get "document-node")) :title "VWB changed") t)
@@ -610,7 +616,7 @@
                    (should (with-current-buffer view (string-match-p "VWB changed" (buffer-string)))))
                  (should (eq stream-session (buffer-local-value 'supertag-view-stream--origin-window-configuration stream))))
                (with-current-buffer nv
-                 (should (equal (plist-get (supertag-view-node--capture-selection) :property-key) :ALPHA)))
+                 (should (equal (plist-get (supertag-view-node--capture-selection) :id) "T")))
                (kill-buffer nv) (setq nv nil)
                (kill-buffer stream) (setq stream nil)
                (should (= baseline (length (gethash :store-changed supertag--subscribers)))))

@@ -100,15 +100,15 @@ The returned plist is data-only (no buffer operations) and is intended
 to be consumed by different UI layouts (node detail view, table-based
 detail panes, previews, etc.).
 
+Node View is read-only with respect to Org properties: it shows only
+discovered context, never the node's saved properties.
+
 Returned keys (current contract):
 - :id           — NODE-ID
 - :node         — Isolated node projection from `supertag-note-query-read-node'
 - :tags         — List of tag IDs attached to this node
-- :properties   — Projected Org property entries, each containing
-                  (:key KEY :name NAME :value VALUE)
 - :refs-to      — List of node IDs this node references (:reference)
 - :refs-from    — List of node IDs that reference this node (:reference)
-- :property-count — Total number of projected Org properties
 - :ref-count    — Total number of references (:refs-to + :refs-from)"
   (when (and node-id (stringp node-id))
     (when-let* ((detail (supertag-note-query-read-node node-id)))
@@ -116,6 +116,8 @@ Returned keys (current contract):
                             (supertag-query-ordinary-references-from node-id)))
             (refs-from (mapcar (lambda (relation) (plist-get relation :from))
                               (supertag-query-ordinary-references-to node-id))))
+        (cl-remf detail :properties)
+        (cl-remf detail :property-count)
         (append detail
                 (list :tags (supertag-query-node-tags node-id)
                       :refs-to refs-to :refs-from refs-from
@@ -140,16 +142,20 @@ Returned keys (current contract):
       (goto-char (point-min)))))
 
 (defun supertag-view-node--capture-selection ()
-  "Return the current Node property selection."
+  "Return the current Node context selection."
   (supertag-view-node--get-context-at-point))
 
 (defun supertag-view-node--restore-selection (selection)
-  "Restore opaque Node property SELECTION."
-  (unless (and (plist-get selection :property-key)
-               (supertag-view-node--goto-property-in-buffer
-                (current-buffer) (plist-get selection :property-key)))
-    (or (supertag-view-node--goto-property-in-buffer (current-buffer) nil)
-        (goto-char (point-min)))))
+  "Restore opaque Node context SELECTION, or fall back to buffer start."
+  (goto-char (point-min))
+  (when-let* ((id (plist-get selection :id)))
+    (let ((pos (point-min)) found)
+      (while (and (< pos (point-max)) (not found))
+        (if (equal (get-text-property pos 'id) id)
+            (setq found pos)
+          (setq pos (or (next-single-property-change pos 'id nil (point-max))
+                        (point-max)))))
+      (when found (goto-char found)))))
 
 (defun supertag-view-node--subscribe-view (input _state refresh)
   "Subscribe Node view INPUT and return all cleanup callbacks."
@@ -329,7 +335,8 @@ Key Bindings:
   q       - Quit and close window
 
 💡 Tips:
-  - Org properties are displayed read-only from the saved document projection
+  - Node View shows only discovered context (Tags, Relations, References,
+    Unlinked mentions, Similar notes); edit Org properties in the source file
   - RET on a Reference or Backlink title opens its source node
   - Use Tab completion when available
 
@@ -348,13 +355,6 @@ Key Bindings:
                       (propertize node-id 'face '(:foreground "gray"))
                     (propertize (truncate-string-to-width node-id 20 nil nil "...")
                                'face '(:weight bold)))))
-          " | 🏷️ "
-          (:eval (let ((count (or (plist-get
-                                   (plist-get supertag-view--instance :state)
-                                   :property-count)
-                                  0)))
-                  (propertize (format "%d" count)
-                              'face (if (> count 0) '(:foreground "#22C55E" :weight bold) '(:foreground "gray")))))
           " | 🔗 "
           (:eval (let ((refs (length (supertag-view-node--get-references supertag-view-node--current-node-id)))
                        (refd-by (length (supertag-view-node--get-referenced-by supertag-view-node--current-node-id))))
@@ -416,10 +416,8 @@ Only strips keywords if `supertag-view-node-strip-todo-keywords' is non-nil."
          (title (supertag-view-node--strip-todo-keyword raw-title))
          (file (plist-get node-data :file))
          (node-id supertag-view-node--current-node-id)
-         (property-count (or (plist-get state :property-count) 0))
          (ref-count (or (plist-get state :ref-count) 0))
-         (stats (format "⚡ %d properties | 🔗 %d refs"
-                        property-count ref-count))
+         (stats (format "🔗 %d refs" ref-count))
          (start (point)))
     (supertag-view-helper-insert-simple-header
      (format "📄 %s" (supertag-view-helper-render-org-links title))
@@ -443,8 +441,8 @@ to TAG-ID itself only when no Tag record is available."
         (and tag-data (plist-get tag-data :name))
         tag-id)))
 
-(defun supertag-view-node--insert-simple-metadata-section (state)
-  "Insert read-only tags and projected Org properties from STATE."
+(defun supertag-view-node--insert-tags-section (state)
+  "Insert read-only tags from STATE."
   (supertag-view-helper-insert-section-title "Tags" "🏷️")
   (if-let ((tag-ids (plist-get state :tags)))
       (dolist (tag-id (sort (copy-sequence tag-ids) #'string<))
@@ -455,19 +453,6 @@ to TAG-ID itself only when no Tag record is available."
                             'tag-id tag-id
                             'id tag-id)))
     (supertag-view-helper-insert-simple-empty-state "No tags found."))
-  (insert "\n")
-  (supertag-view-helper-insert-section-title "Properties" "📝")
-  (if-let ((properties (plist-get state :properties)))
-      (dolist (property properties)
-        (let ((start (point))
-              (name (plist-get property :name))
-              (value (plist-get property :value))
-              (key (plist-get property :key)))
-          (insert (format "  %-18s %s\n" name (or value "")))
-          (add-text-properties
-           start (point)
-           `(supertag-context t type :property-value property-key ,key))))
-    (supertag-view-helper-insert-simple-empty-state "No properties found."))
   (insert "\n"))
 
 (defun supertag-view-node--insert-node-link-line (node-id)
@@ -521,8 +506,8 @@ STATE 应由 `supertag-view-build-node-state' 构造，只包含数据，不做�
       ;; Simple header
       (supertag-view-node--insert-simple-header state)
 
-      ;; Simple metadata section
-      (supertag-view-node--insert-simple-metadata-section state)
+      ;; Tags section
+      (supertag-view-node--insert-tags-section state)
 
       ;; Contextual outgoing references and incoming Backlinks.  This remains
       ;; a disposable projection, never a second reference store.
@@ -579,31 +564,7 @@ STATE 应由 `supertag-view-build-node-state' 构造，只包含数据，不做�
     (when (get-text-property pos 'supertag-context)
       (list :type (get-text-property pos 'type)
             :tag-id (get-text-property pos 'tag-id)
-            :property-key (get-text-property pos 'property-key)
             :id (get-text-property pos 'id)))))
-
-(defun supertag-view-node--goto-property-in-buffer (buffer &optional property-key)
-  "Move point in BUFFER to PROPERTY-KEY, or the first property when nil."
-  (when (buffer-live-p buffer)
-    (with-current-buffer buffer
-      (let ((pos (if property-key
-                     (text-property-any (point-min) (point-max)
-                                        'property-key property-key)
-                   (text-property-any (point-min) (point-max)
-                                      'type :property-value))))
-        (when pos
-          (goto-char pos)
-          (point))))))
-
-(defun supertag-view-node--goto-property (&optional property-key)
-  "Move point in the active Node View to PROPERTY-KEY."
-  (when-let ((buffer (supertag-view-node--buffer)))
-    (supertag-view-node--goto-property-in-buffer buffer property-key)))
-
-(defun supertag-view-node--goto-first-property ()
-  "Move point to the first property, or buffer start when none exists."
-  (or (supertag-view-node--goto-property nil)
-      (progn (goto-char (point-min)) (point))))
 
 (defun supertag-view-node--focus-view ()
   "Focus the side-window buffer if visible."
@@ -645,14 +606,13 @@ STATE 应由 `supertag-view-build-node-state' 构造，只包含数据，不做�
 
 ;;;###autoload
 (defun supertag-view-node-open (node-id)
-  "Open Node View for NODE-ID and focus its first property."
+  "Open Node View for NODE-ID and focus the window."
   (unless (and (stringp node-id) (not (string-empty-p node-id)))
     (user-error "Node View requires a node ID"))
   (supertag-view-node--show-side node-id)
   (supertag-view-node--focus-view)
   (when-let* ((buffer (supertag-view-node--buffer)))
     (with-current-buffer buffer
-      (supertag-view-node--goto-first-property)
       (when-let* ((window (get-buffer-window buffer t)))
         (with-selected-window window
           (recenter)))))
@@ -680,16 +640,16 @@ STATE 应由 `supertag-view-build-node-state' 构造，只包含数据，不做�
 
 ;;; --- Window Selection Integration ---
 
-;; When user switches focus into the Node View window, select its first
-;; projected property when no property is already selected.
+;; When user switches focus into the Node View window, reset point to the
+;; top when it is not already on a discovered context row.
 (defun supertag-view-node--on-window-selection-change (_frame)
-  "When Node View becomes selected, retain or select a property row."
+  "When Node View becomes selected, retain or reset the context selection."
   (when-let* ((win (selected-window))
               (buf (and (window-live-p win) (window-buffer win))))
     (with-current-buffer buf
-      (when (derived-mode-p 'supertag-view-node-mode)
-        (unless (eq (get-text-property (point) 'type) :property-value)
-          (ignore-errors (supertag-view-node--goto-first-property)))))))
+      (when (and (derived-mode-p 'supertag-view-node-mode)
+                 (not (get-text-property (point) 'supertag-context)))
+        (goto-char (point-min))))))
 
 ;; Register the hook if available (Emacs 27+)
 (when (boundp 'window-selection-change-functions)

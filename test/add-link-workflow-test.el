@@ -1178,7 +1178,7 @@
                                   (selected (cl-find-if
                                              (lambda (s) (equal "target" (get-text-property 0 'supertag-reference-node-id s)))
                                              (all-completions "" (nth 2 capf)))))
-                             (should (equal calls '(supertag-reference-completion-at-point)))
+                             (should (equal calls '(supertag-tag--reference-completion-at-point)))
                              (should (featurep 'supertag-link))
                              (should selected)
                              ;; Emulate completion's text replacement, then call
@@ -1197,7 +1197,7 @@
                                (should (equal text (buffer-string)))))
                            (supertag-ui-completion-mode -1)
                            (should-not (memq 'supertag-completion-at-point completion-at-point-functions))
-                           (should-not (memq 'supertag-reference-completion-at-point completion-at-point-functions)))
+                           (should-not (memq 'supertag-tag--reference-completion-at-point completion-at-point-functions)))
                          (should (equal target-before (with-temp-buffer (insert-file-contents ,target) (buffer-string)))))
                        (princ "D3-LINK-PASS real hook/table/exit/save/project; target unchanged\n"))
                    (setq emacs-startup-hook nil kill-emacs-hook nil org-mode-hook nil enable-theme-functions nil)

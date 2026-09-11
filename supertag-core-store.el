@@ -20,8 +20,10 @@
 (require 'ht) ; Ensures `ht` API availability
 
 (defun supertag-current-time ()
-  "Return the current time as a four-element list for Store timestamps."
-  (time-convert nil 'list))
+  "Return the current time as a four-element list for Store timestamps.
+Derives from `current-time' so it stays the single clock source that tests
+and callers can stub; on Emacs 32 `current-time' itself returns (TICKS . HZ)."
+  (time-convert (current-time) 'list))
 ;;; --- Shared Core State Variables ---
 
 (defvar supertag--suppress-notifications nil

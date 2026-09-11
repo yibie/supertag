@@ -476,11 +476,16 @@ Agent 一侧通过 `supertag-api.el` 里的五个纯数据函数和 Supertag 对
 
 Supertag 以 GPLv3 自由软件协议开发。欢迎在 GitHub 上贡献代码、提交 bug 或功能请求。
 
+## 调色板
+
+视图颜色默认使用 `blue` 调色板。可用预设为 `blue`、`violet`、`lime`、`warm` 和
+`mono`；使用 `M-x supertag-view-set-palette` 即可切换。
+
 ## 配置变量
 
 以下表格由加载后的源码生成，用途取自源码 docstring 首句。
 
-;; 108 defcustoms
+;; 109 defcustoms
 
 **supertag-ai.el**
 
@@ -668,6 +673,12 @@ Supertag 独立 Capture 引擎已退役。记录统一使用标准 `org-capture`
 | Variable | Default | Purpose |
 |---|---|---|
 | `supertag-completion-auto-enable` | `t` | Whether to automatically enable tag completion in org-mode buffers. |
+
+**supertag-view-framework.el**
+
+| Variable | Default | Purpose |
+|---|---|---|
+| `supertag-view-palette` | `blue` | Palette used by Supertag views. |
 
 **supertag-view-helper.el**
 

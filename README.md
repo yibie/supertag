@@ -540,11 +540,17 @@ Discovery never creates IDs. A #tag on a heading takes priority over the heading
 
 Supertag is developed as free software under the GPLv3. Contributions, bug reports, and feature requests are welcome on GitHub.
 
+## Palette
+
+View colors default to the `blue` palette.  The available presets are `blue`,
+`violet`, `lime`, `warm`, and `mono`; use `M-x supertag-view-set-palette` to
+switch between them.
+
 ## Configuration variables
 
 The following table is generated from the loaded source; purposes use each docstring’s first sentence.
 
-;; 108 defcustoms
+;; 109 defcustoms
 
 **supertag-ai.el**
 
@@ -732,6 +738,12 @@ the opt-in Supertag integration remains available and is disabled by default.
 | Variable | Default | Purpose |
 |---|---|---|
 | `supertag-completion-auto-enable` | `t` | Whether to automatically enable tag completion in org-mode buffers. |
+
+**supertag-view-framework.el**
+
+| Variable | Default | Purpose |
+|---|---|---|
+| `supertag-view-palette` | `blue` | Palette used by Supertag views. |
 
 **supertag-view-helper.el**
 

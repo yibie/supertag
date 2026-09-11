@@ -64,37 +64,122 @@
       dark-color
     light-color))
 
+(defconst supertag-view-palettes
+  '((blue . (:accent ("#0066CC" . "#66B3FF")
+             :emphasis ("#003D82" . "#99D6FF")
+             :muted ("#666666" . "#AAAAAA")
+             :success ("#22C55E" . "#4ADE80")
+             :warning ("#F59E0B" . "#FCD34D")
+             :error ("#EF4444" . "#F87171")
+             :background ("#F8FAFC" . "#1E293B")
+             :border ("#E2E8F0" . "#334155")))
+    (violet . (:accent ("#6D28D9" . "#C4B5FD")
+               :emphasis ("#4C1D95" . "#DDD6FE")
+               :muted ("#666666" . "#AAAAAA")
+               :success ("#22C55E" . "#4ADE80")
+               :warning ("#F59E0B" . "#FCD34D")
+               :error ("#EF4444" . "#F87171")
+               :background ("#FAF5FF" . "#1C1526")
+               :border ("#E9D5FF" . "#3B2A55")))
+    (lime . (:accent ("#4D7C0F" . "#BEF264")
+             :emphasis ("#365314" . "#D9F99D")
+             :muted ("#666666" . "#AAAAAA")
+             :success ("#16A34A" . "#86EFAC")
+             :warning ("#F59E0B" . "#FCD34D")
+             :error ("#EF4444" . "#F87171")
+             :background ("#F7FEE7" . "#141A0F")
+             :border ("#D9F99D" . "#2F3D1A")))
+    (warm . (:accent ("#B45309" . "#FBBF24")
+             :emphasis ("#78350F" . "#FDE68A")
+             :muted ("#6B5E52" . "#B8AA9A")
+             :success ("#22C55E" . "#4ADE80")
+             :warning ("#F59E0B" . "#FCD34D")
+             :error ("#EF4444" . "#F87171")
+             :background ("#FFFBEB" . "#1F1A14")
+             :border ("#FDE68A" . "#3F3222")))
+    (mono . (:accent ("#1F2937" . "#E5E7EB")
+             :emphasis ("#111827" . "#F9FAFB")
+             :muted ("#6B7280" . "#9CA3AF")
+             :success ("#22C55E" . "#4ADE80")
+             :warning ("#F59E0B" . "#FCD34D")
+             :error ("#EF4444" . "#F87171")
+             :background ("#F9FAFB" . "#111827")
+             :border ("#E5E7EB" . "#374151"))))
+  "Named light/dark color roles for Supertag views.")
+
+(defcustom supertag-view-palette 'blue
+  "Palette used by Supertag views."
+  :type '(choice (const :tag "Blue" blue)
+                 (const :tag "Violet" violet)
+                 (const :tag "Lime" lime)
+                 (const :tag "Warm" warm)
+                 (const :tag "Monochrome" mono)
+                 (plist :tag "Custom role palette"))
+  :group 'supertag)
+
+(defun supertag-view-helper-palette-color (role)
+  "Return the current palette color for ROLE."
+  (let* ((blue (alist-get 'blue supertag-view-palettes))
+         (roles (if (symbolp supertag-view-palette)
+                    (or (alist-get supertag-view-palette supertag-view-palettes)
+                        blue)
+                  supertag-view-palette))
+         (colors (plist-get roles role)))
+    (supertag-view-helper-get-theme-adaptive-color
+     (car colors) (cdr colors))))
+
 (defun supertag-view-helper-get-accent-color ()
   "Get accent color that works well in both light and dark themes."
-  (supertag-view-helper-get-theme-adaptive-color "#0066CC" "#66B3FF"))
+  (supertag-view-helper-palette-color :accent))
 
 (defun supertag-view-helper-get-emphasis-color ()
   "Get emphasis color that works well in both light and dark themes."
-  (supertag-view-helper-get-theme-adaptive-color "#003D82" "#99D6FF"))
+  (supertag-view-helper-palette-color :emphasis))
 
 (defun supertag-view-helper-get-muted-color ()
   "Get muted color that works well in both light and dark themes."
-  (supertag-view-helper-get-theme-adaptive-color "#666666" "#AAAAAA"))
+  (supertag-view-helper-palette-color :muted))
 
 (defun supertag-view-helper-get-success-color ()
   "Get success color that works well in both light and dark themes."
-  (supertag-view-helper-get-theme-adaptive-color "#22C55E" "#4ADE80"))
+  (supertag-view-helper-palette-color :success))
 
 (defun supertag-view-helper-get-warning-color ()
   "Get warning color that works well in both light and dark themes."
-  (supertag-view-helper-get-theme-adaptive-color "#F59E0B" "#FCD34D"))
+  (supertag-view-helper-palette-color :warning))
 
 (defun supertag-view-helper-get-error-color ()
   "Get error color that works well in both light and dark themes."
-  (supertag-view-helper-get-theme-adaptive-color "#EF4444" "#F87171"))
+  (supertag-view-helper-palette-color :error))
 
 (defun supertag-view-helper-get-background-color ()
   "Get background color that works well in both light and dark themes."
-  (supertag-view-helper-get-theme-adaptive-color "#F8FAFC" "#1E293B"))
+  (supertag-view-helper-palette-color :background))
 
 (defun supertag-view-helper-get-border-color ()
   "Get border color that works well in both light and dark themes."
-  (supertag-view-helper-get-theme-adaptive-color "#E2E8F0" "#334155"))
+  (supertag-view-helper-palette-color :border))
+
+(declare-function supertag-view-node-refresh "supertag-view-node" ())
+
+;;;###autoload
+(defun supertag-view-set-palette (name)
+  "Set the view palette to NAME and refresh live Node View buffers."
+  (interactive
+   (list
+    (intern
+     (completing-read
+      "View palette: "
+      (mapcar (lambda (palette) (symbol-name (car palette)))
+              supertag-view-palettes)
+      nil t))))
+  (setq supertag-view-palette name)
+  (dolist (buffer (buffer-list))
+    (with-current-buffer buffer
+      (when (derived-mode-p 'supertag-view-node-mode)
+        (call-interactively #'supertag-view-node-refresh))))
+  (force-mode-line-update t)
+  (message "Supertag view palette: %s" name))
 
 ;;; --- Value Formatting ---
 

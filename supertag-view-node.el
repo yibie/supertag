@@ -348,18 +348,22 @@ Key Bindings:
   (setq-local cursor-type 'box)
   (setq-local mode-line-format
         '(" "
-          (:propertize mode-name face (:weight bold :foreground "#0066CC"))
+          (:eval (propertize mode-name 'face
+                             `(:weight bold :foreground ,(supertag-view-helper-get-accent-color))))
           " | 📄 "
           (:eval (let ((node-id (or supertag-view-node--current-node-id "None")))
                   (if (string= node-id "None")
-                      (propertize node-id 'face '(:foreground "gray"))
+                      (propertize node-id 'face
+                                  `(:foreground ,(supertag-view-helper-get-muted-color)))
                     (propertize (truncate-string-to-width node-id 20 nil nil "...")
                                'face '(:weight bold)))))
           " | 🔗 "
           (:eval (let ((refs (length (supertag-view-node--get-references supertag-view-node--current-node-id)))
                        (refd-by (length (supertag-view-node--get-referenced-by supertag-view-node--current-node-id))))
                   (propertize (format "%d→%d" refs refd-by)
-                              'face (if (> (+ refs refd-by) 0) '(:foreground "#0066CC" :weight bold) '(:foreground "gray")))))
+                              'face (if (> (+ refs refd-by) 0)
+                                        `(:foreground ,(supertag-view-helper-get-accent-color) :weight bold)
+                                      `(:foreground ,(supertag-view-helper-get-muted-color))))))
           " %[%p%] "))
   ;; Ensure Evil does not take over this buffer: disable Evil locally if available.
   (when (fboundp 'evil-local-mode)

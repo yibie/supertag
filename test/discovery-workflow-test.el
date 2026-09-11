@@ -631,7 +631,7 @@
   (supertag-discovery-test--with-files
     (let ((file (expand-file-name "alpha.org" tmp)) results)
       (with-temp-file file
-        (insert "* Alpha :topic:\n:PROPERTIES:\n:ID: alpha\n:STAGE: ready\n:END:\nNeedle body\n"))
+        (insert "* Alpha #topic\n:PROPERTIES:\n:ID: alpha\n:STAGE: ready\n:END:\nNeedle body\n"))
       (supertag-tag-create '(:name "topic"))
       (with-current-buffer (find-file-noselect file)
         (org-mode)

@@ -1,22 +1,8 @@
 ;;; supertag-view-framework.el --- Framework for creating custom views -*- lexical-binding: t; -*-
 
 ;;; Commentary:
-;; Commands: supertag-view-refresh
-;; Business Tag selection (supertag-view--read-tag) is owned by supertag-tag.
-;; Dependencies: cl-lib, button, subr-x, org, widget, wid-edit, supertag-query, supertag-tag, supertag-services-sync
-;; Node arrives through Tag; its cache listener is prepared after Sync loads.
-
-;; This module provides a framework for developers to create custom views
-;; of supertag data.  It is NOT an end-user configuration tool - it is
-;; a toolbox for Elisp developers.
-;;
-;; Quick start - register a view:
-;;
-;;   (supertag-view-register
-;;    :id 'my-view
-;;    :name "My View"
-;;    :state-fn #'identity
-;;    :render-fn #'my-render-function)
+;; Commands: supertag-view-refresh.
+;; This module supplies the View Runtime and shared, role-based drawing faces.
 
 ;;; Code:
 
@@ -33,132 +19,108 @@
 
 ;;; --- Shared View Drawing ---
 
-(defun supertag-view-helper-insert-action-button (label action data help &optional prop)
-  "Insert LABEL with ACTION, HELP and DATA stored under PROP."
-  (insert-text-button label 'action action 'follow-link t
-                      'help-echo help (or prop 'supertag-action) data))
-
-(defconst supertag-view-helper--section-separator "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
-  "Separator line for sections.")
-
-(defconst supertag-view-helper--subsection-separator "┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄"
-  "Separator line for subsections.")
-
-(defun supertag-view-helper-insert-section-header (title icon)
-  "Insert a section header with ICON and TITLE."
-  (insert (propertize (format "%s %s\n" icon title) 'face '(:weight bold :height 1.2)))
-  (insert (propertize (format "%s\n" supertag-view-helper--section-separator) 'face '(:foreground "gray50")))
-  (insert "\n"))
-
-(defun supertag-view-helper-insert-subsection-header (title)
-  "Insert a subsection header with TITLE."
-  (insert (propertize (format "  %s\n" title) 'face '(:weight bold)))
-  (insert (propertize (format "  %s\n" supertag-view-helper--subsection-separator) 'face '(:foreground "gray70")))
-  (insert "\n"))
-
-;;; --- Theme Adaptive Colors ---
-
-(defun supertag-view-helper-get-theme-adaptive-color (light-color dark-color)
-  "Get color that adapts to current theme."
-  (if (eq (frame-parameter nil 'background-mode) 'dark)
-      dark-color
-    light-color))
-
-(defconst supertag-view-palettes
-  '((blue . (:accent ("#0066CC" . "#66B3FF")
-             :emphasis ("#003D82" . "#99D6FF")
-             :muted ("#666666" . "#AAAAAA")
-             :success ("#22C55E" . "#4ADE80")
-             :warning ("#F59E0B" . "#FCD34D")
-             :error ("#EF4444" . "#F87171")
-             :background ("#F8FAFC" . "#1E293B")
-             :border ("#E2E8F0" . "#334155")))
-    (violet . (:accent ("#6D28D9" . "#C4B5FD")
-               :emphasis ("#4C1D95" . "#DDD6FE")
-               :muted ("#666666" . "#AAAAAA")
-               :success ("#22C55E" . "#4ADE80")
-               :warning ("#F59E0B" . "#FCD34D")
-               :error ("#EF4444" . "#F87171")
-               :background ("#FAF5FF" . "#1C1526")
-               :border ("#E9D5FF" . "#3B2A55")))
-    (lime . (:accent ("#4D7C0F" . "#BEF264")
-             :emphasis ("#365314" . "#D9F99D")
-             :muted ("#666666" . "#AAAAAA")
-             :success ("#16A34A" . "#86EFAC")
-             :warning ("#F59E0B" . "#FCD34D")
-             :error ("#EF4444" . "#F87171")
-             :background ("#F7FEE7" . "#141A0F")
-             :border ("#D9F99D" . "#2F3D1A")))
-    (warm . (:accent ("#B45309" . "#FBBF24")
-             :emphasis ("#78350F" . "#FDE68A")
-             :muted ("#6B5E52" . "#B8AA9A")
-             :success ("#22C55E" . "#4ADE80")
-             :warning ("#F59E0B" . "#FCD34D")
-             :error ("#EF4444" . "#F87171")
-             :background ("#FFFBEB" . "#1F1A14")
-             :border ("#FDE68A" . "#3F3222")))
-    (mono . (:accent ("#1F2937" . "#E5E7EB")
-             :emphasis ("#111827" . "#F9FAFB")
-             :muted ("#6B7280" . "#9CA3AF")
-             :success ("#22C55E" . "#4ADE80")
-             :warning ("#F59E0B" . "#FCD34D")
-             :error ("#EF4444" . "#F87171")
-             :background ("#F9FAFB" . "#111827")
-             :border ("#E5E7EB" . "#374151"))))
-  "Named light/dark color roles for Supertag views.")
-
-(defcustom supertag-view-palette 'blue
-  "Palette used by Supertag views."
-  :type '(choice (const :tag "Blue" blue)
-                 (const :tag "Violet" violet)
-                 (const :tag "Lime" lime)
-                 (const :tag "Warm" warm)
-                 (const :tag "Monochrome" mono)
-                 (plist :tag "Custom role palette"))
+(defface supertag-view-panel
+  '((t :extend t))
+  "Panel background behind a Node View heading."
   :group 'supertag)
 
-(defun supertag-view-helper-palette-color (role)
-  "Return the current palette color for ROLE."
-  (let* ((blue (alist-get 'blue supertag-view-palettes))
-         (roles (if (symbolp supertag-view-palette)
-                    (or (alist-get supertag-view-palette supertag-view-palettes)
-                        blue)
-                  supertag-view-palette))
-         (colors (plist-get roles role)))
-    (supertag-view-helper-get-theme-adaptive-color
-     (car colors) (cdr colors))))
+(defface supertag-view-title
+  '((((background dark)) :foreground "#f2f2f2" :weight bold :height 1.4)
+    (t :foreground "#111111" :weight bold :height 1.4))
+  "Node title."
+  :group 'supertag)
 
-(defun supertag-view-helper-get-accent-color ()
-  "Get accent color that works well in both light and dark themes."
-  (supertag-view-helper-palette-color :accent))
+(defface supertag-view-mute
+  '((((background dark)) :foreground "#8a8aa0")
+    (t :foreground "#6e6e80"))
+  "Muted Node View text."
+  :group 'supertag)
 
-(defun supertag-view-helper-get-emphasis-color ()
-  "Get emphasis color that works well in both light and dark themes."
-  (supertag-view-helper-palette-color :emphasis))
+(defface supertag-view-excerpt
+  '((((background dark)) :foreground "#9a9ab0" :slant italic)
+    (t :foreground "#5e5e70" :slant italic))
+  "Node View entry excerpt."
+  :group 'supertag)
 
-(defun supertag-view-helper-get-muted-color ()
-  "Get muted color that works well in both light and dark themes."
-  (supertag-view-helper-palette-color :muted))
+(defface supertag-view-entry
+  '((((background dark)) :foreground "#f2f2f2")
+    (t :foreground "#111111"))
+  "Node View entry title."
+  :group 'supertag)
 
-(defun supertag-view-helper-get-success-color ()
-  "Get success color that works well in both light and dark themes."
-  (supertag-view-helper-palette-color :success))
+(defface supertag-view-chip1 '((t :weight bold)) "Primary Node View chip." :group 'supertag)
+(defface supertag-view-chip2 '((t :weight bold)) "Secondary Node View chip." :group 'supertag)
+(defface supertag-view-chip3 '((t :weight bold)) "Tertiary Node View chip." :group 'supertag)
+(defface supertag-view-accent '((t)) "Node View accent foreground." :group 'supertag)
+(defface supertag-view-score '((t :weight bold)) "Node View similarity score." :group 'supertag)
+(defface supertag-view-rule '((t)) "Node View footer rule." :group 'supertag)
 
-(defun supertag-view-helper-get-warning-color ()
-  "Get warning color that works well in both light and dark themes."
-  (supertag-view-helper-palette-color :warning))
+;; Each palette maps a role face to (LIGHT-PLIST . DARK-PLIST).
+(defconst supertag-view-palettes
+  '((neon
+     (supertag-view-panel  (:background "#efeef7") . (:background "#17142b"))
+     (supertag-view-chip1  (:foreground "#1f3d00" :background "#e4ff9a") . (:foreground "#0b0b14" :background "#d7ff64"))
+     (supertag-view-chip2  (:foreground "#2a1c7a" :background "#d9d2ff") . (:foreground "#0b0b14" :background "#a99bff"))
+     (supertag-view-chip3  (:foreground "#0c4a5a" :background "#d6f4fb") . (:foreground "#0b0b14" :background "#bfeefb"))
+     (supertag-view-accent (:foreground "#4b3bb0") . (:foreground "#a99bff"))
+     (supertag-view-score  (:foreground "#4f7a00") . (:foreground "#d7ff64"))
+     (supertag-view-rule   (:foreground "#c8c8d8") . (:foreground "#3a3a55")))
+    (paper
+     (supertag-view-panel  (:background "#f3ede1") . (:background "#2a2420"))
+     (supertag-view-chip1  (:foreground "#5a1f0a" :background "#f2c7b0") . (:foreground "#1a0f0a" :background "#e08a63"))
+     (supertag-view-chip2  (:foreground "#4a3a00" :background "#f2dd9a") . (:foreground "#1a1400" :background "#e3c05a"))
+     (supertag-view-chip3  (:foreground "#1f3d2a" :background "#cfe3cf") . (:foreground "#0d1a10" :background "#9cc7a2"))
+     (supertag-view-accent (:foreground "#9a3f1f") . (:foreground "#e08a63"))
+     (supertag-view-score  (:foreground "#7a5a00") . (:foreground "#e3c05a"))
+     (supertag-view-rule   (:foreground "#d8cdb8") . (:foreground "#4a3f36")))
+    (ink
+     (supertag-view-panel  (:background "#f2f2f2") . (:background "#1c1c1c"))
+     (supertag-view-chip1  (:foreground "#ffffff" :background "#111111") . (:foreground "#111111" :background "#f2f2f2"))
+     (supertag-view-chip2  (:foreground "#ffffff" :background "#6b6b6b") . (:foreground "#111111" :background "#a8a8a8"))
+     (supertag-view-chip3  (:foreground "#111111" :background "#dcdcdc") . (:foreground "#f2f2f2" :background "#3a3a3a"))
+     (supertag-view-accent (:foreground "#555555") . (:foreground "#b0b0b0"))
+     (supertag-view-score  (:foreground "#111111") . (:foreground "#f2f2f2"))
+     (supertag-view-rule   (:foreground "#cfcfcf") . (:foreground "#3a3a3a")))
+    (ocean
+     (supertag-view-panel  (:background "#e9f0f7") . (:background "#101a26"))
+     (supertag-view-chip1  (:foreground "#ffffff" :background "#1e3a8a") . (:foreground "#0b0f1a" :background "#93b4ff"))
+     (supertag-view-chip2  (:foreground "#063b3b" :background "#b7ecec") . (:foreground "#0b0f1a" :background "#5fd3d3"))
+     (supertag-view-chip3  (:foreground "#0b3a5c" :background "#cfe6fa") . (:foreground "#0b0f1a" :background "#9fd0f5"))
+     (supertag-view-accent (:foreground "#1e3a8a") . (:foreground "#93b4ff"))
+     (supertag-view-score  (:foreground "#0f766e") . (:foreground "#5fd3d3"))
+     (supertag-view-rule   (:foreground "#c5d3e3") . (:foreground "#2a3a4d"))))
+  "Named role-face palettes for Supertag views.")
 
-(defun supertag-view-helper-get-error-color ()
-  "Get error color that works well in both light and dark themes."
-  (supertag-view-helper-palette-color :error))
+(defun supertag-view-apply-palette (name)
+  "Apply palette NAME to the shared role faces."
+  (let ((palette (assq name supertag-view-palettes)))
+    (unless palette
+      (user-error "Unknown Supertag view palette: %s" name))
+    (setq supertag-view-palette name)
+    (dolist (entry (cdr palette))
+      (let* ((face (car entry))
+             (light (cadr entry))
+             (dark (cddr entry))
+             (base (pcase face
+                     ((or 'supertag-view-chip1 'supertag-view-chip2
+                          'supertag-view-chip3 'supertag-view-score)
+                      '(:weight bold))
+                     ('supertag-view-panel '(:extend t))
+                     (_ nil))))
+        (face-spec-set face `((((background dark)) ,@base ,@dark)
+                              (t ,@base ,@light))
+                       'face-defface-spec)))))
 
-(defun supertag-view-helper-get-background-color ()
-  "Get background color that works well in both light and dark themes."
-  (supertag-view-helper-palette-color :background))
+(defun supertag-view--set-palette (symbol value)
+  "Set SYMBOL to VALUE and apply its role-face palette."
+  (set-default symbol value)
+  (supertag-view-apply-palette value))
 
-(defun supertag-view-helper-get-border-color ()
-  "Get border color that works well in both light and dark themes."
-  (supertag-view-helper-palette-color :border))
+(defcustom supertag-view-palette 'paper
+  "Palette used by Supertag views."
+  :type '(choice (const paper) (const neon) (const ink) (const ocean))
+  :set #'supertag-view--set-palette
+  :group 'supertag)
 
 (declare-function supertag-view-node-refresh "supertag-view-node" ())
 
@@ -166,14 +128,12 @@
 (defun supertag-view-set-palette (name)
   "Set the view palette to NAME and refresh live Node View buffers."
   (interactive
-   (list
-    (intern
-     (completing-read
-      "View palette: "
-      (mapcar (lambda (palette) (symbol-name (car palette)))
-              supertag-view-palettes)
-      nil t))))
-  (setq supertag-view-palette name)
+   (list (intern (completing-read
+                  "View palette: "
+                  (mapcar (lambda (palette) (symbol-name (car palette)))
+                          supertag-view-palettes)
+                  nil t))))
+  (supertag-view-apply-palette name)
   (dolist (buffer (buffer-list))
     (with-current-buffer buffer
       (when (derived-mode-p 'supertag-view-node-mode)
@@ -181,165 +141,102 @@
   (force-mode-line-update t)
   (message "Supertag view palette: %s" name))
 
+(supertag-view-apply-palette supertag-view-palette)
+
+(defun supertag-view-helper-insert-action-button (label action data help &optional prop)
+  "Insert LABEL with ACTION, HELP and DATA stored under PROP."
+  (insert-text-button label 'action action 'follow-link t 'face 'widget-button
+                      'help-echo help (or prop 'supertag-action) data))
+
+(defun supertag-view-helper-insert-section-chip (label count face)
+  "Insert a foldable section chip for LABEL, COUNT, and FACE."
+  (let ((start (point)))
+    (insert (propertize (format " %s / %02d " (upcase label) count) 'face face) "\n")
+    (put-text-property start (point) 'supertag-view-section t)))
+
+(defun supertag-view-helper-insert-excerpt (text)
+  "Insert TEXT as a normalized, six-space indented entry excerpt.
+
+Blank TEXT inserts nothing.  Nonblank text is collapsed, limited to 200
+display columns with an ellipsis, and receives the shared excerpt face."
+  (when (and (stringp text) (not (string-empty-p (string-trim text))))
+    (let ((excerpt (truncate-string-to-width
+                    (replace-regexp-in-string "[[:space:]\n]+" " " (string-trim text))
+                    200 nil nil "…"))
+          (start (point)))
+      (insert "      " excerpt "\n")
+      (add-text-properties start (point)
+                           '(face supertag-view-excerpt wrap-prefix "      ")))))
+
 ;;; --- Value Formatting ---
 
 (defun supertag-view-helper-format-value (value)
   "Format VALUE for display. Handles lists and nil."
   (let ((formatted-value (if (listp value)
-                              (mapconcat #'identity value " / ")
-                            (format "%s" (or value "")))))
+                             (mapconcat #'identity value " / ")
+                           (format "%s" (or value "")))))
     (if (string-empty-p formatted-value)
-        (propertize "[Empty]" 'face `(:foreground ,(supertag-view-helper-get-muted-color) :slant italic))
+        (propertize "[Empty]" 'face 'supertag-view-mute)
       (supertag-view-helper-render-org-links formatted-value))))
 
 (defun supertag-view-helper-render-org-links (text)
   "Return TEXT with Org-style links rendered as clickable buttons.
 TEXT can be any value convertible to string."
-  (let ((string (cond
-                 ((null text) "")
-                 ((stringp text) (substring-no-properties text))
-                 (t (format "%s" text)))))
-    (if (string-empty-p string)
-        string
+  (let ((string (cond ((null text) "")
+                      ((stringp text) (substring-no-properties text))
+                      (t (format "%s" text)))))
+    (if (string-empty-p string) string
       (with-temp-buffer
         (insert string)
         (goto-char (point-min))
         (while (re-search-forward "\\[\\[\\([^]\n]+\\)\\]\\(\\[\\([^]]+\\)\\]\\)?\\]" nil t)
           (let* ((match-start (match-beginning 0))
                  (link (match-string 1))
-                 (desc (or (match-string 3) (match-string 1)))
-                 (link-target link)
+                 (desc (or (match-string 3) link))
                  (keymap (let ((map (make-sparse-keymap)))
                            (define-key map (kbd "RET")
-                             (lambda ()
-                               (interactive)
-                               (org-link-open-from-string (format "[[%s]]" link-target))))
+                             (lambda () (interactive)
+                               (org-link-open-from-string (format "[[%s]]" link))))
                            (define-key map [mouse-1]
-                             (lambda ()
-                               (interactive)
-                               (org-link-open-from-string (format "[[%s]]" link-target))))
+                             (lambda () (interactive)
+                               (org-link-open-from-string (format "[[%s]]" link))))
                            map)))
             (delete-region match-start (match-end 0))
             (goto-char match-start)
             (insert desc)
             (add-text-properties match-start (+ match-start (length desc))
-                                 `(face org-link
-                                        help-echo ,link
-                                        mouse-face highlight
-                                        keymap ,keymap))
+                                 `(face org-link help-echo ,link mouse-face highlight keymap ,keymap))
             (goto-char (+ match-start (length desc)))))
         (buffer-substring (point-min) (point-max))))))
 
-
-
 (defun supertag-view-helper-format-boolean-value (value)
   "Format boolean VALUE with visual indicators."
-  (let ((bool-val (cond
-                   ((or (eq value t) (string= value "true") (string= value "yes") (string= value "1")) t)
-                   ((or (eq value nil) (string= value "false") (string= value "no") (string= value "0")) nil)
-                   (t nil))))
-    (if bool-val
-        (propertize "✓ True" 'face `(:foreground ,(supertag-view-helper-get-success-color) :weight bold))
-      (propertize "✗ False" 'face `(:foreground ,(supertag-view-helper-get-muted-color))))))
+  (let ((bool-val (member value '(t "true" "yes" "1"))))
+    (propertize (if bool-val "✓ True" "✗ False")
+                'face (if bool-val 'supertag-view-accent 'supertag-view-mute))))
 
 (defun supertag-view-helper-format-number-value (value)
   "Format numeric VALUE with proper styling."
   (if (or (null value) (string-empty-p (format "%s" value)))
-      (propertize "[No value]" 'face `(:foreground ,(supertag-view-helper-get-muted-color) :slant italic))
-    (propertize (format "%s" value) 'face `(:foreground ,(supertag-view-helper-get-accent-color) :weight bold))))
+      (propertize "[No value]" 'face 'supertag-view-mute)
+    (propertize (format "%s" value) 'face 'supertag-view-accent)))
 
 (defun supertag-view-helper-format-date-value (value)
-  "Format date VALUE with calendar icon."
+  "Format date VALUE."
   (if (or (null value) (string-empty-p (format "%s" value)))
-      (propertize "[No date]" 'face `(:foreground ,(supertag-view-helper-get-muted-color) :slant italic))
-    (propertize (concat "📅 " (format "%s" value))
-                'face `(:foreground ,(supertag-view-helper-get-accent-color)))))
+      (propertize "[No date]" 'face 'supertag-view-mute)
+    (propertize (format "%s" value) 'face 'supertag-view-accent)))
 
 (defun supertag-view-helper-format-url-value (value)
-  "Format URL VALUE as clickable link."
+  "Format URL VALUE as a clickable link."
   (if (or (null value) (string-empty-p (format "%s" value)))
-      (propertize "[No URL]" 'face `(:foreground ,(supertag-view-helper-get-muted-color) :slant italic))
-    (propertize (concat "🔗 " (format "%s" value))
-                'face `(:foreground ,(supertag-view-helper-get-accent-color) :underline t)
-                'mouse-face 'highlight
-                'help-echo "Click to open URL")))
-
-
-;;; --- Simple and Clean Components ---
-
-(defun supertag-view-helper-insert-simple-header (title &optional stats)
-  "Insert a simple header with TITLE and optional STATS."
-  (insert (propertize title 'face `(:weight bold :height 1.3 :foreground ,(supertag-view-helper-get-emphasis-color))))
-  (when stats
-    (insert (propertize (format "    %s" stats)
-                        'face `(:foreground ,(supertag-view-helper-get-muted-color)))))
-  (insert "\n")
-  (insert (propertize (make-string 60 ?─) 'face `(:foreground ,(supertag-view-helper-get-border-color))))
-  (insert "\n\n"))
-
-(defun supertag-view-helper-insert-section-title (title &optional icon)
-  "Insert a simple section title with optional ICON."
-  (insert (propertize (if icon (format "%s %s" icon title) title)
-                      'face `(:weight bold :foreground ,(supertag-view-helper-get-emphasis-color))))
-  (insert "\n"))
-
-
-(defun supertag-view-helper-insert-simple-footer (&rest help-lines)
-  "Insert a simple footer with essential HELP-LINES."
-  (insert "\n")
-  (insert (propertize (make-string 60 ?─) 'face `(:foreground ,(supertag-view-helper-get-border-color))))
-  (insert "\n")
-  (dolist (line help-lines)
-    (insert (propertize (format "%s\n" line)
-                        'face `(:foreground ,(supertag-view-helper-get-muted-color) :height 0.9)))))
+      (propertize "[No URL]" 'face 'supertag-view-mute)
+    (propertize (format "%s" value) 'face '(supertag-view-accent :underline t)
+                'mouse-face 'highlight 'help-echo "Click to open URL")))
 
 (defun supertag-view-helper-insert-simple-empty-state (message)
   "Insert a simple empty state MESSAGE."
-  (insert (propertize (format "  %s\n" message)
-                      'face `(:foreground ,(supertag-view-helper-get-muted-color) :slant italic))))
-
-
-;;; --- Card-like Components ---
-
-(defun supertag-view-helper-insert-card-start (title &optional icon color)
-  "Start a card-like container with TITLE, optional ICON and COLOR."
-  (let ((card-color (or color (supertag-view-helper-get-border-color)))
-        (title-with-icon (if icon (format "%s %s" icon title) title)))
-    (insert (propertize (format "┌─ %s " title-with-icon)
-                        'face `(:weight bold :foreground ,(supertag-view-helper-get-emphasis-color))))
-    (insert (propertize (make-string (max 0 (- 60 (length title-with-icon) 3)) ?─)
-                        'face `(:foreground ,card-color)))
-    (insert (propertize "┐\n" 'face `(:foreground ,card-color)))))
-
-(defun supertag-view-helper-insert-card-content (content &optional padding)
-  "Insert CONTENT inside a card with optional PADDING."
-  (let ((pad (or padding "│ "))
-        (border-color (supertag-view-helper-get-border-color)))
-    (dolist (line (split-string content "\n"))
-      (insert (propertize pad 'face `(:foreground ,border-color)))
-      (insert line "\n"))))
-
-(defun supertag-view-helper-insert-card-end ()
-  "End a card-like container."
-  (let ((border-color (supertag-view-helper-get-border-color)))
-    (insert (propertize "└" 'face `(:foreground ,border-color)))
-    (insert (propertize (make-string 58 ?─) 'face `(:foreground ,border-color)))
-    (insert (propertize "┘\n" 'face `(:foreground ,border-color)))))
-
-
-(defun supertag-view-helper-insert-separator-line (&optional style)
-  "Insert a separator line with optional STYLE (:thin, :thick, :dotted)."
-  (let ((char (pcase style
-                (:thin "─")
-                (:thick "━")
-                (:dotted "┄")
-                (_ "─")))
-        (border-color (supertag-view-helper-get-border-color)))
-    (insert (propertize "│" 'face `(:foreground ,border-color)))
-    (insert (propertize (make-string 58 (string-to-char char)) 'face `(:foreground ,border-color)))
-    (insert (propertize "│\n" 'face `(:foreground ,border-color)))))
-
-;;; --- Interactive Line Highlighting ---
+  (insert (propertize (format "  %s\n" message) 'face 'supertag-view-mute)))
 
 (defun supertag-view-helper-highlight-current-line ()
   "Highlight the current line for better visibility."
@@ -347,10 +244,7 @@ TEXT can be any value convertible to string."
     (remove-overlays (point-min) (point-max) 'category 'current-line)
     (let ((overlay (make-overlay (line-beginning-position) (1+ (line-end-position)))))
       (overlay-put overlay 'category 'current-line)
-      (overlay-put overlay 'face `(:background ,(supertag-view-helper-get-theme-adaptive-color "#F1F5F9" "#334155")
-                                   :extend t
-                                   :box (:line-width 1 :color ,(supertag-view-helper-get-accent-color))))
-      ;; Add subtle animation effect
+      (overlay-put overlay 'face 'supertag-view-panel)
       (overlay-put overlay 'priority 100))))
 
 (defun supertag-view-helper-unhighlight-all-lines ()
@@ -359,89 +253,48 @@ TEXT can be any value convertible to string."
 
 (defun supertag-view-helper-enable-line-highlighting ()
   "Enable enhanced line highlighting for the current buffer."
-  ;; Line highlighting disabled to prevent visual flickering during cursor movement
-  ;; (supertag-view-helper-unhighlight-all-lines)
-  ;; (add-hook 'post-command-hook #'supertag-view-helper-highlight-current-line nil t)
-  )
-
-;;; --- Status and Statistics Display ---
+  nil)
 
 (defun supertag-view-helper-insert-status-badge (status &optional label)
   "Insert a status badge with STATUS and optional LABEL."
-  (let* ((badge-text (or label (format "%s" status)))
-         (badge-face (pcase status
-                       ('active `(:background ,(supertag-view-helper-get-success-color)
-                                  :foreground "white" :weight bold :box 2))
-                       ('warning `(:background ,(supertag-view-helper-get-warning-color)
-                                   :foreground "black" :weight bold :box 2))
-                       ('error `(:background ,(supertag-view-helper-get-error-color)
-                                 :foreground "white" :weight bold :box 2))
-                       ('inactive `(:background ,(supertag-view-helper-get-muted-color)
-                                    :foreground "white" :weight bold :box 2))
-                       (_ `(:background ,(supertag-view-helper-get-accent-color)
-                           :foreground "white" :weight bold :box 2)))))
-    (insert " ")
-    (insert (propertize (format " %s " badge-text) 'face badge-face))
-    (insert " ")))
+  (let ((face (if (memq status '(inactive error warning))
+                  'supertag-view-mute
+                'supertag-view-accent)))
+    (insert " " (propertize (format " %s " (or label status)) 'face face) " ")))
 
 (defun supertag-view-helper-insert-stats-summary (stats)
   "Insert a statistics summary from STATS plist."
   (let ((total (or (plist-get stats :total) 0))
         (active (or (plist-get stats :active) 0))
         (modified (or (plist-get stats :modified) 0)))
-    (insert (propertize "\n📊 Statistics: " 'face `(:weight bold :foreground ,(supertag-view-helper-get-emphasis-color))))
-    (insert (propertize (format "Total: %d" total) 'face `(:weight bold :foreground ,(supertag-view-helper-get-accent-color))))
-    (insert (propertize " • " 'face `(:foreground ,(supertag-view-helper-get-muted-color))))
-    (insert (propertize (format "Active: %d" active) 'face `(:weight bold :foreground ,(supertag-view-helper-get-success-color))))
+    (insert (propertize "\nStatistics: " 'face 'supertag-view-title))
+    (insert (propertize (format "Total: %d" total) 'face 'supertag-view-accent))
+    (insert (propertize " • " 'face 'supertag-view-mute))
+    (insert (propertize (format "Active: %d" active) 'face 'supertag-view-accent))
     (when (> modified 0)
-      (insert (propertize " • " 'face `(:foreground ,(supertag-view-helper-get-muted-color))))
-      (insert (propertize (format "Modified: %d" modified) 'face `(:weight bold :foreground ,(supertag-view-helper-get-warning-color)))))
+      (insert (propertize " • " 'face 'supertag-view-mute))
+      (insert (propertize (format "Modified: %d" modified) 'face 'supertag-view-accent)))
     (insert "\n\n")))
-
-;;; --- Help Text and Empty State ---
 
 (defun supertag-view-helper-insert-help-text (text)
   "Insert help TEXT with consistent styling."
-  (insert (propertize (format "    %s\n" text)
-                      'face `(:foreground ,(supertag-view-helper-get-muted-color) :height 0.9))))
+  (insert (propertize (format "    %s\n" text) 'face 'supertag-view-mute)))
 
 (defun supertag-view-helper-insert-empty-state (message)
   "Insert empty state MESSAGE with consistent styling."
-  (insert (propertize (format "  %s\n" message)
-                      'face `(:foreground ,(supertag-view-helper-get-muted-color) :slant italic))))
-
-
-;;; --- Node and File Information Display ---
+  (insert (propertize (format "  %s\n" message) 'face 'supertag-view-mute)))
 
 (defun supertag-view-helper-insert-node-info (title file)
   "Insert node information with TITLE and FILE in consistent format."
-  (insert (propertize (format "    📄 %s\n" title) 'face '(:weight bold :foreground "default")))
+  (insert (propertize (format "    %s\n" title) 'face 'supertag-view-entry))
   (when file
-    (insert (propertize (format "    📁 %s\n" (file-name-nondirectory file))
-                        'face `(:foreground ,(supertag-view-helper-get-muted-color) :slant italic)))))
-
-;;; --- Footer and Navigation ---
-
-(defun supertag-view-helper-insert-footer-start ()
-  "Insert footer separator and navigation title."
-  (insert (propertize (format "%s\n" supertag-view-helper--section-separator) 'face `(:foreground ,(supertag-view-helper-get-muted-color))))
-  (insert (propertize "Navigation:\n" 'face '(:weight bold :foreground "default"))))
-
-(defun supertag-view-helper-insert-footer-with-content (&rest help-lines)
-  "Insert complete footer with custom HELP-LINES."
-  (supertag-view-helper-insert-footer-start)
-  (dolist (line help-lines)
-    (supertag-view-helper-insert-help-text line)))
-
-;;;----------------------------------------------------------------------
-;;; Display Buffer Management
-;;;----------------------------------------------------------------------
+    (insert (propertize (format "    %s\n" (file-name-nondirectory file))
+                        'face 'supertag-view-mute))))
 
 (defun supertag-view-helper-display-buffer-right (buffer)
   "Display BUFFER in a window to the right."
-  (let ((window (display-buffer buffer '(display-buffer-in-side-window
-                                          (side . right)
-                                          (window-width . 0.4)))))
+  (let ((window (display-buffer buffer '((display-buffer-in-side-window)
+                                          (side . right) (window-width . 0.4)))))
     (select-window window)
     (goto-char (point-min))))
 

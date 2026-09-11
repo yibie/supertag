@@ -542,9 +542,11 @@ Supertag is developed as free software under the GPLv3. Contributions, bug repor
 
 ## Palette
 
-View colors default to the `blue` palette.  The available presets are `blue`,
-`violet`, `lime`, `warm`, and `mono`; use `M-x supertag-view-set-palette` to
-switch between them.
+View colors default to the editorial `paper` palette.  The available presets
+are `paper`, `neon`, `ink`, and `ocean`; use `M-x supertag-view-set-palette` to
+switch.  Node View uses a magazine layout: tag chips and source information in
+the masthead, `[OPEN]`, `[STREAM]`, and `[TAG MANAGER]` actions, and `TAB` to
+fold the section at point.
 
 ## Configuration variables
 
@@ -743,7 +745,7 @@ the opt-in Supertag integration remains available and is disabled by default.
 
 | Variable | Default | Purpose |
 |---|---|---|
-| `supertag-view-palette` | `blue` | Palette used by Supertag views. |
+| `supertag-view-palette` | `paper` | Palette used by Supertag views. |
 
 **supertag-view-helper.el**
 

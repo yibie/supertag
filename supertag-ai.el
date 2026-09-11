@@ -474,51 +474,63 @@ Example ID text and ambiguous identities provide no persistence proof."
   "Insert NODE-ID's disposable extraction section, if present."
   (when-let* ((entry (gethash node-id supertag-ai--candidates)))
     (let ((candidates (plist-get entry :candidates)))
-      (supertag-view-helper-insert-section-title
-       (format "Property candidates (%d)" (length candidates)) "🤖")
+      (insert "\n")
+      (supertag-view-helper-insert-section-chip "Property Candidates" (length candidates)
+                                                   'supertag-view-chip2)
       (pcase (plist-get entry :status)
-        ('pending (insert (format "Extracting with prompt %s…\n" (plist-get entry :prompt)))
-         (supertag-ai--button "[Cancel]" #'supertag-ai-cancel node-id))
-        ('cancelled (insert "Cancelled.\n")
+        ('pending
+         (insert (propertize (format "  Extracting with prompt %s…\n" (plist-get entry :prompt))
+                             'face 'supertag-view-mute))
+         (supertag-ai--button "[Cancel]" #'supertag-ai-cancel node-id)
+         (insert "\n"))
+        ('cancelled
+         (insert (propertize "  Cancelled.\n" 'face 'supertag-view-mute))
          (supertag-ai--button "[Discard]" #'supertag-ai-discard node-id)
-         (insert " ") (supertag-ai--button "[Retry]" #'supertag-ai--retry node-id))
+         (insert "  ") (supertag-ai--button "[Retry]" #'supertag-ai--retry node-id)
+         (insert "\n"))
         ('failed
-         (insert (format "Failed: %s\n" (plist-get entry :message)))
+         (insert (propertize (format "  Failed: %s\n" (plist-get entry :message))
+                             'face 'supertag-view-mute))
          (supertag-ai--button "[Discard]" #'supertag-ai-discard node-id)
-         (when (plist-get entry :raw) (insert " ") (supertag-ai--button "[Show raw]" #'supertag-ai-show-raw node-id)))
+         (when (plist-get entry :raw)
+           (insert "  ") (supertag-ai--button "[Show raw]" #'supertag-ai-show-raw node-id))
+         (insert "\n"))
         ('done
          (if candidates
              (progn
                (dolist (candidate candidates)
-                 (let ((name (plist-get candidate :name))
-                       (current (plist-get candidate :current))
-                       (source (plist-get candidate :source)))
-                   (insert (format "%s: %s%s\n" name (if current (concat current " → ") "")
-                                   (plist-get candidate :value)))
+                 (let* ((name (plist-get candidate :name))
+                        (current (plist-get candidate :current))
+                        (source (plist-get candidate :source))
+                        (start (point)))
+                   (insert (propertize
+                            (format "  %s: %s%s\n" name
+                                    (if current (concat current " → ") "")
+                                    (plist-get candidate :value))
+                            'face 'supertag-view-entry))
                    (when (plist-get candidate :stale)
-                     (insert (format "    changed since extraction: %s → %s\n"
-                                     (or (plist-get candidate :previous) "(none)")
-                                     (or current "(none)"))))
-                   (let ((face `(:foreground ,(supertag-view-helper-get-muted-color) :slant italic)))
                      (insert (propertize
-                              (concat "    > " (if (plist-get candidate :source-verified)
-                                                     source "⚠ Not found in the body") "\n")
-                              'face face))
-                     (when (and (not (plist-get candidate :source-verified))
-                                (stringp source) (not (string-empty-p (string-trim source))))
-                       (insert (propertize
-                                (concat "    > unverified: " (substring source 0 (min 120 (length source))) "\n")
-                                'face face))))
+                              (format "      changed since extraction: %s → %s\n"
+                                      (or (plist-get candidate :previous) "(none)")
+                                      (or current "(none)"))
+                              'face 'supertag-view-mute)))
+                   (supertag-view-helper-insert-excerpt
+                    (if (plist-get candidate :source-verified)
+                        source
+                      (or source "Not found in the body")))
+                   (insert "    ")
                    (supertag-ai--button "[Accept]" #'supertag-ai-accept node-id name)
-                   (insert " ")
+                   (insert "  ")
                    (supertag-ai--button "[Skip]" #'supertag-ai-skip node-id name)
-                   (insert "\n\n")))
+                   (insert "\n")
+                   (add-text-properties start (point) '(line-spacing 0.15))))
                (supertag-ai--button "[Accept all]" #'supertag-ai-accept-all node-id)
-               (insert " ")
-               (supertag-ai--button "[Discard all]" #'supertag-ai-discard node-id))
-           (insert "All candidates handled\n")
-           (supertag-ai--button "[Discard]" #'supertag-ai-discard node-id))))
-      (insert "\n\n"))))
+               (insert "  ")
+               (supertag-ai--button "[Discard all]" #'supertag-ai-discard node-id)
+               (insert "\n"))
+           (insert (propertize "  All candidates handled\n" 'face 'supertag-view-mute))
+           (supertag-ai--button "[Discard]" #'supertag-ai-discard node-id)
+           (insert "\n")))))))
 
 ;;;; Cross-node plan preview
 

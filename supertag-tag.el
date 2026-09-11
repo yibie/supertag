@@ -46,8 +46,7 @@
 ;; supertag-node, supertag-service-org (via Node); lazy
 ;; supertag-service-org providers load Sync before FILETAGS callbacks;
 ;; supertag-query lazily supplies Tag descriptors, membership and occurrences;
-;; supertag-view-framework lazily supplies shared colors for Tag value display;
-;; its first use loads the existing Query/Tag/Sync dependency closure;
+;; supertag-view-framework supplies shared role faces for Tag value display on demand;
 ;; supertag-query lazily supplies node membership reads for Tag management;
 ;; supertag-node supplies shared containing-node/marker helpers;
 ;; supertag-link lazily supplies the shared Link CAPF. Loading Tag does not
@@ -99,13 +98,6 @@
 (autoload 'supertag-query-node-ids-by-tag "supertag-query")
 (declare-function supertag-query-node-ids-by-tag "supertag-query" (tag-name &optional include-descendants))
 
-;; Shared theme colors resolve only after Tag is fully loaded.
-(autoload 'supertag-view-helper-get-muted-color "supertag-view-framework")
-(declare-function supertag-view-helper-get-muted-color "supertag-view-framework" ())
-(autoload 'supertag-view-helper-get-emphasis-color "supertag-view-framework")
-(declare-function supertag-view-helper-get-emphasis-color "supertag-view-framework" ())
-(autoload 'supertag-view-helper-get-border-color "supertag-view-framework")
-(declare-function supertag-view-helper-get-border-color "supertag-view-framework" ())
 
 ;; Keep the Link CAPF lazy: ordinary tag completion must not load Link merely
 ;; to learn that point is not inside its shorthand syntax.
@@ -3703,18 +3695,20 @@ When INCLUDE-DESCENDANTS is non-nil, include transitive `:extends' descendants."
     (supertag-query-node-tags node-id)))
 
 (defun supertag-view-helper-format-tag-value (value)
-  "Format tag VALUE with special styling for tags."
+  "Format tag VALUE with the shared role faces."
+  (require 'supertag-view-framework)
   (if (or (null value) (string-empty-p (format "%s" value)))
-      (propertize "[No tags]" 'face `(:foreground ,(supertag-view-helper-get-muted-color) :slant italic))
+      (propertize "[No tags]" 'face 'supertag-view-mute)
     (let ((tags (if (stringp value)
                     (split-string value "," t "[ \t\n\r]+")
-                  (if (listp value) value (list (format "%s" value))))))
-      (mapconcat (lambda (tag)
-                   (propertize (concat "#" (string-trim tag))
-                               'face `(:foreground ,(supertag-view-helper-get-emphasis-color)
-                                       :weight bold
-                                       :box (:line-width 1 :color ,(supertag-view-helper-get-border-color)))))
-                 tags " "))))
+                  (if (listp value) value (list (format "%s" value)))))
+          (border (face-foreground 'supertag-view-rule nil t)))
+      (mapconcat
+       (lambda (tag)
+         (propertize (concat "#" (string-trim tag))
+                     'face (list 'supertag-view-accent
+                                 `(:weight bold :box (:line-width 1 :color ,border)))))
+       tags " "))))
 
 ;;; Tag entity ensure and hierarchy adapters
 

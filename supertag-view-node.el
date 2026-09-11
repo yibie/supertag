@@ -29,12 +29,20 @@
 (require 'supertag-concept)
 (require 'supertag-ai)
 (require 'supertag-semantic)
+(require 'wid-edit)
+(autoload 'supertag-view-stream "supertag-view-stream")
+(declare-function supertag-view-stream "supertag-view-stream" (&optional tag))
+(autoload 'supertag-view-tags "supertag-view-tags")
+(declare-function supertag-view-tags "supertag-view-tags" ())
 (declare-function supertag-view--resolve-node-tags "supertag-tag" (node-id))
 
 ;;; --- Variables ---
 
 (defvar-local supertag-view-node--current-node-id nil
   "The ID of the node currently displayed in the view buffer.")
+
+(defvar-local supertag-view-node--current-title nil
+  "The title currently displayed in the Node View.")
 
 ;; Side-window presenter + follow support
 (defconst supertag-view-node--buffer-name "*Supertag Node*")
@@ -273,267 +281,239 @@ You can customize this list to match your org-mode TODO keywords."
   :type '(repeat string)
   :group 'supertag)
 
-;;; --- Visual Style Variables ---
-
-;; Shared color functions are owned by supertag-view-framework.el
-;; Keeping these as convenience aliases for backward compatibility
-(defun supertag-view-node--get-theme-adaptive-color (light-color dark-color)
-  "Get color that adapts to current theme."
-  (supertag-view-helper-get-theme-adaptive-color light-color dark-color))
-
-(defun supertag-view-node--get-accent-color ()
-  "Get accent color that works well in both light and dark themes."
-  (supertag-view-helper-get-accent-color))
-
-(defun supertag-view-node--get-emphasis-color ()
-  "Get emphasis color that works well in both light and dark themes."
-  (supertag-view-helper-get-emphasis-color))
-
 ;;; --- Mode Definition ---
 
 (defvar supertag-view-node-mode-map
   (let ((map (make-sparse-keymap)))
-    ;; Navigation
-    (define-key map (kbd "n") 'next-line)
-    (define-key map (kbd "p") 'previous-line)
-    (define-key map (kbd "j") 'next-line)
-    (define-key map (kbd "k") 'previous-line)
-    (define-key map (kbd "SPC") 'scroll-up-command)
-    (define-key map (kbd "S-SPC") 'scroll-down-command)
-    (define-key map (kbd "M-v") 'scroll-down-command)
-    (define-key map (kbd "C-v") 'scroll-up-command)
-    (define-key map (kbd "M-<") 'beginning-of-buffer)
-    (define-key map (kbd "M->") 'end-of-buffer)
-
-    ;; Utility
-    (define-key map (kbd "g") 'supertag-view-node-refresh)
+    (define-key map (kbd "n") #'next-line)
+    (define-key map (kbd "p") #'previous-line)
+    (define-key map (kbd "j") #'next-line)
+    (define-key map (kbd "k") #'previous-line)
+    (define-key map (kbd "SPC") #'scroll-up-command)
+    (define-key map (kbd "S-SPC") #'scroll-down-command)
+    (define-key map (kbd "M-v") #'scroll-down-command)
+    (define-key map (kbd "C-v") #'scroll-up-command)
+    (define-key map (kbd "M-<") #'beginning-of-buffer)
+    (define-key map (kbd "M->") #'end-of-buffer)
+    (define-key map (kbd "TAB") #'supertag-view-node-toggle-section)
+    (define-key map (kbd "g") #'supertag-view-node-refresh)
     (define-key map (kbd "q") #'supertag-view-node--hide-side)
-    (define-key map (kbd "h") 'describe-mode)
+    (define-key map (kbd "h") #'describe-mode)
     map)
-  "Keymap for `supertag-view-node-mode'.
-Users can rebind keys in this map to avoid conflicts with modal editing.")
+  "Keymap for `supertag-view-node-mode'.")
 
 (define-derived-mode supertag-view-node-mode special-mode "Supertag Node"
-  "A modern major mode for viewing a Supertag node.
+  "Read-only magazine layout for one Supertag node.
 
 \{supertag-view-node-mode-map}
 
-Key Bindings:
-━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-
-🧭 Navigation:
-  j/k     - Move up/down by line (also n/p)
-  SPC     - Scroll down one page
-  S-SPC   - Scroll up one page (also M-v)
-  C-v     - Scroll down one page
-  M-<     - Jump to beginning of buffer
-  M->     - Jump to end of buffer
-
-🔧 Actions:
-  g       - Refresh the view
-  h       - Show this help (describe-mode)
-  q       - Quit and close window
-
-💡 Tips:
-  - Node View shows only discovered context (Tags, Relations, References,
-    Unlinked mentions, Similar notes); edit Org properties in the source file
-  - RET on a Reference or Backlink title opens its source node
-  - Use Tab completion when available
-
-━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+TAB folds the section at point.  g refreshes, h describes this mode, and q
+closes the Node View.  RET and mouse-1 visit entry targets."
   :group 'supertag
   :keymap supertag-view-node-mode-map
   (setq-local buffer-read-only t)
-  ;; Ensure cursor is visible in this special-mode buffer
   (setq-local cursor-type 'box)
+  (setq-local line-spacing 0.1)
   (setq-local mode-line-format
-        '(" "
-          (:eval (propertize mode-name 'face
-                             `(:weight bold :foreground ,(supertag-view-helper-get-accent-color))))
-          " | 📄 "
-          (:eval (let ((node-id (or supertag-view-node--current-node-id "None")))
-                  (if (string= node-id "None")
-                      (propertize node-id 'face
-                                  `(:foreground ,(supertag-view-helper-get-muted-color)))
-                    (propertize (truncate-string-to-width node-id 20 nil nil "...")
-                               'face '(:weight bold)))))
-          " | 🔗 "
-          (:eval (let ((refs (length (supertag-view-node--get-references supertag-view-node--current-node-id)))
-                       (refd-by (length (supertag-view-node--get-referenced-by supertag-view-node--current-node-id))))
-                  (propertize (format "%d→%d" refs refd-by)
-                              'face (if (> (+ refs refd-by) 0)
-                                        `(:foreground ,(supertag-view-helper-get-accent-color) :weight bold)
-                                      `(:foreground ,(supertag-view-helper-get-muted-color))))))
-          " %[%p%] "))
-  ;; Ensure Evil does not take over this buffer: disable Evil locally if available.
+              '(" " (:eval (or supertag-view-node--current-title "Node"))
+                "   palette: " (:eval (symbol-name supertag-view-palette))))
   (when (fboundp 'evil-local-mode)
-    (ignore-errors (evil-local-mode -1)))
-  ;; Line highlighting disabled to prevent cursor movement flickering.
-  ;; Runtime owns Store subscriptions and cleanup.
-  )
+    (ignore-errors (evil-local-mode -1))))
 
-;;; --- Helper Functions ---
-
-;; Shared line highlighting is owned by supertag-view-framework.el
-;; Keeping these as convenience aliases for backward compatibility
-(defun supertag-view-node--highlight-current-line ()
-  "Highlight the current line for better visibility."
-  (supertag-view-helper-highlight-current-line))
-
-(defun supertag-view-node--unhighlight-all-lines ()
-  "Remove all line highlighting."
-  (supertag-view-helper-unhighlight-all-lines))
+;;; --- Rendering helpers ---
 
 (defun supertag-view-node--get-references (node-id)
-  "Get references from NODE-ID to other nodes."
+  "Return ordinary reference targets from NODE-ID."
   (when node-id
-    (let ((relations (supertag-query-ordinary-references-from node-id)))
-      (mapcar (lambda (rel) (plist-get rel :to)) relations))))
+    (mapcar (lambda (relation) (plist-get relation :to))
+            (supertag-query-ordinary-references-from node-id))))
 
 (defun supertag-view-node--get-referenced-by (node-id)
-  "Get nodes that reference NODE-ID."
+  "Return ordinary reference sources that point to NODE-ID."
   (when node-id
     (mapcar (lambda (relation) (plist-get relation :from))
             (supertag-query-ordinary-references-to node-id))))
 
-;;; --- Modern Rendering Functions ---
-
 (defun supertag-view-node--strip-todo-keyword (title)
-  "Remove TODO keywords from TITLE if configured to do so.
-Removes org-mode TODO keywords based on `supertag-view-node-todo-keywords'.
-Only strips keywords if `supertag-view-node-strip-todo-keywords' is non-nil."
+  "Remove configured TODO keywords from TITLE when requested."
   (if (not supertag-view-node-strip-todo-keywords)
       title
     (let ((keywords-regexp (concat "^\\("
                                    (mapconcat #'regexp-quote
-                                             supertag-view-node-todo-keywords
-                                             "\\|")
+                                              supertag-view-node-todo-keywords "\\|")
                                    "\\)\\s-+")))
       (if (string-match keywords-regexp title)
           (string-trim (substring title (match-end 0)))
         title))))
 
-(defun supertag-view-node--insert-simple-header (state)
-  "Insert a simple, clean header from Node view STATE."
-  (let* ((node-data (plist-get state :node))
-         (raw-title (or (plist-get node-data :title) "Untitled Node"))
-         (title (supertag-view-node--strip-todo-keyword raw-title))
-         (file (plist-get node-data :file))
-         (node-id supertag-view-node--current-node-id)
-         (ref-count (or (plist-get state :ref-count) 0))
-         (stats (format "🔗 %d refs" ref-count))
-         (start (point)))
-    (supertag-view-helper-insert-simple-header
-     (format "📄 %s" (supertag-view-helper-render-org-links title))
-     stats)
-    (when file
-      (insert (propertize (format "📁 %s\n\n" (file-name-nondirectory file))
-                          'face `(:foreground ,(supertag-view-helper-get-muted-color) :slant italic))))
-    (add-text-properties start (point)
-                         `(supertag-entity-id ,node-id))))
-
-;;; --- Rendering Functions ---
-
 (defun supertag-view-node--tag-display-name (tag-id)
-  "Return the human-readable name for TAG-ID.
-Prefer the canonical hierarchy display name, then the stored `:name', and fall back
-to TAG-ID itself only when no Tag record is available."
+  "Return a human-readable display name for TAG-ID."
   (let ((tag-data (supertag-tag-get tag-id)))
     (or (and tag-data
              (let ((name (ignore-errors (supertag-tag-display-name tag-id))))
                (and (stringp name) (not (string-empty-p name)) name)))
-        (and tag-data (plist-get tag-data :name))
-        tag-id)))
+        (and tag-data (plist-get tag-data :name)) tag-id)))
 
-(defun supertag-view-node--insert-tags-section (state)
-  "Insert read-only tags from STATE."
-  (supertag-view-helper-insert-section-title "Tags" "🏷️")
-  (if-let ((tag-ids (plist-get state :tags)))
-      (dolist (tag-id (sort (copy-sequence tag-ids) #'string<))
-        (insert (propertize (format "  %s\n"
-                                    (supertag-view-node--tag-display-name tag-id))
-                            'supertag-context t
-                            'type :tag
-                            'tag-id tag-id
-                            'id tag-id)))
-    (supertag-view-helper-insert-simple-empty-state "No tags found."))
-  (insert "\n"))
+(defun supertag-view-node--stored-date (node)
+  "Return NODE's stored creation or modification date, or nil."
+  (when-let ((timestamp (or (plist-get node :created-at)
+                            (plist-get node :modified-at))))
+    (condition-case nil
+        (format-time-string "%Y-%m-%d" timestamp)
+      (error nil))))
 
-(defun supertag-view-node--insert-node-link-line (node-id)
-  "Insert a single clickable line for NODE-ID.
-The line looks like `📄 Title' and is clickable with RET/mouse-1."
+(defun supertag-view-node--insert-masthead (state)
+  "Insert the masthead from Node view STATE."
+  (let* ((node (plist-get state :node))
+         (tags (sort (copy-sequence (or (plist-get state :tags) '())) #'string<))
+         (file (plist-get node :file))
+         (date (supertag-view-node--stored-date node)))
+    (insert "\n")
+    (dolist (tag-id tags)
+      (insert (propertize (format " %s " (upcase (supertag-view-node--tag-display-name tag-id)))
+                          'face 'supertag-view-chip1
+                          'supertag-context t 'type :tag 'tag-id tag-id 'id tag-id)
+              " "))
+    (when tags (insert " "))
+    (when file
+      (insert (propertize (file-name-nondirectory file) 'face 'supertag-view-accent)))
+    (when date
+      (insert (propertize (format "  /  %s" date) 'face 'supertag-view-mute)))
+    (insert "\n\n")))
+
+(defun supertag-view-node--insert-panel (state)
+  "Insert STATE's title in a panel."
+  (let* ((node (plist-get state :node))
+         (title (supertag-view-node--strip-todo-keyword
+                 (or (plist-get node :title) "Untitled Node")))
+         (start (point)))
+    (setq supertag-view-node--current-title title)
+    (insert "\n  " (propertize title 'face 'supertag-view-title) "\n\n")
+    (add-face-text-property start (point) 'supertag-view-panel t)))
+
+(defun supertag-view-node--action-open (button)
+  "Open the node stored on BUTTON."
+  (supertag-goto-node (button-get button 'supertag-node-id)))
+
+(defun supertag-view-node--action-stream (button)
+  "Open a stream for BUTTON's first node tag, if it has one."
+  (let ((tag (car (button-get button 'supertag-node-tags))))
+    (if tag (supertag-view-stream tag) (supertag-view-stream))))
+
+(defun supertag-view-node--action-tags (_button)
+  "Open the tag manager."
+  (supertag-view-tags))
+
+(defun supertag-view-node--insert-actions (state)
+  "Insert the action row for STATE."
+  (let ((node-id (plist-get state :id)) (tags (plist-get state :tags)))
+    (insert "\n")
+    (insert-text-button "[OPEN]" 'face 'widget-button 'follow-link t
+                        'action #'supertag-view-node--action-open
+                        'supertag-node-id node-id)
+    (insert "  ")
+    (insert-text-button "[STREAM]" 'face 'widget-button 'follow-link t
+                        'action #'supertag-view-node--action-stream
+                        'supertag-node-tags tags)
+    (insert "  ")
+    (insert-text-button "[TAG MANAGER]" 'face 'widget-button 'follow-link t
+                        'action #'supertag-view-node--action-tags)
+    (insert "\n")))
+
+(defun supertag-view-node--insert-node-link-line (node-id &optional relation)
+  "Insert a clickable relation entry for NODE-ID and optional RELATION."
   (when-let* ((node (supertag-view-api-get-entity :nodes node-id)))
-    (let* ((raw-title (or (plist-get node :raw-value)
-                          (plist-get node :title)
-                          "[Untitled]"))
-           (display-title (if (fboundp 'org-link-display-format)
-                              (org-link-display-format raw-title)
-                            raw-title))
-           (start (point))
-           (map (make-sparse-keymap))
-           (action `(lambda () (interactive) (supertag-goto-node ,node-id))))
-      (insert (format "    📄 %s\n" (string-trim display-title)))
-      (define-key map [mouse-1] action)
-      (define-key map (kbd "RET") action)
-      (add-text-properties
-       start (point)
-       `(supertag-node-id ,node-id
-                          face (:foreground ,(supertag-view-helper-get-muted-color))
-                          keymap ,map
-                          mouse-face highlight
-                          help-echo ,(format "Jump to node: %s" node-id))))))
-
+    (let* ((raw-title (or (plist-get node :raw-value) (plist-get node :title) "[Untitled]"))
+           (title (if (fboundp 'org-link-display-format)
+                      (org-link-display-format raw-title) raw-title))
+           (start (point)))
+      (insert "  ")
+      (insert-text-button (string-trim title) 'face 'supertag-view-entry 'follow-link t
+                          'action (lambda (&optional _button)
+                                    (interactive)
+                                    (supertag-goto-node node-id))
+                          'supertag-node-id node-id
+                          'help-echo (format "Jump to node: %s" node-id))
+      (insert "\n")
+      (supertag-view-helper-insert-excerpt relation)
+      (add-text-properties start (point) '(line-spacing 0.15)))))
 
 (defun supertag-view-node--insert-named-links-section (node-id)
   "Insert configured text-link relations touching NODE-ID."
   (let ((outgoing (supertag-query-named-links-from node-id))
         (incoming (supertag-query-named-links-to node-id)))
     (when (or outgoing incoming)
-      (supertag-view-helper-insert-section-title "Relations" "🔗")
+      (insert "\n")
+      (supertag-view-helper-insert-section-chip "Relations" (+ (length outgoing) (length incoming))
+                                                   'supertag-view-chip2)
       (dolist (relation outgoing)
-        (insert (format "  %s →\n" (plist-get relation :relation-name)))
-        (supertag-view-node--insert-node-link-line (plist-get relation :to)))
+        (supertag-view-node--insert-node-link-line
+         (plist-get relation :to) (format "%s →" (plist-get relation :relation-name))))
       (dolist (relation incoming)
-        (insert (format "  ← %s\n" (plist-get relation :relation-name)))
-        (supertag-view-node--insert-node-link-line (plist-get relation :from)))
-      (insert "\n"))))
+        (supertag-view-node--insert-node-link-line
+         (plist-get relation :from) (format "← %s" (plist-get relation :relation-name)))))))
+
+(defun supertag-view-node--insert-footer (node-id)
+  "Insert NODE-ID's magazine footer."
+  (insert "\n"
+          (propertize (string-join (make-list 11 "+ .") " ") 'face 'supertag-view-rule)
+          "\n"
+          (propertize (format "SUPERTAG / NODE  /  %s"
+                              (upcase (substring (or node-id "") 0 (min 8 (length (or node-id ""))))))
+                      'face 'supertag-view-mute)
+          "\n"))
+
+(defun supertag-view-node--next-section-start (from)
+  "Return the next section-chip position after FROM, or `point-max'."
+  (let ((position from) next)
+    (while (and (< position (point-max)) (not next))
+      (setq position (next-single-property-change position 'supertag-view-section nil (point-max)))
+      (when (and (< position (point-max))
+                 (get-text-property position 'supertag-view-section))
+        (setq next position)))
+    (or next (point-max))))
+
+(defun supertag-view-node-toggle-section ()
+  "Fold or unfold the section whose chip is at point."
+  (interactive)
+  (save-excursion
+    (unless (get-text-property (line-beginning-position) 'supertag-view-section)
+      (let ((previous (previous-single-property-change (point) 'supertag-view-section)))
+        (when (and previous (get-text-property (1- previous) 'supertag-view-section))
+          (goto-char (1- previous)))))
+    (when (get-text-property (line-beginning-position) 'supertag-view-section)
+      (let* ((start (line-end-position))
+             (next (supertag-view-node--next-section-start (1+ start)))
+             (end (save-excursion (goto-char next) (line-beginning-position)))
+             (overlay (seq-find (lambda (item) (overlay-get item 'supertag-view-node-fold))
+                                (overlays-in start end))))
+        (if overlay
+            (delete-overlay overlay)
+          (let ((fold (make-overlay start end)))
+            (overlay-put fold 'supertag-view-node-fold t)
+            (overlay-put fold 'invisible t)
+            (overlay-put fold 'after-string
+                         (propertize "  …" 'face 'supertag-view-mute))))))))
 
 (defun supertag-view-node--render-from-state (state)
-  "Render a simple, clean view for NODE described by STATE.
-STATE 应由 `supertag-view-build-node-state' 构造，只包含数据，不做任何 buffer 操作。"
+  "Render the magazine Node View from data-only STATE."
   (let* ((node-id (plist-get state :id))
          (node-data (plist-get state :node))
          (inhibit-read-only t))
     (erase-buffer)
     (setq supertag-view-node--current-node-id node-id)
+    (setq-local line-spacing 0.1)
     (when node-data
-      ;; Simple header
-      (supertag-view-node--insert-simple-header state)
-
-      ;; Tags section
-      (supertag-view-node--insert-tags-section state)
-
-      ;; Contextual outgoing references and incoming Backlinks.  This remains
-      ;; a disposable projection, never a second reference store.
+      (supertag-view-node--insert-masthead state)
+      (supertag-view-node--insert-panel state)
+      (supertag-view-node--insert-actions state)
       (supertag-view-reference-insert-sections node-id)
-
       (supertag-ai-insert-section node-id)
-
-      ;; Potential references discovered from source-owned plain text.
-      ;; These are computed candidates, never persisted facts.
       (when (supertag-concept-node-p node-data)
         (supertag-view-mention-insert-section node-id))
       (supertag-semantic-insert-section node-id)
-      (insert "\n")
-
       (supertag-view-node--insert-named-links-section node-id)
-
-      ;; Complete footer with available shortcuts
-      (supertag-view-helper-insert-simple-footer
-       "📍 Navigation: [j/k] Move | [SPC] Page Down | [S-SPC] Page Up | [M-</>] Start/End"
-       "🔧 Actions: [g] Refresh | [h] Help | [q] Quit")
-
-      ;; Activate links in the entire buffer
+      (supertag-view-node--insert-footer node-id)
       (supertag-view-node--activate-links-in-buffer))
     (goto-char (point-min))))
 
@@ -589,11 +569,14 @@ STATE 应由 `supertag-view-build-node-state' 构造，只包含数据，不做�
                (not (supertag-node-get supertag-view-node--current-node-id)))
           (let ((inhibit-read-only t))
             (erase-buffer)
-            (supertag-view-helper-insert-simple-header
-             "Node View" "The node is not available in this vault.")
-            (supertag-view-helper-insert-simple-empty-state
-             (format "Node %s is not available in this vault."
-                     supertag-view-node--current-node-id)))
+            (insert (propertize "Node View
+
+" 'face 'supertag-view-title))
+            (insert (propertize
+                     (format "Node %s is not available in this vault.
+"
+                             supertag-view-node--current-node-id)
+                     'face 'supertag-view-mute)))
         (supertag-view-refresh buf)))))
 
 

@@ -172,7 +172,7 @@
           (should (string-match-p "Extracting with prompt extract-properties" (buffer-string))))
         (supertag-ai-test-deliver request "{\"AUTHOR\":{\"value\":\"Ada\",\"source\":\"written by Ada\"},\"ALPHA\":{\"value\":\"changed\"}}")
         (with-current-buffer view
-          (should (string-match-p "Property candidates (2)" (buffer-string)))
+          (should (string-match-p " PROPERTY CANDIDATES / 02 " (buffer-string)))
           (should (string-match-p "ALPHA: first → changed" (buffer-string)))
           (should (string-match-p "Not found in the body" (buffer-string)))
           (goto-char (point-min)) (search-forward "[Accept]")
@@ -343,11 +343,11 @@
         (dolist (candidate (cdr candidates)) (should-not (plist-get candidate :source-verified))))
       (with-temp-buffer
         (supertag-ai-insert-section "document-node")
-        (should (string-match-p "    > written by Ada" (buffer-string)))
-        (should (string-match-p "⚠ Not found in the body" (buffer-string)))
-        (should (string-match-p "unverified: Invented quote" (buffer-string)))
-        (should-not (string-match-p "    > Invented quote" (buffer-string)))
-        (should-not (string-match-p "unverified:  +\n" (buffer-string)))))))
+        (should (string-match-p "      written by Ada" (buffer-string)))
+        (should (string-match-p "      Invented quote" (buffer-string)))
+        (should (string-match-p "      Beyond sent body" (buffer-string)))
+        (should-not (string-match-p "⚠ Not found in the body\\|unverified:" (buffer-string)))
+        (should-not (string-match-p "      [[:space:]]*\n" (buffer-string)))))))
 
 (ert-deftest supertag-ai-late-response-cannot-replace-a-new-request ()
   (supertag-document-test-with-vault

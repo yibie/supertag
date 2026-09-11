@@ -536,72 +536,80 @@ child or sibling nodes are never searched."
       (goto-char (or found heading))
       (when found (org-fold-show-context)))))
 
+(defun supertag-semantic--insert-status-section (label node-id message action-label action help)
+  "Insert a live similarity status section for NODE-ID."
+  (insert "\n")
+  (supertag-view-helper-insert-section-chip label 0 'supertag-view-chip3)
+  (insert (propertize (concat "  " message) 'face 'supertag-view-mute))
+  (when action-label
+    (insert "  ")
+    (supertag-view-helper-insert-action-button action-label action node-id help
+                                                'supertag-semantic))
+  (insert "\n"))
+
+(defun supertag-semantic--insert-match (match query)
+  "Insert one magazine-style semantic MATCH for QUERY."
+  (let* ((id (plist-get match :id))
+         (node (plist-get match :node))
+         (title (or (plist-get node :title) id))
+         (closest (supertag-semantic--closest-passage
+                   query (supertag-semantic--passages (plist-get node :content))))
+         (passage (car closest))
+         (hit (> (cdr closest) 0))
+         (score (format "%.2f" (plist-get match :score)))
+         (start (point)))
+    (insert "  ")
+    (insert-text-button title 'face 'supertag-view-entry 'follow-link t
+                        'action (lambda (_button)
+                                  (supertag-semantic--visit-passage id (and hit passage)))
+                        'supertag-node-id id
+                        'help-echo "Visit the original Org node")
+    (insert (propertize " " 'display `(space :align-to (- right ,(1+ (string-width score))))))
+    (insert (propertize score 'face 'supertag-view-score) "\n")
+    (supertag-view-helper-insert-excerpt passage)
+    (add-text-properties start (point) '(line-spacing 0.15))))
+
 (defun supertag-semantic-insert-section (node-id)
-  "Insert optional node-level similarity candidates for NODE-ID without networking now."
+  "Insert live or nonempty semantic candidates for NODE-ID."
   (supertag-semantic--ensure)
   (when supertag-semantic-enabled
     (unless (or supertag-semantic--paused supertag-semantic--error)
       (supertag-semantic--queue node-id)
       (supertag-semantic--schedule))
-    (supertag-view-helper-insert-section-title "Similar notes (candidates)" "")
-    (insert "Node-level similarity; previews show the closest passage by wording.\n")
     (cond
-     ((or supertag-semantic--error supertag-semantic--paused)
-      (insert (if supertag-semantic--error
-                  (format "Unavailable: %s\n" supertag-semantic--error)
-                "Paused.\n"))
-      (supertag-view-helper-insert-action-button
-       "[Retry]" (lambda (button)
-                   (supertag-semantic--retry (button-get button 'supertag-semantic)))
-       node-id "Retry this embedding round" 'supertag-semantic)
-      (insert "\n"))
+     (supertag-semantic--error
+      (supertag-semantic--insert-status-section
+       "Similar" node-id (format "Unavailable: %s" supertag-semantic--error)
+       "[Retry]"
+       (lambda (button)
+         (supertag-semantic--retry (button-get button 'supertag-semantic)))
+       "Retry this embedding round"))
+     (supertag-semantic--paused
+      (supertag-semantic--insert-status-section
+       "Similar" node-id "Paused." "[Retry]"
+       (lambda (button)
+         (supertag-semantic--retry (button-get button 'supertag-semantic)))
+       "Retry this embedding round"))
      ((gethash node-id supertag-semantic--dirty)
-      (insert "Computing… ")
-      (supertag-view-helper-insert-action-button
-       "[Stop]" (lambda (button)
-                  (let ((id (button-get button 'supertag-semantic)))
-                    (supertag-semantic-stop)
-                    (supertag-semantic--refresh id)))
-       node-id "Stop this embedding round" 'supertag-semantic)
-      (insert "\n"))
+      (supertag-semantic--insert-status-section
+       "Similar" node-id "Computing…" "[Stop]"
+       (lambda (button)
+         (let ((id (button-get button 'supertag-semantic)))
+           (supertag-semantic-stop)
+           (supertag-semantic--refresh id)))
+       "Stop this embedding round"))
      (t
       (let* ((source (supertag-semantic--node node-id))
              (content (or (plist-get source :content) ""))
              (query (concat (or (plist-get source :title) "") "\n\n"
                             (substring content 0 (min (length content) supertag-semantic-max-chars))))
              (matches (supertag-semantic--matches node-id)))
-        (if (null matches) (insert "No similar candidates above the threshold.\n")
+        (when matches
+          (insert "\n")
+          (supertag-view-helper-insert-section-chip "Similar" (length matches)
+                                                       'supertag-view-chip3)
           (dolist (match matches)
-            (let* ((id (plist-get match :id)) (node (plist-get match :node))
-                   (title (or (plist-get node :title) id))
-                   (closest (supertag-semantic--closest-passage
-                             query (supertag-semantic--passages (plist-get node :content))))
-                   (passage (car closest))
-                   (hit (> (cdr closest) 0))
-                   (lines (seq-take (split-string (or passage "") "\n")
-                                    supertag-semantic-preview-lines)))
-              (let ((begin (point)))
-                (supertag-view-helper-insert-action-button
-                 title (lambda (button)
-                         (supertag-semantic--visit-passage
-                          (button-get button 'supertag-semantic)
-                          (and hit lines passage)))
-                 id "Visit the original Org node" 'supertag-semantic)
-                (add-text-properties begin (point) (list 'supertag-node-id id)))
-              (insert "  ")
-              (insert (propertize (format "%.3f\n" (plist-get match :score))
-                                  'face 'font-lock-comment-face))
-              (when passage
-                (let ((label (if hit "(closest passage, lexical) " "(node-level) ")))
-                  (dolist (line lines)
-                    (insert (propertize (concat "    > " label line "\n")
-                                        'face 'font-lock-comment-face))
-                    (setq label ""))))
-              (supertag-view-helper-insert-action-button
-               "[View]" (lambda (button) (supertag-view-node-open (button-get button 'supertag-semantic)))
-               id "View this candidate node" 'supertag-semantic)
-              (insert "\n\n")))))))
-    (insert "\n")))
+            (supertag-semantic--insert-match match query))))))))
 
 (provide 'supertag-semantic)
 ;;; supertag-semantic.el ends here

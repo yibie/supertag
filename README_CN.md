@@ -478,8 +478,10 @@ Supertag 以 GPLv3 自由软件协议开发。欢迎在 GitHub 上贡献代码�
 
 ## 调色板
 
-视图颜色默认使用 `blue` 调色板。可用预设为 `blue`、`violet`、`lime`、`warm` 和
-`mono`；使用 `M-x supertag-view-set-palette` 即可切换。
+视图颜色默认使用编辑风格的 `paper` 调色板。可用预设为 `paper`、`neon`、`ink` 和
+`ocean`；使用 `M-x supertag-view-set-palette` 即可切换。Node View 采用杂志式布局：
+顶端显示标签 chip 与来源信息，提供 `[OPEN]`、`[STREAM]`、`[TAG MANAGER]`，按
+`TAB` 可折叠光标所在分节。
 
 ## 配置变量
 
@@ -678,7 +680,7 @@ Supertag 独立 Capture 引擎已退役。记录统一使用标准 `org-capture`
 
 | Variable | Default | Purpose |
 |---|---|---|
-| `supertag-view-palette` | `blue` | Palette used by Supertag views. |
+| `supertag-view-palette` | `paper` | Palette used by Supertag views. |
 
 **supertag-view-helper.el**
 

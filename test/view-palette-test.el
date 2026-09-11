@@ -3,39 +3,24 @@
 ;;; Code:
 
 (require 'ert)
-(require 'cl-lib)
-
-(when load-file-name
-  (add-to-list 'load-path (expand-file-name ".." (file-name-directory load-file-name))))
 (require 'supertag-view-framework)
 
-(defmacro supertag-view-palette-test--with-light-theme (&rest body)
-  "Evaluate BODY with a light frame background."
-  (declare (indent 0) (debug t))
-  `(cl-letf (((symbol-function 'frame-parameter)
-              (lambda (_frame parameter)
-                (when (eq parameter 'background-mode) 'light))))
-     ,@body))
+(ert-deftest supertag-view-palette-default-is-paper ()
+  (should (eq supertag-view-palette 'paper)))
 
-(ert-deftest supertag-view-palette-default-accent-keeps-blue-light-value ()
-  (supertag-view-palette-test--with-light-theme
-    (should (equal "#0066CC" (supertag-view-helper-get-accent-color)))))
+(ert-deftest supertag-view-palette-neon-changes-primary-chip-background ()
+  (let ((original supertag-view-palette))
+    (unwind-protect
+        (progn
+          (supertag-view-apply-palette 'paper)
+          (let ((paper (face-background 'supertag-view-chip1 nil t)))
+            (supertag-view-apply-palette 'neon)
+            (should (eq supertag-view-palette 'neon))
+            (should-not (equal paper (face-background 'supertag-view-chip1 nil t)))))
+      (supertag-view-apply-palette original))))
 
-(ert-deftest supertag-view-palette-violet-changes-accent ()
-  (let ((supertag-view-palette 'violet))
-    (supertag-view-palette-test--with-light-theme
-      (should (equal "#6D28D9" (supertag-view-helper-get-accent-color))))))
-
-(ert-deftest supertag-view-palette-custom-plist-is-honored ()
-  (let ((supertag-view-palette '(:accent ("#123456" . "#ABCDEF"))))
-    (supertag-view-palette-test--with-light-theme
-      (should (equal "#123456" (supertag-view-helper-get-accent-color))))))
-
-(ert-deftest supertag-view-palette-unknown-symbol-falls-back-to-blue ()
-  (let ((supertag-view-palette 'not-a-palette))
-    (supertag-view-palette-test--with-light-theme
-      (should (equal "#0066CC" (supertag-view-helper-get-accent-color))))))
+(ert-deftest supertag-view-palette-rejects-unknown-name ()
+  (should-error (supertag-view-apply-palette 'not-a-palette) :type 'user-error))
 
 (provide 'view-palette-test)
-
 ;;; view-palette-test.el ends here

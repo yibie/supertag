@@ -47,7 +47,7 @@
                 (case-fold-search nil))
             (unwind-protect
                 (with-current-buffer view
-                  (should (string-match-p "ready-work" (buffer-string)))
+                  (should (string-match-p "READY-WORK" (buffer-string)))
                   (should-not (string-match-p "Properties" (buffer-string)))
                   (should-not (string-match-p "STAGE" (buffer-string))))
               (when (buffer-live-p view) (kill-buffer view)))))
@@ -254,7 +254,7 @@
                   (supertag-document-test-save-property file "ALPHA" "updated")
                   (supertag-document-test-drain)
                   (with-current-buffer view
-                    (should (looking-at-p " +vwa-tag"))
+                    (should (get-text-property (point) 'supertag-context))
                     (supertag-view-node-refresh)
                     (princ (format "VWA-WINDOW after point=%s start=%S\n"
                                    (point) (window-start (get-buffer-window view)))))
@@ -272,3 +272,62 @@
                   (should (equal "Node missing not found." (buffer-string)))
                   (should-not supertag-view-node--current-node-id))
               (when (buffer-live-p missing) (kill-buffer missing)))))))))
+
+(ert-deftest supertag-node-view-magazine-omits-empty-reference-chip ()
+  "A Node View does not render an empty References section."
+  (with-temp-buffer
+    (supertag-view-node-mode)
+    (cl-letf (((symbol-function 'supertag-view-reference-insert-sections) #'ignore)
+              ((symbol-function 'supertag-ai-insert-section) #'ignore)
+              ((symbol-function 'supertag-semantic-insert-section) #'ignore)
+              ((symbol-function 'supertag-view-node--insert-named-links-section) #'ignore)
+              ((symbol-function 'supertag-concept-node-p) (lambda (_node) nil)))
+      (supertag-view-node--render-from-state
+       '(:id "abcdef012345" :node (:id "abcdef012345" :title "Heading" :file "/tmp/heading.org")
+         :tags nil)))
+    (should-not (string-match-p "REFERENCES /" (buffer-string)))
+    (should (string-match-p "SUPERTAG / NODE  /  ABCDEF01" (buffer-string)))))
+
+(ert-deftest supertag-node-view-magazine-masthead-tag-keeps-context-property ()
+  "A masthead chip remains a selectable Tag context."
+  (with-temp-buffer
+    (supertag-view-node-mode)
+    (cl-letf (((symbol-function 'supertag-view-reference-insert-sections) #'ignore)
+              ((symbol-function 'supertag-ai-insert-section) #'ignore)
+              ((symbol-function 'supertag-semantic-insert-section) #'ignore)
+              ((symbol-function 'supertag-view-node--insert-named-links-section) #'ignore)
+              ((symbol-function 'supertag-concept-node-p) (lambda (_node) nil)))
+      (supertag-view-node--render-from-state
+       '(:id "abcdef012345" :node (:id "abcdef012345" :title "Heading") :tags ("project"))))
+    (goto-char (point-min))
+    (search-forward " PROJECT ")
+    (let ((position (match-beginning 0)))
+      (should (get-text-property position 'supertag-context))
+      (should (eq (get-text-property position 'type) :tag))
+      (should (equal (get-text-property position 'tag-id) "project")))))
+
+(ert-deftest supertag-node-view-magazine-tab-folds-chip-section ()
+  "TAB creates an invisible fold overlay for a chip section."
+  (with-temp-buffer
+    (supertag-view-node-mode)
+    (cl-letf (((symbol-function 'supertag-view-reference-insert-sections)
+               (lambda (_node-id)
+                 (insert "\n")
+                 (supertag-view-helper-insert-section-chip "References" 1 'supertag-view-chip1)
+                 (insert "  Entry\n      Excerpt\n")))
+              ((symbol-function 'supertag-ai-insert-section) #'ignore)
+              ((symbol-function 'supertag-semantic-insert-section) #'ignore)
+              ((symbol-function 'supertag-view-node--insert-named-links-section) #'ignore)
+              ((symbol-function 'supertag-concept-node-p) (lambda (_node) nil)))
+      (supertag-view-node--render-from-state
+       '(:id "abcdef012345" :node (:id "abcdef012345" :title "Heading") :tags nil)))
+    (goto-char (point-min))
+    (search-forward " REFERENCES / 01 ")
+    (beginning-of-line)
+    (supertag-view-node-toggle-section)
+    (let ((fold (seq-find (lambda (overlay)
+                            (overlay-get overlay 'supertag-view-node-fold))
+                          (overlays-in (point-min) (point-max)))))
+      (should fold)
+      (should (overlay-get fold 'invisible))
+      (should (equal (substring-no-properties (overlay-get fold 'after-string)) "  …")))))

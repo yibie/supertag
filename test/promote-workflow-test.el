@@ -962,7 +962,7 @@
                                  (point-min) (point-max)))))))))
 
 
-(ert-deftest supertag-promote-node-view-mention-section-requires-concept ()
+(ert-deftest supertag-promote-node-view-omits-empty-mention-section ()
   (supertag-promote-test--isolated
     (let ((concept (supertag-promote-test--file tmp "concepts.org"
                     "* Same title\n:PROPERTIES:\n:ID: concept-node\n:END:\nBody\n"))
@@ -975,8 +975,9 @@
           (with-current-buffer buffer (should-not (buffer-modified-p)))
           (supertag-view-node-open (car entry))
           (with-current-buffer supertag-view-node--buffer-name
-            (should (eq (not (null (string-match-p "Unlinked Mentions" (buffer-string))))
-                        (equal (car entry) "concept-node"))))
+            ;; The magazine view renders a mentions chip only when it has
+            ;; entries, including for a concept node.
+            (should-not (string-match-p "UNLINKED MENTIONS /" (buffer-string))))
           (should (equal disk (supertag-promote-test--disk (cdr entry))))
           (with-current-buffer buffer
             (should (equal disk (buffer-string)))

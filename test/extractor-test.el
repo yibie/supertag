@@ -228,11 +228,16 @@
                        (plist-get node :title)))))))
 
 (ert-deftest extractor-tags ()
-  "Tags extractor produces occurrences from Org tags and inline #tags."
-  (extractor-test--with-headline "* Tagged :orgtag:"
-    (let ((result (supertag-extractor--tags hl "/tmp/f" '(:full-rescan-p t))))
-      (should (plist-get result :tag-occurrences))
-      (should (member "orgtag" (plist-get result :tag-occurrences))))))
+  "Org-native :tag: syntax is imported only when explicitly enabled."
+  (extractor-test--with-headline "* Tagged #inline :orgtag:"
+    (let ((supertag-sync-import-org-tags nil))
+      (should (equal '("inline")
+                     (plist-get (supertag-extractor--tags hl "/tmp/f" '(:full-rescan-p t))
+                                :tag-occurrences))))
+    (let ((supertag-sync-import-org-tags t))
+      (should (member "orgtag"
+                      (plist-get (supertag-extractor--tags hl "/tmp/f" '(:full-rescan-p t))
+                                 :tag-occurrences))))))
 
 (ert-deftest extractor-inline-tags-respect-org-prose-boundaries ()
   "Inline tags come from this node's direct Org prose, not nested objects."
@@ -259,7 +264,7 @@
                    (supertag-extractor--title headline "/tmp/f" nil)
                    :title)))
       (should (equal (sort tags #'string<)
-                     '("body" "list" "native" "quote" "title")))
+                     '("body" "list" "quote" "title")))
       (should
        (equal title
               "[[file:Copyright.xhtml#Copyright.xhtml][Label #linked]] word#embedded ~#code~")))))

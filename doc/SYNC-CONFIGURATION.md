@@ -176,7 +176,7 @@ Auto-switching on buffer change is off by default. To enable it:
 | Variable | Default | Description |
 |---|---|---|
 | `supertag-tag-style` | `'inline` | How tags are written to Org headlines: `inline` (#tags), `org` (:tag:), `both`, or `auto`. |
-| `supertag-sync-legacy-tags-policy` | `'read-only` | How to handle legacy `:tag:` in headlines: `read-only` (import, don't modify), `lazy-convert` (convert on edit), `preserve`, or `ignore`. |
+| `supertag-sync-import-org-tags` | `nil` | When non-nil, read-only import native Org `:tag:` syntax as tag occurrences. |
 
 ### Internal State File
 

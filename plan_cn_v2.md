@@ -116,7 +116,7 @@
 | `services-ui`、`ui-commands` | 随标签、节点、视图的主体合并逐节取出；Move 是 Node 内部节，sync-status/resync 等入口归 Sync。剩余职责清零后删除旧容器，不改名继续保留万能 UI 层 |
 | `ui-completion` 的共用接线 | 同一个 mode 同时安装/撤除 Tag 与 Link CAPF，且保持 Link 优先及 Tag 的 post-self-insert hook；全局模式还处理已打开的 Org buffer。Tag 算法/写入归 Tags，Link 算法归 Link，模式启停只保留一个 owner：由入口装配或工单确定的一方调用另一方窄入口。不拆两套 mode，不新增永久 completion-service 层 |
 | 白名单 `view-framework` 的业务选择器 | `supertag-view--read-tag` 枚举标签、读取选择、推导后代并构造输入，实际被 Stream 的交互入口调用。随 Tags 切片迁属业务选择，Framework 只留通用机制；保留返回形状及后代语义，不因它在白名单文件里就永久留下 Framework→Tag UI 的反向依赖 |
-| 白名单 `services-sync` 的混合部分 | `supertag-tag-style` 是文本写入格式，`supertag-sync-legacy-tags-policy` 是读取/转换政策，都不是 SVG/font-lock 显示配置；即便同属标签相关代码，也须保留各自写入/解析责任，不因同名当作显示开关搬动。通用遍历/条件查询候选归 Store/Query；extractor 的优先级注册接口留 Sync。`supertag-sync-export-file` 及生成 Org 内容 helper 仍存在直接文件导出代码，先登记、再查消费者与权限契约，不因“Sync 已归位”漏查，也不凭本轮静态清点保留为第二 writer 或直接删除 |
+| 白名单 `services-sync` 的混合部分 | `supertag-tag-style` 是文本写入格式，`supertag-sync-import-org-tags` 是原生 Org 标签的只读导入开关，都不是 SVG/font-lock 显示配置；即便同属标签相关代码，也须保留各自写入/解析责任，不因同名当作显示开关搬动。通用遍历/条件查询候选归 Store/Query；extractor 的优先级注册接口留 Sync。`supertag-sync-export-file` 及生成 Org 内容 helper 仍存在直接文件导出代码，先登记、再查消费者与权限契约，不因“Sync 已归位”漏查，也不凭本轮静态清点保留为第二 writer 或直接删除 |
 
 特别约束：`ops-node/tag/relation` 同时服务投影维护与用户操作，不能整包合入包含 UI 的特性后，要求 Sync 再加载该 UI。先区分 Store 原语、Sync 投影维护和特性决策，再确定函数的实际落点。保留接口并不要求保留旧文件；移动接口也不等于改变数据所有权。
 

@@ -56,6 +56,20 @@
       (should (equal "media/book" (plist-get (supertag-tag-get slash) :name)))
       (should-not (supertag-tag-parent slash)))))
 
+(ert-deftest supertag-path-org-native-tags-require-explicit-import ()
+  (with-temp-buffer
+    (org-mode)
+    (insert "* Note #book :ATTACH:@person:\n")
+    (let ((headline (car (org-element-contents (org-element-parse-buffer)))))
+      (let ((supertag-sync-import-org-tags nil))
+        (should (equal '("book")
+                       (plist-get (supertag-extractor--tags headline nil nil)
+                                  :tag-occurrences))))
+      (let ((supertag-sync-import-org-tags t))
+        (should (equal '("book" "ATTACH" "@person")
+                       (plist-get (supertag-extractor--tags headline nil nil)
+                                  :tag-occurrences)))))))
+
 (ert-deftest supertag-path-import-does-not-require-parent ()
   (supertag-path-test--with-store
     (supertag--create-tag-entities '("media/book"))
@@ -1813,7 +1827,7 @@
       (supertag-tag-create '(:id "alpha-id" :name "alpha"))
       (supertag-tag-create '(:id "beta-id" :name "beta"))
       (let ((supertag-tag-style (car pair))
-            (supertag-sync-legacy-tags-policy 'read-only)
+            (supertag-sync-import-org-tags nil)
             (before (supertag-document-test-disk file))
             (real-save (symbol-function 'save-buffer))
             (real-project (symbol-function 'supertag-service-org--project-current-node))

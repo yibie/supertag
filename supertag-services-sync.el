@@ -348,18 +348,11 @@ With the default interval, this caps retries to about 2 minutes."
 ;; Tag write-format configuration and token rules are owned by supertag-tag.
 
 
-;; Legacy tag handling policy
-(defcustom supertag-sync-legacy-tags-policy 'read-only
-  "How to handle legacy org native :tag: found in headlines.
-Supported values:
-- 'read-only   => Read and import to DB, do not modify files (default).
-- 'lazy-convert => When touching a headline, convert :tag: to inline #tags.
-- 'preserve    => Always preserve :tag: in files.
-- 'ignore      => Do not read or import :tag: into the database."
-  :type '(choice (const :tag "Read only" read-only)
-                 (const :tag "Lazy convert on edit" lazy-convert)
-                 (const :tag "Preserve in files" preserve)
-                 (const :tag "Ignore" ignore))
+;; Native Org tags are not part of the Supertag namespace unless opted in.
+(defcustom supertag-sync-import-org-tags nil
+  "When non-nil, import Org native `:tag:' syntax as tag occurrences.
+Import is read-only and never modifies Org files."
+  :type 'boolean
   :group 'supertag-sync)
 
 ;;; Variables
@@ -1821,33 +1814,6 @@ TAG-POSITION can be :before-title, :after-title, or nil (default after title)."
        (t
         (format "%s %s%s\n" stars title (or tags-part ""))))))
 
-  (defun supertag--apply-legacy-tags-policy (buffer beg end tags)
-    "Apply legacy tags policy within BUFFER on region [BEG, END].
-If `supertag-sync-legacy-tags-policy' is 'lazy-convert, remove trailing
-org native :tag: from headline line and ensure inline-tags exist.
-Returns non-nil when a modification was performed."
-    (when (eq supertag-sync-legacy-tags-policy 'lazy-convert)
-      (with-current-buffer buffer
-        (save-excursion
-          (save-restriction
-            (narrow-to-region beg end)
-            (goto-char (point-min))
-            (when (looking-at "^\*+ .*")
-              (let ((changed nil))
-                ;; Remove trailing :tag: block
-                (when (re-search-forward "\s-+:[^\n:]+:" (line-end-position) t)
-                  (replace-match "")
-                  (setq changed t))
-                ;; Ensure inline #tags present if TAGS provided
-                (when (and tags (> (length tags) 0))
-                  (end-of-line)
-                  (insert (supertag--format-tags-by-style tags 'inline))
-                  (setq changed t))
-                changed)))))))
-
-
-
-
 (defun supertag--process-node-references (node-data counters)
   "Project Org reference relations for NODE-DATA without modifying Org files.
 NODE-DATA is the node plist containing reference information.
@@ -2088,14 +2054,14 @@ Returns: :olp (list of ancestor titles from root to current)."
 
 (defun supertag-extractor--tags (headline _file _ctx)
   "Extract tags from a headline element.
-Reads inline #tags from title/content and native org :tags: unless the
-legacy-tag policy is `ignore'.
+Reads inline #tags from title/content and, when
+`supertag-sync-import-org-tags' is non-nil, native Org :tags:.
 Returns: :tag-occurrences (list of sanitized Org tokens)."
   (let* ((inline-tags (supertag--extract-inline-tags headline))
          (org-native-tags
-          (if (eq supertag-sync-legacy-tags-policy 'ignore)
-              '()
-            (or (supertag--extract-org-headline-tags headline) '())))
+          (if supertag-sync-import-org-tags
+              (or (supertag--extract-org-headline-tags headline) '())
+            '()))
          (all-tags (supertag--merge-and-sanitize-tags
                     inline-tags org-native-tags)))
     (list :tag-occurrences all-tags)))

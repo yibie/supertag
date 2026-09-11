@@ -245,23 +245,6 @@
        (plist-put (copy-tree (supertag-tag-get id)) :aliases '("shared"))))
     (should-error (supertag-tag-resolve-occurrence "shared"))))
 
-(ert-deftest tag-path-incremental-sync-respects-native-tag-policy ()
-  (with-temp-buffer
-    (org-mode)
-    (insert "* Node :legacy:\n")
-    (let ((headline
-           (car (org-element-contents (org-element-parse-buffer)))))
-      (dolist (policy '(read-only preserve lazy-convert))
-        (let ((supertag-sync-legacy-tags-policy policy))
-          (should (equal '("legacy")
-                         (plist-get
-                          (supertag-extractor--tags headline nil nil)
-                          :tag-occurrences)))))
-      (let ((supertag-sync-legacy-tags-policy 'ignore))
-        (should-not
-         (plist-get (supertag-extractor--tags headline nil nil)
-                    :tag-occurrences))))))
-
 (ert-deftest nested-tag-schema-tree-uses-explicit-parents-only ()
   (tag-path-test--with-clean-store
     (tag-path-test--put-tag "diary")

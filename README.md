@@ -702,7 +702,7 @@ the opt-in Supertag integration remains available and is disabled by default.
 | `supertag-sync-file-pattern` | `".org$"` | Regular expression for matching files to synchronize. |
 | `supertag-sync-hash-props` | `list of 8 entries, see docstring` | Additional properties to include when calculating node hashes. |
 | `supertag-sync-idle-delay` | `1.0` | Seconds of idle time required before automatic sync runs. |
-| `supertag-sync-legacy-tags-policy` | `read-only` | How to handle legacy org native :tag: found in headlines. |
+| `supertag-sync-import-org-tags` | `nil` | When non-nil, import Org native `:tag:` syntax as tag occurrences. |
 | `supertag-sync-max-delete-count` | `1000` | Maximum number of nodes allowed to be deleted in a single GC pass. |
 | `supertag-sync-max-delete-ratio` | `0.5` | Maximum allowed ratio of nodes to delete in a single GC pass. |
 | `supertag-sync-node-creation-level` | `1` | Minimum heading level for automatic node creation. |

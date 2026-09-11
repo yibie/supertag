@@ -945,8 +945,8 @@
             (should (equal "TODO" (plist-get data :todo)))
             (should (equal "#A" (plist-get data :priority)))
             (should (equal "Heading" (plist-get data :title)))
-            (should (equal '("inline" "orgtag") (plist-get data :tag-occurrences)))
-            (should (equal '("inline" "orgtag") (plist-get data :unresolved-tags)))
+            (should (equal '("inline") (plist-get data :tag-occurrences)))
+            (should (equal '("inline") (plist-get data :unresolved-tags)))
             (should-not (plist-get data :tags))
             (let ((value (plist-get (plist-get data :properties) :CUSTOM)))
               ;; org-element-at-point may expose a deferred property in newer Org.

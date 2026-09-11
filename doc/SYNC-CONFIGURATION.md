@@ -175,7 +175,6 @@ Auto-switching on buffer change is off by default. To enable it:
 
 | Variable | Default | Description |
 |---|---|---|
-| `supertag-tag-style` | `'inline` | How tags are written to Org headlines: `inline` (#tags), `org` (:tag:), `both`, or `auto`. |
 | `supertag-sync-import-org-tags` | `nil` | When non-nil, read-only import native Org `:tag:` syntax as tag occurrences. |
 
 ### Internal State File
@@ -230,8 +229,7 @@ For a moderate-sized Org directory (a few hundred files or fewer):
   ;; Wait 5 seconds of idle time before syncing
   (setq supertag-sync-idle-delay 5.0)
 
-  ;; Tag style
-  (setq supertag-tag-style 'inline)
+  ;; Supertag always writes tags as inline #tag tokens.
 
   ;; First time: run M-x supertag-sync-full-rescan to build the initial Document Projection
   )

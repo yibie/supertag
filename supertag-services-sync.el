@@ -681,8 +681,7 @@ Returns a list of exported node data."
   (defun supertag--generate-org-content (nodes)
   "Helper function to generate Org content from node plists.
 NODES is a list of node plists.
-Returns a string containing the Org content.
-Respects `supertag-tag-style` configuration for tag formatting."
+Returns a string containing the Org content."
     (with-temp-buffer
       (dolist (node nodes)
         (let* ((title (plist-get node :title))
@@ -690,11 +689,8 @@ Respects `supertag-tag-style` configuration for tag formatting."
                (level (or (plist-get node :level) 1))
                (content (or (plist-get node :content) ""))
                (id (plist-get node :id))
-               (file (plist-get node :file))
-               ;; Use the configured tag style
-               (tag-style (supertag--resolve-tag-style node file))
-               (tags-part (supertag--format-tags-by-style tags tag-style)))
-          ;; Reconstruct the node with configured tag formatting
+               (tags-part (supertag--format-inline-tags tags)))
+          ;; Reconstruct the node with inline tag formatting.
           (insert (format "%s %s%s\n"
                           (make-string level ?*)
                           title
@@ -1799,13 +1795,12 @@ Return a list of tag strings, or an empty list if none."
 
 
 
-  (defun supertag--render-org-headline (level title tags file node &optional style tag-position)
+  (defun supertag--render-org-headline (level title tags &optional tag-position)
     "Render an Org headline line given LEVEL, TITLE and TAGS.
 Returns a single line string ending with a newline.
 TAG-POSITION can be :before-title, :after-title, or nil (default after title)."
-    (let* ((resolved (or style (supertag--resolve-tag-style node file)))
-           (stars (make-string (max 1 (or level 1)) ?*))
-           (tags-part (when tags (supertag--format-tags-by-style tags resolved))))
+    (let* ((stars (make-string (max 1 (or level 1)) ?*))
+           (tags-part (supertag--format-inline-tags tags)))
       (cond
        ;; Tags before title: * #tag1 #tag2 Title
        ((eq tag-position :before-title)

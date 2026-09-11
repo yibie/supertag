@@ -49,7 +49,7 @@
 (autoload 'supertag--strip-inline-tags "supertag-services-sync")
 (declare-function supertag--strip-inline-tags "supertag-services-sync" (headline))
 (autoload 'supertag--render-org-headline "supertag-services-sync")
-(declare-function supertag--render-org-headline "supertag-services-sync" (level title tags file node &optional style tag-position))
+(declare-function supertag--render-org-headline "supertag-services-sync" (level title tags &optional tag-position))
 
 (declare-function supertag-reference-materialize "supertag-link"
                   (beg-marker end-marker target-id title))
@@ -402,7 +402,7 @@ properties survive; only missing properties and additive tags are applied."
     (unless (cl-every (lambda (tag) (not (string-match-p "[[:space:]#:]" tag))) tags)
       (user-error "Template tags must be safe Org tags"))
     (supertag-service-org--preflight-create
-     (supertag--render-org-headline 1 "Preflight" tags file nil) content)
+     (supertag--render-org-headline 1 "Preflight" tags) content)
     (with-current-buffer source
       (save-excursion
         (save-restriction

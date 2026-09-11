@@ -1800,16 +1800,10 @@
 (ert-deftest supertag-path-remove-cold-menu-real-lazy-provider ()
   (supertag-path-test--d6-cold 'menu))
 
-;;; D7 retained write-format and token rules, exercised before migration.
-(ert-deftest supertag-path-write-format-and-token-merge-preserve-contract ()
-  (dolist (pair '((inline . " #a #b") (org . " :a:b:")
-                  (both . " #a #b :a:b:") (auto . " #a #b")
-                  (nil . " #a #b") (unknown . " #a #b")))
-    (should (equal (cdr pair) (supertag--format-tags-by-style '("a" "b") (car pair))))
-    (should (equal "" (supertag--format-tags-by-style nil (car pair))))
-    (let ((supertag-tag-style (car pair)))
-      (should (eq (if (eq (car pair) 'auto) 'inline (car pair))
-                  (supertag--resolve-tag-style nil "/unused-context.org")))))
+;;; D7 retained inline-write and token rules, exercised before migration.
+(ert-deftest supertag-path-inline-write-format-and-token-merge-preserve-contract ()
+  (should (equal " #a #b" (supertag--format-inline-tags '("a" "b"))))
+  (should (equal "" (supertag--format-inline-tags nil)))
   (should (equal '("one" "two_words" "three")
                  (supertag--merge-and-sanitize-tags
                   '(" #one " nil "two words" "one") '("two_words" "three" nil))))
@@ -1818,43 +1812,37 @@
   (should-error (supertag--merge-and-sanitize-tags '("") nil))
   (should-error (supertag--merge-and-sanitize-tags '(" # ") nil)))
 
-(ert-deftest supertag-path-four-write-styles-create-save-then-project ()
-  (dolist (pair '((inline . "* D7 #alpha #beta")
-                  (org . "* D7 :alpha:beta:")
-                  (both . "* D7 #alpha #beta :alpha:beta:")
-                  (auto . "* D7 #alpha #beta")))
-    (supertag-document-test-with-vault
-      (supertag-tag-create '(:id "alpha-id" :name "alpha"))
-      (supertag-tag-create '(:id "beta-id" :name "beta"))
-      (let ((supertag-tag-style (car pair))
-            (supertag-sync-import-org-tags nil)
-            (before (supertag-document-test-disk file))
-            (real-save (symbol-function 'save-buffer))
-            (real-project (symbol-function 'supertag-service-org--project-current-node))
-            order id)
-        (cl-letf (((symbol-function 'save-buffer)
-                   (lambda (&rest args) (push 'save order) (apply real-save args)))
-                  ((symbol-function 'supertag-service-org--project-current-node)
-                   (lambda (node-id) (push 'project order) (funcall real-project node-id))))
-          (setq id (supertag-service-org-create-node file "D7" '("alpha" "beta")
-                                                   '(:properties (("NOTE" . "kept")) :body "Own body\n"))))
-        (should (equal '(save project) (nreverse order)))
-        (should (stringp id))
-        (let ((disk (supertag-document-test-disk file)) (node (supertag-node-get id)))
-          (should (string-prefix-p before disk))
-          (should (string-match-p (regexp-quote (concat (cdr pair) "\n")) disk))
-          (should (string-match-p (concat ":ID:[ \t]+" (regexp-quote id) "[ \t]*\n") disk))
-          (should (equal (sort (copy-sequence (plist-get node :tags)) #'string<) '("alpha-id" "beta-id")))
-          (should (equal (file-truename file) (plist-get node :file)))
-          (should (equal id (plist-get node :id)))
-          (should (= 1 (plist-get node :level)))
-          (should (equal "D7" (plist-get node :title)))
-          (should (string-match-p "Own body" (plist-get node :content)))
-          (with-current-buffer (find-file-noselect file)
-            (should-not (buffer-modified-p)) (should (equal disk (buffer-string)))))))))
+(ert-deftest supertag-path-inline-write-create-save-then-project ()
+  (supertag-document-test-with-vault
+    (supertag-tag-create '(:id "alpha-id" :name "alpha"))
+    (supertag-tag-create '(:id "beta-id" :name "beta"))
+    (let ((before (supertag-document-test-disk file))
+          (real-save (symbol-function 'save-buffer))
+          (real-project (symbol-function 'supertag-service-org--project-current-node))
+          order id)
+      (cl-letf (((symbol-function 'save-buffer)
+                 (lambda (&rest args) (push 'save order) (apply real-save args)))
+                ((symbol-function 'supertag-service-org--project-current-node)
+                 (lambda (node-id) (push 'project order) (funcall real-project node-id))))
+        (setq id (supertag-service-org-create-node file "D7" '("alpha" "beta")
+                                                 '(:properties (("NOTE" . "kept")) :body "Own body\n"))))
+      (should (equal '(save project) (nreverse order)))
+      (should (stringp id))
+      (let ((disk (supertag-document-test-disk file)) (node (supertag-node-get id)))
+        (should (string-prefix-p before disk))
+        (should (string-match-p (regexp-quote "* D7 #alpha #beta\n") disk))
+        (should (string-match-p (concat ":ID:[ \t]+" (regexp-quote id) "[ \t]*\n") disk))
+        (should (equal (sort (copy-sequence (plist-get node :tags)) #'string<) '("alpha-id" "beta-id")))
+        (should (equal (file-truename file) (plist-get node :file)))
+        (should (equal id (plist-get node :id)))
+        (should (= 1 (plist-get node :level)))
+        (should (equal "D7" (plist-get node :title)))
+        (should (string-match-p "Own body" (plist-get node :content)))
+        (with-current-buffer (find-file-noselect file)
+          (should-not (buffer-modified-p)) (should (equal disk (buffer-string))))))))
 
-;;; D7 configuration and Query first-use in separate real processes.
-(defun supertag-path-test--d7-cold (entry preset)
+;;; D7 Query first-use and loading graph in separate real processes.
+(defun supertag-path-test--d7-cold (entry)
   (supertag-document-test-with-vault
     (dolist (props '((:id "parent-id" :name "topic")
                      (:id "child-id" :name "child" :extends "parent-id")
@@ -1885,25 +1873,14 @@
                           org-id-locations nil org-id-files nil org-id-track-globally nil
                           supertag-sync-directories nil supertag-active-sync-directory nil
                           after-init-time nil make-backup-files nil auto-save-default nil load-prefer-newer t)
-                    ,(unless (eq preset :unbound) `(setq supertag-tag-style ',preset))
                     (load (expand-file-name ,(pcase entry ('sync "supertag-services-sync.el")
                                                (_ "supertag-tag.el")) ,root) nil nil t)
                     (princ "D7-ENTRY-LOADED\n")
                     (defun d7-check ()
-                      (dolist (symbol '(supertag--merge-and-sanitize-tags supertag--resolve-tag-style
-                                         supertag--format-tags-by-style supertag-view-api-nodes-by-tag))
+                      (dolist (symbol '(supertag--merge-and-sanitize-tags supertag--format-inline-tags
+                                         supertag-view-api-nodes-by-tag))
                         (unless (equal (symbol-file symbol 'defun) ,(expand-file-name "supertag-tag.el" root))
-                          (error "D7 function owner is not Tag: %S" symbol)))
-                      (unless (equal (symbol-file 'supertag-tag-style 'defvar) ,(expand-file-name "supertag-tag.el" root))
-                        (error "D7 variable owner is not Tag"))
-                      (should (eq supertag-tag-style ',(if (eq preset :unbound) 'inline preset)))
-                      (should (eq 'inline (eval (car (get 'supertag-tag-style 'standard-value)) t)))
-                      (should (equal (get 'supertag-tag-style 'custom-type)
-                                     '(choice (const :tag "Inline #tags" inline)
-                                              (const :tag "Org :tag:" org)
-                                              (const :tag "Both" both) (const :tag "Auto" auto))))
-                      (should (= 1 (cl-count '(supertag-tag-style custom-variable)
-                                             (get 'supertag-sync 'custom-group) :test #'equal))))
+                          (error "D7 function owner is not Tag: %S" symbol))))
                     (d7-check)
                     (when (eq ',entry 'tag)
                       (should (featurep 'supertag-service-org))
@@ -1928,8 +1905,8 @@
                     (should-not (autoloadp (symbol-function 'supertag-query-node-ids-by-tag)))
                     (should (equal (symbol-file 'supertag-query-node-ids-by-tag 'defun)
                                    ,(expand-file-name "supertag-query.el" root)))
-                    (princ (format "D7-FIRST-QUERY %S/%S Query=%S Sync=%S UI=%S\n"
-                                   ',entry ',preset (featurep 'supertag-query)
+                    (princ (format "D7-FIRST-QUERY %S Query=%S Sync=%S UI=%S\n"
+                                   ',entry (featurep 'supertag-query)
                                    (featurep 'supertag-services-sync) (featurep 'supertag-services-ui)))
                     (dolist (name '("supertag-services-sync.el" "supertag-tag.el"))
                       (load (expand-file-name name ,root) nil nil t)
@@ -1950,14 +1927,14 @@
                  (output (buffer-string)))
             (unless (and (equal status 0) (string-match-p "D7-ENTRY-LOADED" output)
                          (string-match-p "D7-COLD-PASS" output))
-              (ert-fail (format "D7 %S/%S exit=%S\n%s" entry preset status output)))
-            (princ (format "D7 %S/%S exit0 ENTRY-LOADED/PASS\n" entry preset))
+              (ert-fail (format "D7 %S exit=%S\n%s" entry status output)))
+            (princ (format "D7 %S exit0 ENTRY-LOADED/PASS\n" entry))
             (when (string-match "D7-FIRST-QUERY[^\n]*" output) (princ (concat (match-string 0 output) "\n")))))))))
 
-(ert-deftest supertag-path-write-style-cold-tag-presets-and-query ()
-  (dolist (preset '(:unbound org both auto nil)) (supertag-path-test--d7-cold 'tag preset)))
-(ert-deftest supertag-path-write-style-cold-sync-first-and-query ()
-  (supertag-path-test--d7-cold 'sync 'both))
+(ert-deftest supertag-path-cold-tag-query-load-graph ()
+  (supertag-path-test--d7-cold 'tag))
+(ert-deftest supertag-path-cold-sync-first-query-load-graph ()
+  (supertag-path-test--d7-cold 'sync))
 
 ;;; D8 original public read/display contracts, before ownership changes.
 (ert-deftest supertag-path-adapter-real-directory-and-descriptor-selection ()
@@ -2087,7 +2064,7 @@
                           org-id-locations nil org-id-files nil org-id-track-globally nil
                           supertag-sync-directories nil supertag-active-sync-directory nil
                           after-init-time nil make-backup-files nil auto-save-default nil load-prefer-newer t
-                          supertag-tag-style 'both global-supertag-ui-completion-mode nil
+                          global-supertag-ui-completion-mode nil
                           supertag-view-style-auto-enable nil)
                     (load (expand-file-name ,(if (eq operation 'node-first)
                                                 "supertag-node.el" "supertag-tag.el") ,root) nil nil t)
@@ -2104,7 +2081,6 @@
                                          supertag-view--resolve-node-tags supertag-view-helper-format-tag-value))
                         (unless (equal (symbol-file symbol 'defun) ,(expand-file-name "supertag-tag.el" root))
                           (error "D8 owner is not Tag: %S" symbol)))
-                      (should (eq supertag-tag-style 'both))
                       (should-not global-supertag-ui-completion-mode)
                       (should-not supertag-view-style-auto-enable))
                     (d8-owners)
@@ -2286,7 +2262,7 @@
                           org-id-locations nil org-id-files nil org-id-track-globally nil
                           supertag-sync-directories nil supertag-active-sync-directory nil
                           after-init-time nil make-backup-files nil auto-save-default nil load-prefer-newer t
-                          supertag-tag-style 'both global-supertag-ui-completion-mode nil
+                          global-supertag-ui-completion-mode nil
                           supertag-view-style-auto-enable nil)
                     (load (expand-file-name ,(pcase entry ('scan "supertag-query.el")
                                                ('query "supertag-query.el")
@@ -2298,7 +2274,6 @@
                         (unless (and (not (autoloadp (symbol-function symbol)))
                                      (equal (symbol-file symbol 'defun) ,(expand-file-name "supertag-tag.el" root)))
                           (error "D9 owner is not Tag: %S" symbol)))
-                      (should (eq supertag-tag-style 'both))
                       (should-not global-supertag-ui-completion-mode)
                       (should-not supertag-view-style-auto-enable))
                     (defun d9-pure-load-graph ()

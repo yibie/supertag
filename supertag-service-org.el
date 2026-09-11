@@ -151,7 +151,7 @@ default Concept preset targets `concepts.org' under the effective vault."
                   (file))
 (autoload 'supertag--render-org-headline "supertag-services-sync")
 (declare-function supertag--render-org-headline "supertag-services-sync"
-                  (level title tags file node &optional style tag-position))
+                  (level title tags &optional tag-position))
 (autoload 'supertag-node-sync-current-buffer "supertag-services-sync")
 (declare-function supertag-node-sync-current-buffer "supertag-services-sync"
                   (node-id))
@@ -1160,7 +1160,7 @@ new node ID."
          (create-file (plist-get normalized-content :create-file))
          (parent (file-name-directory target-file))
          (headline (supertag--render-org-headline
-                    1 title tags target-file nil)))
+                    1 title tags)))
     (unless (or (and (file-exists-p target-file)
                      (file-regular-p target-file))
                 (and create-file parent (file-directory-p parent)

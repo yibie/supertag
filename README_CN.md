@@ -648,7 +648,6 @@ Supertag 独立 Capture 引擎已退役。记录统一使用标准 `org-capture`
 | `supertag-sync-smart-detection-verbose` | `nil` | If non-nil, show messages about smart detection decisions during sync. |
 | `supertag-sync-snapshot-guard` | `t` | When non-nil, sync uses snapshot state to guard destructive operations. |
 | `supertag-sync-state-file` | `"<data-directory>/sync-state.el"` | File to store sync state data. |
-| `supertag-tag-style` | `inline` | Style to write tags when generating or inserting Org headlines. |
 | `supertag-text-link-relation-types` | `nil` | Exact non-empty Org link types that project as named relations. |
 
 **supertag-services-template.el**

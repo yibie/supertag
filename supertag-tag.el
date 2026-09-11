@@ -3648,19 +3648,7 @@ Returns the selected tag ID (a string), or nil if canceled."
       (user-error "Node has no tags to select from."))
     (supertag-ui-read-tag "Select tag: " tags nil nil)))
 
-;;; Org Tag write formats, token merging and membership reads.
-(defcustom supertag-tag-style 'inline
-  "Style to write tags when generating or inserting Org headlines.
-Supported values:
-- 'inline  => Title with inline #tags.
-- 'org     => Title with org native :tag: syntax.
-- 'both    => Combine both inline and org native forms.
-- 'auto    => Heuristic; currently defaults to 'inline."
-  :type '(choice (const :tag "Inline #tags" inline)
-                 (const :tag "Org :tag:" org)
-                 (const :tag "Both" both)
-                 (const :tag "Auto" auto))
-  :group 'supertag-sync)
+;;; Inline tag writes, token merging and membership reads.
 
 (defun supertag--merge-and-sanitize-tags (tags-1 tags-2)
     "Merge two tag lists and sanitize names.
@@ -3680,26 +3668,13 @@ Returns a de-duplicated list preserving order preference of TAGS-1."
           (puthash tag tag seen)))
       (nreverse out)))
 
-(defun supertag--resolve-tag-style (&optional node file)
-    "Resolve write style for tags for NODE/FILE context.
-Currently returns `supertag-tag-style`, using 'inline when value is 'auto."
-    (let ((style supertag-tag-style))
-      (if (eq style 'auto) 'inline style)))
-
-(defun supertag--format-tags-by-style (tags style)
-    "Return a string representing TAGS according to STYLE.
-Result includes a leading space when non-empty, else an empty string."
-    (let* ((inline-part (when tags (mapconcat (lambda (tag) (concat "#" tag)) tags " ")))
-           (org-part (when tags (concat ":" (mapconcat #'identity tags ":") ":"))))
-      (pcase style
-        ('inline (if inline-part (concat " " inline-part) ""))
-        ('org    (if org-part    (concat " " org-part)    ""))
-        ('both   (cond
-                  ((and inline-part org-part) (concat " " inline-part " " org-part))
-                  (inline-part (concat " " inline-part))
-                  (org-part (concat " " org-part))
-                  (t "")))
-        (_ (if inline-part (concat " " inline-part) "")))))
+(defun supertag--format-inline-tags (tags)
+    "Return TAGS in Supertag's inline #tag write format.
+The result has a leading space when TAGS is non-empty, else an empty string."
+    (let ((inline-part
+           (when tags
+             (mapconcat (lambda (tag) (concat "#" tag)) tags " "))))
+      (if inline-part (concat " " inline-part) "")))
 
 (defun supertag-view-api-nodes-by-tag (tag-name &optional include-descendants)
   "Return node IDs that have TAG-NAME.

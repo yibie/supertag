@@ -9,6 +9,7 @@
 ;; Commands: none; Lisp entrypoints include supertag-node-location-find,
 ;; supertag-service-org-create-node, supertag-service-org-move-nodes,
 ;; supertag-service-org-set-property, supertag-service-org-save-and-project-current-node,
+;; supertag-service-org-save-and-record-tags-at-point,
 ;; supertag-service-org-retry-node-projection and supertag-template-read.
 ;; Dependencies: cl-lib, org, org-id, org-element, subr-x, supertag-core-store,
 ;; supertag-vault (pure path selection); shared creation presets are defined here;
@@ -141,6 +142,8 @@ default Concept preset targets `concepts.org' under the effective vault."
 (declare-function supertag-node-get "supertag-node" (id))
 (autoload 'supertag-node-delete "supertag-node")
 (declare-function supertag-node-delete "supertag-node" (node-id))
+(autoload 'supertag-node-update "supertag-node")
+(declare-function supertag-node-update "supertag-node" (id updater))
 (autoload 'supertag-service-org-follow-id "supertag-node")
 (declare-function supertag-service-org-follow-id "supertag-node" (node-id))
 (autoload 'supertag--mark-internal-modification "supertag-services-sync")
@@ -155,6 +158,11 @@ default Concept preset targets `concepts.org' under the effective vault."
 (autoload 'supertag-node-sync-current-buffer "supertag-services-sync")
 (declare-function supertag-node-sync-current-buffer "supertag-services-sync"
                   (node-id))
+(autoload 'supertag-node-tag-occurrences-at-point "supertag-services-sync")
+(declare-function supertag-node-tag-occurrences-at-point "supertag-services-sync" ())
+(autoload 'supertag-sync--resolve-node-tag-occurrences "supertag-services-sync")
+(declare-function supertag-sync--resolve-node-tag-occurrences "supertag-services-sync"
+                  (props))
 
 ;; Sync owns the default; repair callbacks dynamically bind this flag.
 (defvar supertag-sync--is-full-rescan-p)
@@ -926,29 +934,47 @@ LEAVE-LINK, TARGET-LEVEL and recovery semantics."
 
 
 (defun supertag-service-org--update-buffer-and-resync
-    (node-id buffer-update-func &optional repair-projection)
-  "Edit NODE-ID with BUFFER-UPDATE-FUNC, save Org, then reproject it.
+    (node-id buffer-update-func &optional repair-projection tags-only-p)
+  "Edit NODE-ID with BUFFER-UPDATE-FUNC, save Org, then refresh its state.
 When REPAIR-PROJECTION is non-nil and the edit is unchanged, save a modified
-buffer before projecting it; otherwise repair its already-saved Projection."
+buffer before refreshing derived state; otherwise repair its already-saved
+Projection.
+When TAGS-ONLY-P is non-nil, update only that node's tag membership rather
+than rebuilding its whole projection."
   (supertag-service-org--with-node-buffer
    node-id
    (lambda ()
-     (let ((before-tick (buffer-chars-modified-tick)))
+     ;; File nodes own #+FILETAGS rather than a heading region; their existing
+     ;; header-only synchronization is already local and remains authoritative.
+     (let* ((before-tick (buffer-chars-modified-tick))
+            (level (plist-get (supertag-node-get node-id) :level))
+            ;; Only an explicitly projected heading has a local heading
+            ;; region.  File nodes and incomplete legacy records retain the
+            ;; full synchronization path.
+            (tags-only-p (and tags-only-p (integerp level) (> level 0))))
        (funcall buffer-update-func)
        (if (not (eq before-tick (buffer-chars-modified-tick)))
            ;; Mark internal modification BEFORE save so after-save hook can skip.
-           (supertag-service-org-save-and-project-current-node node-id)
+           (funcall (if tags-only-p
+                        #'supertag-service-org-save-and-record-tags-at-point
+                      #'supertag-service-org-save-and-project-current-node)
+                    node-id)
          (when repair-projection
            (if (buffer-modified-p)
                (let ((supertag-sync--is-full-rescan-p t))
-                 (supertag-service-org-save-and-project-current-node node-id))
+                 (funcall (if tags-only-p
+                              #'supertag-service-org-save-and-record-tags-at-point
+                            #'supertag-service-org-save-and-project-current-node)
+                          node-id))
              ;; The Org Fact is already durable; only its derived Store state
              ;; is missing, so do not manufacture a text edit or noisy save.
              ;; Force reconciliation because a stale Projection can retain the
              ;; source hash and would otherwise look unchanged to the service.
              (condition-case cause
-                 (let ((supertag-sync--is-full-rescan-p t))
-                   (supertag-service-org--project-current-node node-id))
+                 (if tags-only-p
+                     (supertag-service-org-save-and-record-tags-at-point node-id)
+                   (let ((supertag-sync--is-full-rescan-p t))
+                     (supertag-service-org--project-current-node node-id)))
                (error
                 (supertag-service-org--signal-projection-error
                  node-id (buffer-file-name)
@@ -1341,6 +1367,66 @@ save succeeds, Projection failure is reported without undoing durable text."
        (supertag-service-org--signal-projection-error
         node-id file 'supertag-service-org-retry-node-projection
         (list node-id file) cause)))))
+
+(defun supertag-service-org-save-and-record-tags-at-point (node-id)
+  "Save the current Org buffer and refresh only NODE-ID's Tag membership.
+
+When point is not in NODE-ID's heading, locate that heading without projecting
+the file.  This path deliberately preserves the stored node's structure,
+position, outline path, parent, and content; a later file synchronization
+remains responsible for refreshing those fields."
+  (unless (buffer-file-name)
+    (user-error "NODE-ID must belong to a file-backed Org buffer"))
+  (let ((file (buffer-file-name)) heading)
+    ;; A save hook may move point.  Retain the target heading's marker before
+    ;; saving.  Capture paths may call us after their inner edit restored the
+    ;; buffer's previous point, so find NODE-ID only when point is not already
+    ;; at its heading.
+    (save-excursion
+      (save-restriction
+        (widen)
+        (unless
+            (or (and (condition-case nil
+                         (progn (org-back-to-heading t) t)
+                       (error nil))
+                     (equal node-id (org-entry-get nil "ID")))
+                (supertag-node-location-goto-current-buffer node-id))
+          (user-error "Node '%s' was not found in %s" node-id file))
+        (setq heading (copy-marker (point)))))
+    (unwind-protect
+        (progn
+          (supertag-service-org--save-current-buffer)
+          (condition-case cause
+              (save-excursion
+                (save-restriction
+                  (widen)
+                  (goto-char heading)
+                  (unless (and (org-at-heading-p)
+                               (equal node-id (org-entry-get nil "ID")))
+                    (user-error "Point does not identify node '%s'" node-id))
+                  (let* ((membership
+                          (supertag-sync--resolve-node-tag-occurrences
+                           (list :tag-occurrences
+                                 (or (supertag-node-tag-occurrences-at-point) '()))))
+                         (updated
+                          (supertag-with-transaction
+                            (supertag-node-update
+                             node-id
+                             (lambda (node)
+                               (let ((copy (copy-sequence node)))
+                                 (dolist (key '(:tag-occurrences :tags :unresolved-tags))
+                                   (setq copy
+                                         (plist-put copy key
+                                                    (plist-get membership key))))
+                                 copy))))))
+                    (unless updated
+                      (user-error "Node '%s' has no stored projection" node-id))
+                    updated)))
+            (error
+             (supertag-service-org--signal-projection-error
+              node-id file 'supertag-service-org-retry-node-projection
+              (list node-id file) cause))))
+      (set-marker heading nil))))
 
 (defun supertag-service-org-set-todo-state (node-id state)
   "Set the TODO STATE for NODE-ID in the buffer and trigger a resync."

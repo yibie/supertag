@@ -403,7 +403,7 @@
                    (lambda (&optional _) "node"))
                   ((symbol-function 'supertag-node-get) (lambda (_) '(:id "node")))
                   ((symbol-function
-                    'supertag-service-org-save-and-project-current-node)
+                    'supertag-service-org-save-and-record-tags-at-point)
                    (lambda (node-id) (setq persisted node-id))))
           (supertag-completion--post-completion-action child))
         (should (equal "node" persisted))
@@ -891,7 +891,7 @@
         (should-not committed)
         (insert " ")
         (cl-letf (((symbol-function
-                    'supertag-service-org-save-and-project-current-node)
+                    'supertag-service-org-save-and-record-tags-at-point)
                    (lambda (&rest _) (setq committed t))))
           (supertag-completion--auto-record-on-boundary))
         (should-not committed)
@@ -901,7 +901,7 @@
                   ((symbol-function 'supertag-node-get)
                    (lambda (_) '(:id "node")))
                   ((symbol-function
-                    'supertag-service-org-save-and-project-current-node)
+                    'supertag-service-org-save-and-record-tags-at-point)
                    (lambda (node-id) (push node-id projected))))
           (supertag-completion--post-completion-action new)
           (should (tag-path-test--tag "dia"))

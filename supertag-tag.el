@@ -78,11 +78,15 @@
 ;; Ordinary shared Org providers load only when a member write needs them.
 (autoload 'supertag-service-org--node-tags "supertag-service-org")
 (autoload 'supertag-service-org--update-buffer-and-resync "supertag-service-org")
+(autoload 'supertag-service-org-save-and-record-tags-at-point "supertag-service-org")
 (autoload 'supertag-service-org-save-and-project-current-node "supertag-service-org")
 (declare-function supertag-service-org--node-tags "supertag-service-org" (node-id))
 (declare-function supertag-service-org--update-buffer-and-resync "supertag-service-org"
-                  (node-id buffer-update-func &optional repair-projection))
-(declare-function supertag-service-org-save-and-project-current-node "supertag-service-org" (node-id))
+                  (node-id buffer-update-func &optional repair-projection tags-only-p))
+(declare-function supertag-service-org-save-and-record-tags-at-point "supertag-service-org"
+                  (node-id))
+(declare-function supertag-service-org-save-and-project-current-node "supertag-service-org"
+                  (node-id))
 (declare-function supertag-node-location-find "supertag-service-org" (node-id))
 ;; FILETAGS callbacks run after the shared Org updater loads its Sync provider.
 (declare-function supertag-sync--parse-file-header "supertag-services-sync" ())
@@ -2176,10 +2180,10 @@ before returning an error.  POSITION has the meaning accepted by
         ;; Resolve the provider before any mutation or saver interception.
         ;; A first autoload inside cl-letf would replace the intercepted cell.
         (let ((definition
-               (symbol-function 'supertag-service-org-save-and-project-current-node)))
+               (symbol-function 'supertag-service-org-save-and-record-tags-at-point)))
           (when (autoloadp definition)
             (autoload-do-load
-             definition 'supertag-service-org-save-and-project-current-node)))
+             definition 'supertag-service-org-save-and-record-tags-at-point)))
         ;; Complete Sync loading before mutation or saver capture.
         (let ((definition (symbol-function 'supertag-sync--parse-file-header)))
           (when (autoloadp definition)
@@ -2200,16 +2204,16 @@ before returning an error.  POSITION has the meaning accepted by
                                          `(:name ,token))
                                         :id)))
                                  tokens tag-ids))
-                               (save-and-project
+                               (save-and-record-tags
                                 (symbol-function
-                                 'supertag-service-org-save-and-project-current-node))
+                                 'supertag-service-org-save-and-record-tags-at-point))
                                projection-needed)
                           ;; Reuse the Org service's mutation logic for every
                           ;; occurrence, but defer its commit seam until all
                           ;; edits for this node have been composed.
                           (cl-letf
                               (((symbol-function
-                                 'supertag-service-org-save-and-project-current-node)
+                                 'supertag-service-org-save-and-record-tags-at-point)
                                 (lambda (_node-id)
                                   (setq projection-needed t))))
                             (dolist (resolved-id resolved-ids)
@@ -2225,7 +2229,7 @@ before returning an error.  POSITION has the meaning accepted by
                                       (supertag-capture--tag-membership-present-p
                                        node-id resolved-id)))
                                    resolved-ids))
-                            (funcall save-and-project node-id))
+                            (funcall save-and-record-tags node-id))
                           (dolist (resolved-id resolved-ids)
                             (unless
                                 (and
@@ -2248,7 +2252,7 @@ before returning an error.  POSITION has the meaning accepted by
                           (org-with-point-at
                               (or (supertag-node-location-find node-id)
                                   marker)
-                            (supertag-service-org-save-and-project-current-node
+                            (supertag-service-org-save-and-record-tags-at-point
                              node-id))
                           nil)
                       (error compensation-cause)))))
@@ -2311,7 +2315,7 @@ edit until membership is verified, and compensate a saved edit on failure."
                       (org-with-point-at
                           (or (supertag-node-location-find node-id)
                               marker)
-                        (supertag-service-org-save-and-project-current-node
+                        (supertag-service-org-save-and-record-tags-at-point
                          node-id))
                       nil)
                   (error compensation-cause)))))
@@ -2432,7 +2436,7 @@ Returns the updated node data."
         (insert (concat "#+FILETAGS: " value ":\n"))))))
 
 (defun supertag-service-org-add-tag (node-id tag-name &optional position)
-  "Add TAG-NAME to NODE-ID's Org source, save, then reproject.
+  "Add TAG-NAME to NODE-ID's Org source, save, then refresh membership.
 POSITION may be `beginning', `end', or a marker in the node buffer."
   (let* ((tag-id (or (supertag-service-org--semantic-tag-id tag-name)
                      (user-error "Unknown Tag '%s'" tag-name)))
@@ -2460,10 +2464,10 @@ POSITION may be `beginning', `end', or a marker in the node buffer."
                   (end-of-line))))
              (_ (end-of-line)))
            (supertag-view-helper-insert-tag-text token))))
-     repair-projection)))
+     repair-projection t)))
 
 (defun supertag-service-org-remove-tag (node-id tag-name &optional repair-projection)
-  "Remove TAG-NAME from NODE-ID's Org source, save, then reproject.
+  "Remove TAG-NAME from NODE-ID's Org source, save, then refresh membership.
 REPAIR-PROJECTION explicitly authorizes repairing an unchanged Org edit."
   (let ((tag-id (or (supertag-service-org--semantic-tag-id tag-name)
                     (user-error "Unknown Tag '%s'" tag-name))))
@@ -2479,10 +2483,10 @@ REPAIR-PROJECTION explicitly authorizes repairing an unchanged Org edit."
          (dolist (token (supertag-node-tag-occurrences-at-point))
            (when (supertag-service-org--token-identifies-p token tag-id)
              (supertag-view-helper-remove-tag-text token)))))
-     repair-projection)))
+     repair-projection t)))
 
 (defun supertag-service-org-replace-tag (node-id old-tag-name new-tag-name &optional repair-projection)
-  "Replace OLD-TAG-NAME with NEW-TAG-NAME in Org, then reproject NODE-ID.
+  "Replace OLD-TAG-NAME with NEW-TAG-NAME, then refresh membership.
 REPAIR-PROJECTION explicitly authorizes repairing an unchanged Org edit."
   (let ((old-id (or (supertag-service-org--semantic-tag-id old-tag-name)
                     (user-error "Unknown Tag '%s'" old-tag-name)))
@@ -2501,7 +2505,7 @@ REPAIR-PROJECTION explicitly authorizes repairing an unchanged Org edit."
            (when (supertag-service-org--token-identifies-p token old-id)
              (supertag-view-helper-rename-tag-text-in-node
               token new-token)))))
-     repair-projection)))
+     repair-projection t)))
 
 (defun supertag-view-helper-at-tag-line-p ()
   "Check if the current line is a tag line (contains #tags)."
@@ -3011,7 +3015,12 @@ Display aliases are replaced with their canonical Org token before writing."
               (insert occurrence-token))
             (setq normalized-token-p t)
             (insert " ")
-            (supertag-service-org-save-and-project-current-node node-id)
+            ;; A newly assigned Org ID has no stored node yet, so it needs
+            ;; its initial structural projection.  Existing nodes record
+            ;; only their changed Tag membership.
+            (if (supertag-node-get node-id)
+                (supertag-service-org-save-and-record-tags-at-point node-id)
+              (supertag-service-org-save-and-project-current-node node-id))
             (if is-new
                 (message "New tag '%s' created and added to node %s"
                          occurrence-token node-id)
@@ -3191,8 +3200,14 @@ CAPF `[New]' candidate."
                     (let ((node-tags
                            (supertag-completion--get-node-tags node-id)))
                       (unless (member tag-id node-tags)
-                        (supertag-service-org-save-and-project-current-node
-                         node-id)))))
+                        ;; See the completion post-action: only an
+                        ;; unprojected, newly identified heading requires a
+                        ;; full first projection.
+                        (if (supertag-node-get node-id)
+                            (supertag-service-org-save-and-record-tags-at-point
+                             node-id)
+                          (supertag-service-org-save-and-project-current-node
+                           node-id))))))
               (error
                (message "supertag-completion: auto-record failed: %S"
                         err)))))))))

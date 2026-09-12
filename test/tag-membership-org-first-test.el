@@ -328,25 +328,25 @@
         (with-current-buffer buffer (set-buffer-modified-p nil))
         (kill-buffer buffer)))))
 
-(ert-deftest supertag-capture-bulk-tag-service-save-and-project-once ()
+(ert-deftest supertag-capture-bulk-tag-service-records-membership-once ()
   "The capture service composes several Tag edits behind one commit seam."
   (supertag-tag-membership-test--with-vault
-    (let* ((real-save-and-project
+    (let* ((real-save-and-record-tags
             (symbol-function
-             'supertag-service-org-save-and-project-current-node))
-           (save-and-project-count 0)
+             'supertag-service-org-save-and-record-tags-at-point))
+           (save-and-record-tags-count 0)
            tag-ids)
       (cl-letf
           (((symbol-function
-             'supertag-service-org-save-and-project-current-node)
+             'supertag-service-org-save-and-record-tags-at-point)
             (lambda (id)
-              (cl-incf save-and-project-count)
-              (funcall real-save-and-project id))))
+              (cl-incf save-and-record-tags-count)
+              (funcall real-save-and-record-tags id))))
         (setq tag-ids
               (supertag-capture-add-tags-to-nodes
                (list supertag-ownership-test-node-a)
                '("capture-one" "capture-two"))))
-      (should (= 1 save-and-project-count))
+      (should (= 1 save-and-record-tags-count))
       (should (= 2 (length tag-ids)))
       (dolist (tag-id tag-ids)
         (should (member tag-id

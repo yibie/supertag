@@ -15,9 +15,9 @@
 (defvar test-completion-added-tag nil)
 (defvar test-completion-insert-count 0)
 
-;; Stub out the file-backed projection boundary; this test only checks that
-;; completion commits the canonical token and asks for one projection.
-(advice-add 'supertag-service-org-save-and-project-current-node :override
+;; Stub out the file-backed membership boundary; this test only checks that
+;; completion commits the canonical token and records it once.
+(advice-add 'supertag-service-org-save-and-record-tags-at-point :override
             (lambda (_node-id)
               (setq test-completion-added-tag "newtag")
               t))

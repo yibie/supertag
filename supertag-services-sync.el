@@ -2493,34 +2493,29 @@ region-scoped reader instead."
   "Return the Org Tag Occurrences of the heading at point, or nil.
 
 Same list as (plist-get (supertag--parse-node-at-point) :tag-occurrences),
-including nil when point is not on a heading, but only the heading's own
-region is projected -- its title line plus the body it owns before the next
-heading.  That is the exact scope `supertag--extract-inline-tags' reads, so
-the surrounding nodes cannot contribute occurrences and parsing them is
-pure cost: it makes every tag edit scale with the file rather than with the
-node being edited.
+including nil when point is not on a heading.  It runs only the Tag extractor
+on the heading under point: title line plus direct body before the next
+heading.  The surrounding nodes cannot contribute occurrences, so parsing
+them would make every tag edit scale with the file rather than with the node.
 
-Only `:tag-occurrences' is returned because the rest of a region-scoped
-projection is not comparable to a whole-file one -- `:olp', `:parent-id'
-and the positions are all relative to the region."
+Only `:tag-occurrences' is read because the remaining fields of a local
+reader (`:olp', `:parent-id', and positions) are not a replacement for a
+whole-file projection."
   (when (org-at-heading-p)
     (save-excursion
       (org-back-to-heading t)
-      (let* ((source-buffer (or (buffer-base-buffer) (current-buffer)))
-             (source-file (buffer-local-value 'buffer-file-name source-buffer)))
-        (when-let* ((node-id (org-entry-get nil "ID"))
-                    (current-file (and source-file
-                                       (file-truename
-                                        (expand-file-name source-file)))))
-          (plist-get
-           (supertag--project-node-from-org-text
-            node-id current-file
-            (save-restriction
-              (widen)
-              (buffer-substring-no-properties
-               (point)
-               (save-excursion (outline-next-heading) (point)))))
-           :tag-occurrences))))))
+      (when-let* ((_ (org-entry-get nil "ID"))
+                  (begin (point))
+                  (end (save-excursion (outline-next-heading) (point)))
+                  ;; This parser sees only the current heading and its direct
+                  ;; body.  `org-element-at-point' leaves those contents
+                  ;; deferred, while `org-element-parse-buffer' would parse
+                  ;; every heading in the file.
+                  (headline (car (org-element--parse-elements
+                                  begin end nil nil nil nil nil)))
+                  (_ (eq (org-element-type headline) 'headline)))
+        (plist-get (supertag-extractor--tags headline nil nil)
+                   :tag-occurrences)))))
 
 ;;;###autoload
 (defun supertag-node-sync-at-point ()

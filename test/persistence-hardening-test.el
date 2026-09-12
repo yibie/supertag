@@ -649,6 +649,21 @@ and internal state variables, so tests never touch the real
             (should (eq t (supertag--db-lock-status supertag-db-file))))
         (ignore-errors (delete-file stale-lock))))))
 
+(ert-deftest supertag-hardening-test-save-store-is-interactive-and-reports-clean-state ()
+  "The explicit save command reports a clean Store without writing it again."
+  (supertag-hardening-test--with-temp-env
+    (should (commandp #'supertag-save-store))
+    (cl-letf (((symbol-function 'supertag--persistence--expected-sync-state-file)
+               (lambda () nil)))
+      (supertag-load-store)
+      (supertag-clear-dirty)
+      (let (messages)
+        (cl-letf (((symbol-function 'message)
+                   (lambda (format-string &rest args)
+                     (push (apply #'format format-string args) messages))))
+          (call-interactively #'supertag-save-store))
+        (should (member "Supertag database has no unsaved changes" messages))))))
+
 ;;; --- 3. Auto-migration ---
 
 (ert-deftest supertag-hardening-test-auto-migrate-stamps-version-and-snapshots-once ()

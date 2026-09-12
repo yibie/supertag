@@ -211,6 +211,7 @@ Table、Schema、Kanban、Board、Graph 入口已封存，不属于当前工作�
 | 按模板提升文本或标题 | `M-x supertag-promote` | 预览实际内容后明确复用/新建；选区替换为普通 Org 链接 |
 | 高亮概念提及 | `M-x supertag-concept-link-mode` | 将概念 title/alias 的提及显示为琥珀色语义高亮，不落库为链接 |
 | 光标处的情景动作 | `embark-act`（Embark，可选） | 识别对象并提供对应动作；RET 为默认动作 |
+| 保存数据库 | `M-x supertag-save-store` | 立即把未保存的 Store 变更写入磁盘；自动保存和退出时也会执行 |
 | 重建 Org 索引 | `M-x supertag-sync-full-rescan` | 从一个完整快照重建 Document Projection；绝不恢复 Semantic Facts |
 
 Discovery 初始页是不排序、无重复的阅读抽样。可通过

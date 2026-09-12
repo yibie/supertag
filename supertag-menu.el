@@ -180,6 +180,8 @@ errors propagate unchanged. DOC is the generated wrapper's docstring."
   supertag-semantic supertag-semantic-stop "Stop the current embedding round.")
 (supertag-menu--defwrapper supertag-menu--semantic-resume
   supertag-semantic supertag-semantic-resume "Continue a stopped embedding rebuild.")
+(supertag-menu--defwrapper supertag-menu--save-store
+  supertag-core-persistence supertag-save-store "Save the current Store now.")
 
 (supertag-menu--defwrapper supertag-menu--extract-properties
   supertag-ai supertag-ai-extract-properties "Extract property candidates with AI.")
@@ -301,7 +303,8 @@ errors propagate unchanged. DOC is the generated wrapper's docstring."
     ("er" "Rebuild similar notes" supertag-menu--semantic-rebuild)
     ("es" "Similarity status" supertag-menu--semantic-status)
     ("ec" "Continue embeddings" supertag-menu--semantic-resume)
-    ("ex" "Stop embeddings" supertag-menu--semantic-stop)]
+    ("ex" "Stop embeddings" supertag-menu--semantic-stop)
+    ("ed" "Save database now" supertag-menu--save-store)]
    ["Git"
     ("gs" "Setup git sync"    supertag-menu--git-setup)
     ("gc" "Clone vault"       supertag-menu--git-clone)

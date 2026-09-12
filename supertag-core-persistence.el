@@ -5,7 +5,7 @@
 ;; in-memory store to a file and loading it back.
 
 
-;; Commands: none; Lisp entrypoints: supertag-load-store, supertag-save-store,
+;; Commands: supertag-save-store; Lisp entrypoints: supertag-load-store,
 ;; supertag-persistence-check-legacy-data-directory, supertag-resolve-data-directories,
 ;; supertag-restore, supertag-accept-fresh-store; timer lifecycle: supertag-setup-all-timers,
 ;; supertag-cleanup-all-timers.
@@ -1797,51 +1797,57 @@ on every call — including timer ticks where the store turns out not to be
 dirty and nothing else in this function does any work — so a foreign
 machine's `supertag--presence-foreign-active-p' check sees this host as
 recently active for as long as this session keeps running."
+  (interactive)
   (supertag--presence-write)
   (let* ((file-to-save (or file supertag-db-file))
-         (reasons (supertag--persistence-guard-violations file-to-save)))
+         (reasons (supertag--persistence-guard-violations file-to-save))
+         (interactivep (called-interactively-p 'any)))
     (cond
      (reasons
       (message "Supertag auto-save skipped: %s"
                (mapconcat #'identity reasons "; ")))
      (t
-    (supertag-persistence-ensure-data-directory) ; Ensure directory exists before saving
-    (when (supertag-dirty-p) ; Only save if dirty
-      ;; Safety guard: avoid overwriting a non-trivial on-disk DB with an empty in-memory store
-      (let* ((nodes-table (ignore-errors (supertag-store-get-collection :nodes)))
-             (live-node-count (and (hash-table-p nodes-table)
-                                   (hash-table-count nodes-table)))
-             (existing-file-p (file-exists-p file-to-save))
-             (existing-size (when existing-file-p (file-attribute-size (file-attributes file-to-save))))
-             ;; Treat DB file larger than 1KB as "non-trivial" by default
-             (non-trivial-file (and existing-size (> existing-size 1024))))
-        (if (and non-trivial-file
-                 (numberp live-node-count)
-                 (= live-node-count 0))
-            (message "Protective skip: Live DB has 0 nodes while on-disk DB looks non-trivial (%s bytes). Skipping save to avoid data loss."
-                     existing-size)
-          (supertag--persistence-write-store-atomically file-to-save)
-          (supertag-clear-dirty)
-          (supertag--record-store-origin :ok)
-          ;; Re-claim presence after a successful save too, not just on the
-          ;; unconditional heartbeat write above — keeps the recorded
-          ;; `updatedAt' as fresh as possible right when real writes happen.
-          (supertag--presence-write)
-          ;; Check if daily backup is needed after successful save
-          (supertag-check-daily-backup)
-          ;; S4 git-sync-mode commit trigger seam — see
-          ;; `supertag-persistence-after-save-hook''s docstring.
-          (run-hook-wrapped
-           'supertag-persistence-after-save-hook
-           (lambda (subscriber)
-             (condition-case err
-                 (funcall subscriber)
-               (error
-                (message "Supertag after-save subscriber %S failed: %s"
-                         subscriber (error-message-string err))))
-             ;; Never let a subscriber's return value stop delivery.
-             nil))
-          t)))))))
+      (supertag-persistence-ensure-data-directory) ; Ensure directory exists before saving
+      (if (not (supertag-dirty-p))
+          (when interactivep
+            (message "Supertag database has no unsaved changes"))
+        ;; Safety guard: avoid overwriting a non-trivial on-disk DB with an empty in-memory store
+        (let* ((nodes-table (ignore-errors (supertag-store-get-collection :nodes)))
+               (live-node-count (and (hash-table-p nodes-table)
+                                     (hash-table-count nodes-table)))
+               (existing-file-p (file-exists-p file-to-save))
+               (existing-size (when existing-file-p (file-attribute-size (file-attributes file-to-save))))
+               ;; Treat DB file larger than 1KB as "non-trivial" by default
+               (non-trivial-file (and existing-size (> existing-size 1024))))
+          (if (and non-trivial-file
+                   (numberp live-node-count)
+                   (= live-node-count 0))
+              (message "Protective skip: Live DB has 0 nodes while on-disk DB looks non-trivial (%s bytes). Skipping save to avoid data loss."
+                       existing-size)
+            (supertag--persistence-write-store-atomically file-to-save)
+            (supertag-clear-dirty)
+            (supertag--record-store-origin :ok)
+            ;; Re-claim presence after a successful save too, not just on the
+            ;; unconditional heartbeat write above — keeps the recorded
+            ;; `updatedAt' as fresh as possible right when real writes happen.
+            (supertag--presence-write)
+            ;; Check if daily backup is needed after successful save
+            (supertag-check-daily-backup)
+            ;; S4 git-sync-mode commit trigger seam — see
+            ;; `supertag-persistence-after-save-hook''s docstring.
+            (run-hook-wrapped
+             'supertag-persistence-after-save-hook
+             (lambda (subscriber)
+               (condition-case err
+                   (funcall subscriber)
+                 (error
+                  (message "Supertag after-save subscriber %S failed: %s"
+                           subscriber (error-message-string err))))
+               ;; Never let a subscriber's return value stop delivery.
+               nil))
+            (when interactivep
+              (message "Supertag database saved to %s" file-to-save))
+            t)))))))
 
 (autoload 'supertag-migrate-run "supertag-migrate" "Run verified data migration." t)
 

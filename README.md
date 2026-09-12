@@ -220,6 +220,7 @@ Write participants, discussion, and decisions in the body; use ordinary lists fo
 | Promote text or a heading with a template | `M-x supertag-promote` | Explicit reuse/new with content preview; selected text becomes an ordinary Org link |
 | Highlight concept mentions | `M-x supertag-concept-link-mode` | Shows concept title/alias mentions as amber semantic highlights, not stored links |
 | Context actions at point | `embark-act` (Embark, optional) | Object-specific actions; RET runs the default |
+| Save database | `M-x supertag-save-store` | Immediately writes unsaved Store changes to disk; auto-save and Emacs exit do this too |
 | Reindex Org documents | `M-x supertag-sync-full-rescan` | Rebuilds Document Projections from one complete snapshot; never restores Semantic Facts |
 
 Discovery's initial sample is an unranked, without-replacement reading sample.

@@ -298,10 +298,7 @@
   at load (=require=) time.
 
 *** Multi-instance protection
-- New option =supertag-db-lock= (default =t=): the database is
-  advisory-locked after load. A second Emacs instance loads read-only
-  with a clear warning and =M-x supertag-db-retry-lock= to take over
-  once the first instance exits.
+- Revision-stamped saves detect newer on-disk database revisions without a session-long advisory lock.
 
 *** Automatic migration on load
 - New option =supertag-db-auto-migrate= (default =t=): out-of-date

@@ -79,15 +79,13 @@ and internal state variables, so tests never touch the real
           (supertag-db-file (expand-file-name "supertag-db.el" tmp))
           (supertag-db-backup-directory (expand-file-name "backups" tmp))
           (supertag-db-verify-after-save t)
-          (supertag-db-lock t)
           (supertag-db-auto-migrate t)
           (supertag--store nil)
           (supertag--store-origin nil)
-          (supertag--db-lock-conflict nil)
-          (supertag--db-locked-file nil))
+          (supertag--store-revision 0)
+          (supertag--last-conflict-revision nil))
      (unwind-protect
          (progn ,@body)
-       (supertag--db-release-lock)
        (ignore-errors (delete-directory tmp t)))))
 
 (defmacro supertag-hardening-test--with-temp-user-directory (&rest body)
@@ -572,82 +570,7 @@ and internal state variables, so tests never touch the real
                        (supertag--persistence--mismatched-durable-collections
                         supertag--store loaded)))))))
 
-;;; --- 2. Multi-instance locking ---
-
-(ert-deftest supertag-hardening-test-lock-conflict-blocks-save ()
-  "A foreign lock artifact is detected as a conflict and blocks saving."
-  (supertag-hardening-test--with-temp-env
-    (supertag-persistence-ensure-data-directory)
-    (supertag-hardening-test--write-store-file
-     supertag-db-file (supertag-hardening-test--make-store '("A")))
-    (let* ((lock-file (supertag--db-lock-file-name supertag-db-file)))
-      ;; Emacs advisory lock artifacts are dangling symlinks whose target
-      ;; encodes "user@host.pid[:boot]"; not every filesystem supports
-      ;; symlinks, so skip rather than fail when this one doesn't.
-      (skip-unless
-       (ignore-errors
-         (make-symbolic-link "otheruser@otherhost.999999:12345" lock-file)
-         t))
-      (unwind-protect
-          (progn
-            (let ((owner (supertag--db-lock-status supertag-db-file)))
-              (should (stringp owner))
-              (supertag--db-acquire-lock)
-              (should (equal supertag--db-lock-conflict owner))
-              (let ((reasons (supertag--persistence-guard-violations)))
-                (should (cl-find-if
-                         (lambda (r)
-                           (string-match-p "locked by another Emacs instance" r))
-                         reasons)))))
-        (ignore-errors (delete-file lock-file))))))
-
-(ert-deftest supertag-hardening-test-lock-acquire-and-release-roundtrip ()
-  "With no conflicting lock, acquire takes the lock and release frees it."
-  (supertag-hardening-test--with-temp-env
-    (supertag-persistence-ensure-data-directory)
-    (supertag-hardening-test--write-store-file
-     supertag-db-file (supertag-hardening-test--make-store '("A")))
-    (should (null (supertag--db-lock-status supertag-db-file)))
-    (supertag--db-acquire-lock)
-    (should (null supertag--db-lock-conflict))
-    (should (eq t (supertag--db-lock-status supertag-db-file)))
-    (supertag--db-release-lock)
-    (should (null (supertag--db-lock-status supertag-db-file)))
-    (should (null supertag--db-locked-file))))
-
-(ert-deftest supertag-hardening-test-network-lock-artifact-does-not-block-save ()
-  "A stale DB-adjacent lock from a sync folder does not block local saves."
-  (supertag-hardening-test--with-temp-env
-    (supertag-persistence-ensure-data-directory)
-    (supertag-hardening-test--write-store-file
-     supertag-db-file
-     (supertag-hardening-test--make-store '("A") supertag-data-version))
-    (let ((stale-lock (expand-file-name
-                       (concat ".#" (file-name-nondirectory supertag-db-file))
-                       (file-name-directory supertag-db-file))))
-      (skip-unless
-       (ignore-errors
-         (make-symbolic-link "otheruser@otherhost.999999:12345" stale-lock)
-         t))
-      (unwind-protect
-          (cl-letf (((symbol-function 'supertag--persistence--expected-sync-state-file)
-                     (lambda () nil)))
-            (supertag-load-store)
-            (should-not supertag--db-lock-conflict)
-            (should-not (equal stale-lock
-                                (supertag--db-lock-file-name supertag-db-file)))
-            (let* ((nodes (supertag-store-get-collection :nodes))
-                   (node (gethash "A" nodes)))
-              (puthash "A" (plist-put node :title "new") nodes))
-            (supertag-mark-dirty)
-            (supertag-save-store)
-            (should-not (supertag-dirty-p))
-            (let* ((on-disk (supertag--persistence--try-read-store supertag-db-file))
-                   (node (gethash "A" (gethash :nodes on-disk))))
-              (should (equal "new" (plist-get node :title))))
-            (should (file-symlink-p stale-lock))
-            (should (eq t (supertag--db-lock-status supertag-db-file))))
-        (ignore-errors (delete-file stale-lock))))))
+;;; --- 2. Interactive save ---
 
 (ert-deftest supertag-hardening-test-save-store-is-interactive-and-reports-clean-state ()
   "The explicit save command reports a clean Store without writing it again."
@@ -709,14 +632,17 @@ and internal state variables, so tests never touch the real
 ;;; --- 4. Doctor ---
 
 (ert-deftest supertag-hardening-test-doctor-batch-report-renders-sections ()
-  "`supertag-doctor' in report-only mode renders all seven report sections."
+  "`supertag-doctor' in report-only mode renders all report sections."
   (supertag-hardening-test--with-temp-env
     (setq supertag--store (supertag-hardening-test--make-store '("A")))
     (let* ((buf (supertag-doctor t))
            (text (with-current-buffer buf (buffer-string))))
       (should (string-match-p "1\\. Database Files" text))
       (should (string-match-p "2\\. Guards" text))
-      (should (string-match-p "3\\. Lock" text))
+      (should (string-match-p "3\\. Revision & Presence" text))
+      (should (string-match-p "In-memory revision:" text))
+      (should (string-match-p "On-disk revision:" text))
+      (should (string-match-p "Follow timer:" text))
       (should (string-match-p "4\\. Version" text))
       (should (string-match-p "5\\. Integrity" text))
       (should (string-match-p "6\\. Backups" text))

@@ -557,6 +557,10 @@ STATS is a list of (label . value) pairs."
 (defun supertag-view-refresh (&optional buffer)
   "Refresh BUFFER or the current view buffer."
   (interactive)
+  ;; A manual refresh is also a cheap opportunity to follow a clean session's
+  ;; newer database revision, rather than rendering stale in-memory state.
+  (when (fboundp 'supertag--follow-store)
+    (supertag--follow-store))
   (let ((target (or buffer (current-buffer))))
     (unless (buffer-live-p target)
       (user-error "View buffer is not live"))

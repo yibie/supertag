@@ -2,11 +2,12 @@
 ;; Data only. run-tests.sh owns execution. Transition names state the retained
 ;; responsibility; they are not claims of migrated implementations.
 (defconst supertag-renovation-default
-  '("contract" "compat" "identity" "vault" "view-framework" "node-view-extra" "automation-actions" "extractor" "persistence-restore" "mention-extra" "saved-projection" "property-automation"
+  '("contract" "compat" "identity" "vault" "view-framework" "node-view-extra" "automation-actions" "extractor" "persistence-restore" "multi-instance" "mention-extra" "saved-projection" "property-automation"
     "move" "promote" "stream" "find-node" "add-link" "discovery"
     "query-links" "query-tag-completion" "legacy-query-compat" "migrate" "storage-format" "property-consumers" "tag-change" "named-link-query" "svg-tag" "tag-path" "tag-merge-plan" "tag-manager" "embark" "ai" "semantic" "git"))
 (defconst supertag-renovation-suites
-  '(("migrate" ("test/migrate-test.el" . t) ("test/migrate-fields-test.el" . t))
+  '(("multi-instance" ("test/multi-instance-test.el" . t))
+    ("migrate" ("test/migrate-test.el" . t) ("test/migrate-fields-test.el" . t))
     ("storage-format"
      ("test/canonical-serialization-test.el" . (not (member supertag-canon-test-perf-canonical-vs-plain-dump)))
      ("test/persistence-hardening-test.el" . (not (member

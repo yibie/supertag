@@ -5,7 +5,8 @@
 ;; in-memory store to a file and loading it back.
 
 
-;; Commands: supertag-save-store; Lisp entrypoints: supertag-load-store,
+;; Commands: supertag-save-store, supertag-save-store-force, supertag-reload-store;
+;; Lisp entrypoints: supertag-load-store,
 ;; supertag-persistence-check-legacy-data-directory, supertag-resolve-data-directories,
 ;; supertag-restore, supertag-accept-fresh-store; timer lifecycle: supertag-setup-all-timers,
 ;; supertag-cleanup-all-timers.
@@ -440,29 +441,12 @@ is aborted and the previous database file is left untouched."
   :type 'boolean
   :group 'supertag)
 
-(defcustom supertag-db-lock t
-  "When non-nil, protect the database from concurrent multi-instance access.
-Uses Emacs' built-in advisory file locking (`lock-file', `unlock-file',
-`file-locked-p') for `supertag-db-file'. By default, local database files use
-`supertag-db-lock-directory' so the lock stays on this host instead of a
-network or sync filesystem. When another Emacs instance already holds the
-lock, this session records the conflict in
-`supertag--db-lock-conflict' and refuses to save the database until the
-other instance releases the lock (or `supertag-db-retry-lock' is used once
-it has exited)."
-  :type 'boolean
-  :group 'supertag)
-
-(defcustom supertag-db-lock-directory
-  (expand-file-name "supertag-locks/" temporary-file-directory)
-  "Directory for local database advisory lock files.
-When non-nil, local `supertag-db-file' paths are mapped to deterministic
-SHA-256 lock names in this directory. This keeps same-host locking out of
-network/sync folders, where stale lock artifacts can survive a disconnected
-session. Remote/TRAMP database paths and a nil value retain Emacs' native
-database-adjacent lock behavior. If this directory cannot be created, the
-native behavior is used as a safe fallback."
-  :type '(choice (const :tag "Use database directory" nil) directory)
+(defcustom supertag-db-follow-interval 30
+  "Seconds of idle time between checks for a newer database revision.
+Set to nil to disable automatic following.  A clean in-memory store is
+silently reloaded when another Emacs has written a newer revision."
+  :type '(choice (const :tag "Disable" nil)
+                 (integer :tag "Interval (seconds)"))
   :group 'supertag)
 
 (defcustom supertag-db-auto-migrate t
@@ -511,6 +495,9 @@ and `supertag--presence-foreign-active-p' returns nil for it."
 (defvar supertag-db--backup-timer nil
   "Timer for daily backup.")
 
+(defvar supertag-db--follow-timer nil
+  "Idle timer used to follow newer on-disk database revisions.")
+
 (defvar supertag-db--dirty nil
   "Flag indicating if database has unsaved changes.")
 
@@ -519,6 +506,12 @@ and `supertag--presence-foreign-active-p' returns nil for it."
 
 (defvar supertag--store-origin nil
   "Metadata about the loaded store and its originating persistence state.")
+
+(defvar supertag--store-revision 0
+  "Revision of the database currently represented by `supertag--store'.")
+
+(defvar supertag--last-conflict-revision nil
+  "Newest disk revision for which an automatic save conflict was announced.")
 
 (defvar supertag-persistence-after-save-hook nil
   "Normal hook run after `supertag-save-store' successfully writes a
@@ -535,7 +528,7 @@ otherwise interrupt whatever just successfully saved the database).")
 (defvar supertag-persistence-after-load-hook nil
   "Normal hook run after `supertag-load-store' successfully loads a store
 from disk (the branch that sets `supertag--store' from a readable file and
-acquires the lock/presence claim -- NOT the fresh-empty-store branch, and
+writes the presence claim -- NOT the fresh-empty-store branch, and
 NOT a failed/corrupt-file load). Symmetric to
 `supertag-persistence-after-save-hook' and meant for the same purpose:
 letting an optional module react to a persistence lifecycle event without
@@ -543,124 +536,13 @@ this file requiring that module back (avoiding load-order coupling).
 Functions on
 this hook take no arguments and must not signal.")
 
-(defvar supertag--db-lock-conflict nil
-  "Non-nil when another Emacs instance holds the DB lock.
-Holds the owner description string returned by `file-locked-p' (for example
-\"user@host.12345:1698765432\") for whichever file `supertag--db-acquire-lock'
-last checked. While non-nil, this session refuses to save the database (see
-`supertag--persistence-guard-violations'). Cleared automatically once the
-lock is acquired or the other instance's lock is found to be gone.")
-
-(defvar supertag--db-locked-file nil
-  "File path this Emacs instance currently holds the advisory lock for, or nil.
-Tracked separately from `supertag-db-file' so that switching vaults (which
-reassigns `supertag-db-file' before the old lock is released) still releases
-the correct file's lock.")
-
-;;; --- Multi-instance DB Locking ---
-
-(defun supertag--db-lock-file-transforms (file)
-  "Return the local lock transform for FILE, or nil when unavailable.
-Only local paths are transformed; a failed directory creation deliberately
-falls back to Emacs' native database-adjacent lock behavior."
-  (when (and (stringp supertag-db-lock-directory)
-             (> (length supertag-db-lock-directory) 0)
-             (stringp file)
-             (not (file-remote-p supertag-db-lock-directory))
-             (not (file-remote-p file)))
-    (let ((directory (file-name-as-directory
-                      (expand-file-name supertag-db-lock-directory))))
-      (when (condition-case nil
-                (progn (make-directory directory t) t)
-              (error nil))
-        (list (list (concat "\\`" (regexp-quote (expand-file-name file)) "\\'")
-                    directory
-                    'sha256))))))
-
-(defun supertag--db-lock-status (file)
-  "Return Emacs' lock status for FILE using SuperTag's lock location."
-  (let ((lock-file-name-transforms
-         (append (supertag--db-lock-file-transforms file)
-                 lock-file-name-transforms)))
-    (file-locked-p file)))
-
-(defun supertag--db-lock-file-name (file)
-  "Return the actual lock path Emacs uses for FILE."
-  (let ((lock-file-name-transforms
-         (append (supertag--db-lock-file-transforms file)
-                 lock-file-name-transforms)))
-    (make-lock-file-name file)))
-
-(defun supertag--db-acquire-lock ()
-  "Acquire the advisory lock on `supertag-db-file' for this Emacs instance.
-When `supertag-db-lock' is enabled and `supertag-db-file' is set, checks
-`file-locked-p' on it: if another Emacs instance already holds the lock
-\(i.e. `file-locked-p' returns a string, not t), records the owner in
-`supertag--db-lock-conflict' and warns that this session will not save the
-database until the conflict clears. Otherwise, clears any previous conflict
-and calls `lock-file' — locally binding `create-lockfiles' to t, since
-`lock-file' is a no-op when that variable is nil. Any error signaled while
-locking is caught and reported via `message' but never propagated, so a
-locking problem can never break DB loading."
-  (when (and supertag-db-lock
-             (stringp supertag-db-file)
-             (> (length supertag-db-file) 0))
-    (let ((owner (supertag--db-lock-status supertag-db-file)))
-      (if (stringp owner)
-          (progn
-            (setq supertag--db-lock-conflict owner)
-            (message "Supertag: database %s is locked by another Emacs instance (%s); this session will NOT save until the lock is released. Restart Emacs once the other instance has exited, or evaluate (supertag-db-retry-lock)."
-                     (abbreviate-file-name supertag-db-file) owner))
-        (setq supertag--db-lock-conflict nil)
-        (condition-case err
-            (let ((create-lockfiles t))
-              (let ((lock-file-name-transforms
-                     (append (supertag--db-lock-file-transforms supertag-db-file)
-                             lock-file-name-transforms)))
-                (lock-file supertag-db-file))
-              (setq supertag--db-locked-file supertag-db-file))
-          (error
-           (message "Supertag: failed to acquire lock on %s: %s (continuing without a lock)"
-                    (abbreviate-file-name supertag-db-file)
-                    (error-message-string err))))))))
-
-(defun supertag--db-release-lock ()
-  "Release the advisory DB lock held by this Emacs instance, if any.
-Safe no-op when no lock is currently held (`supertag--db-locked-file' is
-nil). Any error from `unlock-file' is ignored, since a failed unlock must
-never interrupt shutdown or vault switching."
-  (when supertag--db-locked-file
-    (ignore-errors
-      (let ((lock-file-name-transforms
-             (append (supertag--db-lock-file-transforms supertag--db-locked-file)
-                     lock-file-name-transforms)))
-        (unlock-file supertag--db-locked-file)))
-    (setq supertag--db-locked-file nil))
-  (setq supertag--db-lock-conflict nil))
-
-(defun supertag-db-retry-lock ()
-  "Retry acquiring the DB lock after a previously detected conflict.
-Useful once the other Emacs instance holding the lock on `supertag-db-file'
-has exited: re-checks `file-locked-p' and, if the lock is now free (or
-already held by this instance), calls `supertag--db-acquire-lock' to take
-it over so saves can resume."
-  (supertag--db-acquire-lock)
-  (if supertag--db-lock-conflict
-      (message "Supertag: database %s is still locked by another Emacs instance (%s)."
-               (abbreviate-file-name supertag-db-file) supertag--db-lock-conflict)
-    (message "Supertag: database lock acquired for %s."
-             (abbreviate-file-name supertag-db-file))))
-
 ;;; --- Cross-machine Presence (advisory; S0 of the git-sync hardening plan) ---
 ;;
-;; `supertag--db-acquire-lock' above only ever sees *this machine's* other
-;; Emacs instances (`lock-file' writes a host-local symlink, using the
-;; configured transform above for local databases). It cannot detect a second
-;; machine editing the same Dropbox/iCloud-synced database. Presence closes
-;; that visibility gap with
-;; an ordinary, sync-friendly JSON file instead of a lock primitive: it is
-;; written periodically and read on load, purely advisory, and never blocks
-;; a save the way a lock conflict does.
+;; Presence is an advisory cross-machine heads-up; it cannot itself arbitrate
+;; concurrent writers on a synced database.  Revision stamps below do that
+;; at save time.  Presence uses
+;; an ordinary, sync-friendly JSON file: it is written periodically and read
+;; on load, purely advisory, and never blocks a save.
 
 (defvar supertag--presence-write-failed nil
   "Non-nil once a presence-file write has failed and been warned about.
@@ -1543,6 +1425,62 @@ Signals an error if the file cannot be read or parsed."
     (remhash :queries store))
   store)
 
+;;; --- Revision-stamped multi-instance saves ---
+
+(defun supertag--store-revision-from (store)
+  "Return STORE's revision, treating missing or invalid legacy values as zero."
+  (let ((revision (and (hash-table-p store) (gethash :revision store))))
+    (if (and (integerp revision) (>= revision 0)) revision 0)))
+
+(defun supertag--revision-writer ()
+  "Return the stable description stamped beside a newly written revision."
+  (format "%s@%s:%d" (user-login-name) (system-name) (emacs-pid)))
+
+(defun supertag--disk-revision-info (&optional file)
+  "Return `(REVISION WRITER)' for FILE, cheaply peeking at its root scalar.
+Canonical files put all root scalars, including revision metadata, in their
+first non-comment form.  Older or unusual files fall back to the full
+reader, which also makes a legacy database without revision read as zero."
+  (let ((path (or file supertag-db-file)))
+    (if (not (and (stringp path) (file-exists-p path)
+                  (not (file-directory-p path))))
+        (list 0 nil)
+      (or
+       (condition-case nil
+           (with-temp-buffer
+             ;; A root scalar line is deliberately compact.  Bound the cheap
+             ;; path so an unexpected/legacy monolithic store uses the
+             ;; established full parser below instead of loading a large DB.
+             (insert-file-contents path nil 0 65536)
+             (supertag--persistence--skip-leading-comments-and-whitespace)
+             (let ((root (read (current-buffer))))
+               (when (and (supertag--persistence--plist-p root)
+                          (plist-member root :revision)
+                          (integerp (plist-get root :revision))
+                          (>= (plist-get root :revision) 0))
+                 (list (plist-get root :revision)
+                       (let ((writer (plist-get root :revision-writer)))
+                         (and (stringp writer) writer))))))
+         (error nil))
+       (condition-case nil
+           (let* ((store (supertag--coerce-store-table
+                          (supertag--persistence--try-read-store path)))
+                  (revision (supertag--store-revision-from store))
+                  (writer (gethash :revision-writer store)))
+             (list revision (and (stringp writer) writer)))
+         ;; Existing recovery guards still protect a database that failed to
+         ;; load.  Do not turn a diagnostic peek failure into a save failure.
+         (error (list 0 nil)))))))
+
+(defun supertag--disk-revision (&optional file)
+  "Return the revision currently recorded on disk for FILE.
+This is the cheap revision check used by save, idle following, and views."
+  (car (supertag--disk-revision-info file)))
+
+(defun supertag--disk-revision-writer (&optional file)
+  "Return the writer recorded beside FILE's on-disk revision, if available."
+  (cadr (supertag--disk-revision-info file)))
+
 (defun supertag--record-store-origin (status &optional context)
   "Record metadata about the current in-memory store origin."
   (setq supertag--store-origin
@@ -1592,19 +1530,6 @@ Signals an error if the file cannot be read or parsed."
         (push "sync-state not loaded for current vault" reasons))))
     (when (memq origin-status '(:failed :empty-file :missing-with-backups))
       (push (format "last load status %s" origin-status) reasons))
-    (when supertag-db-lock
-      (let ((live-owner (supertag--db-lock-status db-file)))
-        (cond
-         ((stringp live-owner)
-          (setq supertag--db-lock-conflict live-owner)
-          (push (format "database locked by another Emacs instance (%s)" live-owner) reasons))
-         (supertag--db-lock-conflict
-          ;; We previously recorded a conflict, but `file-locked-p' no longer
-          ;; reports another owner for this file — the other instance likely
-          ;; exited. Retry taking over the lock for this session.
-          (supertag--db-acquire-lock)
-          (when supertag--db-lock-conflict
-            (push (format "database locked by another Emacs instance (%s)" supertag--db-lock-conflict) reasons))))))
     (nreverse reasons)))
 
 (defun supertag--persistence-refuse-save (reasons)
@@ -1719,7 +1644,7 @@ hatch was not created for this transition."
               (error-message-string err))
      nil)))
 
-(defun supertag--persistence-write-store-atomically (file)
+(defun supertag--persistence-write-store-atomically (file &optional revision)
   "Write `supertag--store' to FILE atomically.
 
 A temporary file is created in the same directory as FILE (so the
@@ -1745,11 +1670,26 @@ every subsequent save.
 
 On any failure, including a verification mismatch or read error, the
 temp file is removed, an error is signaled, and FILE is left
-untouched."
+untouched.
+
+When REVISION is non-nil, stamp it and a writer description into the root
+scalars immediately before serialization.  Restores the prior in-memory
+metadata if the atomic write cannot complete."
   (let ((temp-file (make-temp-file (concat file ".tmp")))
-        (success nil))
+        (success nil)
+        (had-revision (and (hash-table-p supertag--store)
+                           (ht-contains? supertag--store :revision)))
+        (had-writer (and (hash-table-p supertag--store)
+                         (ht-contains? supertag--store :revision-writer)))
+        (old-revision (and (hash-table-p supertag--store)
+                           (gethash :revision supertag--store)))
+        (old-writer (and (hash-table-p supertag--store)
+                         (gethash :revision-writer supertag--store))))
     (unwind-protect
         (progn
+          (when revision
+            (puthash :revision revision supertag--store)
+            (puthash :revision-writer (supertag--revision-writer) supertag--store))
           (with-temp-buffer
             (set-buffer-file-coding-system 'utf-8-unix) ; Ensure UTF-8 encoding
             (supertag--persistence--write-canonical-store supertag--store (current-buffer))
@@ -1784,70 +1724,127 @@ untouched."
           (rename-file temp-file file t)
           (setq success t))
       (unless success
-        (ignore-errors (delete-file temp-file))))))
+        (ignore-errors (delete-file temp-file))
+        (when revision
+          (if had-revision
+              (puthash :revision old-revision supertag--store)
+            (remhash :revision supertag--store))
+          (if had-writer
+              (puthash :revision-writer old-writer supertag--store)
+            (remhash :revision-writer supertag--store)))))))
 
-(defun supertag-save-store (&optional file)
-  "Save the current `supertag--store` to a file.
-FILE is the optional file path. Defaults to `supertag-db-file`.
+(defun supertag--refresh-live-views ()
+  "Refresh live View Runtime buffers after an external store reload."
+  (when (fboundp 'supertag-view-refresh)
+    (dolist (buffer (buffer-list))
+      (when (buffer-live-p buffer)
+        (with-current-buffer buffer
+          (when (and (boundp 'supertag-view--instance)
+                     supertag-view--instance)
+            (ignore-errors (supertag-view-refresh buffer))))))))
 
-This is also the function `supertag-setup-auto-save' and
-`supertag-schedule-save' hand to their timers, so it doubles as the
-presence heartbeat: `supertag--presence-write' below runs unconditionally
-on every call — including timer ticks where the store turns out not to be
-dirty and nothing else in this function does any work — so a foreign
-machine's `supertag--presence-foreign-active-p' check sees this host as
-recently active for as long as this session keeps running."
+(defun supertag-reload-store (&optional discard)
+  "Reload the database from disk, refusing to discard unsaved changes.
+With prefix argument DISCARD, discard dirty in-memory changes deliberately.
+Reloading also re-reads sync state and refreshes any live View Runtime buffer;
+it never performs an Org scan."
+  (interactive "P")
+  (when (and (supertag-dirty-p) (not discard))
+    (user-error "Supertag has unsaved changes; use a prefix argument to discard them"))
+  (let ((inhibit-message t))
+    (supertag-load-store))
+  (when (fboundp 'supertag-sync-load-state)
+    (supertag-sync-load-state))
+  (supertag--refresh-live-views)
+  t)
+
+(defun supertag--follow-store ()
+  "Silently follow a newer disk revision when the Store is clean."
+  (when (and (not (supertag-dirty-p))
+             (> (supertag--disk-revision) supertag--store-revision))
+    (supertag-reload-store)))
+
+(defun supertag-save-store (&optional file force)
+  "Save the current `supertag--store` to FILE, using revision conflict checks.
+FILE is the optional file path and defaults to `supertag-db-file'.  FORCE
+allows an intentional overwrite of a newer disk revision; interactive users
+normally invoke that path through `supertag-save-store-force'."
   (interactive)
   (supertag--presence-write)
   (let* ((file-to-save (or file supertag-db-file))
-         (reasons (supertag--persistence-guard-violations file-to-save))
-         (interactivep (called-interactively-p 'any)))
+         (interactivep (called-interactively-p 'any))
+         (disk-info (supertag--disk-revision-info file-to-save))
+         (disk-revision (car disk-info))
+         (reasons (supertag--persistence-guard-violations file-to-save)))
     (cond
+     ;; Following a clean newer Store is deliberately allowed even when a
+     ;; save-specific safety guard is currently unhappy (for example while a
+     ;; vault's sync-state identity is being initialized).
+     ((and (not (supertag-dirty-p))
+           (> disk-revision supertag--store-revision))
+      (supertag-reload-store)
+      nil)
      (reasons
       (message "Supertag auto-save skipped: %s"
                (mapconcat #'identity reasons "; ")))
+     ((not (supertag-dirty-p))
+      (when interactivep
+        (message "Supertag database has no unsaved changes")))
      (t
-      (supertag-persistence-ensure-data-directory) ; Ensure directory exists before saving
-      (if (not (supertag-dirty-p))
-          (when interactivep
-            (message "Supertag database has no unsaved changes"))
-        ;; Safety guard: avoid overwriting a non-trivial on-disk DB with an empty in-memory store
-        (let* ((nodes-table (ignore-errors (supertag-store-get-collection :nodes)))
-               (live-node-count (and (hash-table-p nodes-table)
-                                     (hash-table-count nodes-table)))
-               (existing-file-p (file-exists-p file-to-save))
-               (existing-size (when existing-file-p (file-attribute-size (file-attributes file-to-save))))
-               ;; Treat DB file larger than 1KB as "non-trivial" by default
-               (non-trivial-file (and existing-size (> existing-size 1024))))
-          (if (and non-trivial-file
-                   (numberp live-node-count)
-                   (= live-node-count 0))
-              (message "Protective skip: Live DB has 0 nodes while on-disk DB looks non-trivial (%s bytes). Skipping save to avoid data loss."
-                       existing-size)
-            (supertag--persistence-write-store-atomically file-to-save)
-            (supertag-clear-dirty)
-            (supertag--record-store-origin :ok)
-            ;; Re-claim presence after a successful save too, not just on the
-            ;; unconditional heartbeat write above — keeps the recorded
-            ;; `updatedAt' as fresh as possible right when real writes happen.
-            (supertag--presence-write)
-            ;; Check if daily backup is needed after successful save
-            (supertag-check-daily-backup)
-            ;; S4 git-sync-mode commit trigger seam — see
-            ;; `supertag-persistence-after-save-hook''s docstring.
-            (run-hook-wrapped
-             'supertag-persistence-after-save-hook
-             (lambda (subscriber)
-               (condition-case err
-                   (funcall subscriber)
-                 (error
-                  (message "Supertag after-save subscriber %S failed: %s"
-                           subscriber (error-message-string err))))
-               ;; Never let a subscriber's return value stop delivery.
-               nil))
-            (when interactivep
-              (message "Supertag database saved to %s" file-to-save))
-            t)))))))
+      (supertag-persistence-ensure-data-directory)
+      (let* ((disk-writer (or (cadr disk-info) "unknown writer"))
+             (ours supertag--store-revision))
+        (cond
+         ((and (> disk-revision ours) (not force))
+          ;; Timer-driven retries must not flood the echo area.  Once a newer
+          ;; disk revision appears, one actionable warning is enough until it
+          ;; changes again (or the user reloads/saves successfully).
+          (unless (equal disk-revision supertag--last-conflict-revision)
+            (setq supertag--last-conflict-revision disk-revision)
+            (message (concat "Supertag: database changed on disk (revision %d by %s) while this session has unsaved changes.\n"
+                             "M-x supertag-reload-store to discard them, or M-x supertag-save-store-force to overwrite.")
+                     disk-revision disk-writer))
+          nil)
+         (t
+          ;; Safety guard: avoid overwriting a non-trivial on-disk DB with an
+          ;; empty in-memory store.  The force command deliberately bypasses
+          ;; only the revision conflict, not this independent protection.
+          (let* ((nodes-table (ignore-errors (supertag-store-get-collection :nodes)))
+                 (live-node-count (and (hash-table-p nodes-table)
+                                       (hash-table-count nodes-table)))
+                 (existing-file-p (file-exists-p file-to-save))
+                 (existing-size (when existing-file-p
+                                  (file-attribute-size (file-attributes file-to-save))))
+                 (non-trivial-file (and existing-size (> existing-size 1024))))
+            (if (and non-trivial-file (numberp live-node-count)
+                     (= live-node-count 0))
+                (message "Protective skip: Live DB has 0 nodes while on-disk DB looks non-trivial (%s bytes). Skipping save to avoid data loss."
+                         existing-size)
+              (let ((next-revision (1+ (max disk-revision ours))))
+                (supertag--persistence-write-store-atomically file-to-save next-revision)
+                (setq supertag--store-revision next-revision
+                      supertag--last-conflict-revision nil)
+                (supertag-clear-dirty)
+                (supertag--record-store-origin :ok)
+                (supertag--presence-write)
+                (supertag-check-daily-backup)
+                (run-hook-wrapped
+                 'supertag-persistence-after-save-hook
+                 (lambda (subscriber)
+                   (condition-case err
+                       (funcall subscriber)
+                     (error
+                      (message "Supertag after-save subscriber %S failed: %s"
+                               subscriber (error-message-string err))))
+                   nil))
+                (when interactivep
+                  (message "Supertag database saved to %s" file-to-save))
+                t))))))))))
+
+(defun supertag-save-store-force ()
+  "Save the Store, intentionally overwriting a newer on-disk revision."
+  (interactive)
+  (supertag-save-store nil t))
 
 (autoload 'supertag-migrate-run "supertag-migrate" "Run verified data migration." t)
 
@@ -1857,30 +1854,14 @@ recently active for as long as this session keeps running."
              (not (equal (supertag--get-data-version supertag--store) supertag-data-version)))
     (supertag-migrate-run)))
 
-(defun supertag-load-store (&optional file preserve-lock)
-  "Load data into supertag--store from a file.
-This function loads and coerces the persisted store data.  When automatic
-migration is enabled, the version-gated DB migration may run during loading;
-otherwise use `supertag-migrate-run` after loading for an explicit migration.
-FILE is the optional file path. Defaults to supertag-db-file.
-When PRESERVE-LOCK is non-nil, load only FILE while retaining the advisory
-lock already held for it; this is reserved for the restore critical section."
-  (let* ((locked-file (or file supertag-db-file))
-         (candidates (if preserve-lock
-                         (list (supertag--persistence--normalize-path locked-file))
-                       (supertag--persistence--db-file-candidates file)))
+(defun supertag-load-store (&optional file)
+  "Load data into `supertag--store' from FILE or `supertag-db-file'.
+Loading records the root `:revision' (legacy databases without one are
+revision zero), rebuilds indexes, and keeps presence advisory."
+  (let* ((candidates (supertag--persistence--db-file-candidates file))
          (file-to-load nil)
          (load-status nil)
          (failures '()))
-    (when (and preserve-lock
-               supertag-db-lock
-               (or (not (equal supertag--db-locked-file locked-file))
-                   (not (eq t (supertag--db-lock-status locked-file)))))
-      (user-error "Cannot preserve a database lock not held by this Emacs"))
-    ;; Release any lock held for a previously loaded DB file (e.g. when
-    ;; switching vaults) before possibly loading a different one below.
-    (unless preserve-lock
-      (supertag--db-release-lock))
     ;; Ensure directory exists before loading (best-effort; does not depend on DB presence).
     (ignore-errors (supertag-persistence-ensure-data-directory))
 
@@ -1905,6 +1886,9 @@ lock already held for it; this is reserved for the restore critical section."
                   (setq file-to-load expanded)
                   (setq supertag--store (supertag--persistence--canonicalize-store-root coerced))
                   (supertag--ensure-store)
+                  (setq supertag--store-revision
+                        (supertag--store-revision-from supertag--store)
+                        supertag--last-conflict-revision nil)
                   (setq load-status :ok))
               (error
                (push (cons expanded (error-message-string err)) failures))))))))
@@ -1918,8 +1902,6 @@ lock already held for it; this is reserved for the restore critical section."
                                                :load-candidates candidates
                                                :load-failures (nreverse failures)))
           (message "Database loaded from %s." (abbreviate-file-name file-to-load))
-          (unless preserve-lock
-            (supertag--db-acquire-lock))
           (supertag--presence-check-and-claim)
           (supertag--maybe-auto-migrate)
           (supertag-index-rebuild-all)
@@ -1928,7 +1910,9 @@ lock already held for it; this is reserved for the restore critical section."
           ;; successfully loaded, without this file knowing (or requiring)
           ;; anything about who is listening.
           (run-hooks 'supertag-persistence-after-load-hook))
-      (setq supertag--store (ht-create))
+      (setq supertag--store (ht-create)
+            supertag--store-revision 0
+            supertag--last-conflict-revision nil)
       (setq failures (nreverse failures))
       ;; `failures' is only ever non-nil here when at least one candidate
       ;; FILE EXISTED and failed to parse (the dolist above only attempts a
@@ -2023,6 +2007,15 @@ Waits for 2 seconds of idle time before saving to avoid frequent saves."
                          supertag-db-backup-interval
                          #'supertag-backup-database-now))))
 
+(defun supertag-setup-db-follow ()
+  "Set up the idle timer that follows newer on-disk database revisions."
+  (when (and supertag-db-follow-interval
+             (null supertag-db--follow-timer))
+    (setq supertag-db--follow-timer
+          (run-with-idle-timer supertag-db-follow-interval
+                               supertag-db-follow-interval
+                               #'supertag--follow-store))))
+
 (defun supertag-cleanup-auto-save ()
   "Clean up auto-save timer."
   (when supertag-db--auto-save-timer
@@ -2035,15 +2028,23 @@ Waits for 2 seconds of idle time before saving to avoid frequent saves."
     (cancel-timer supertag-db--backup-timer)
     (setq supertag-db--backup-timer nil)))
 
+(defun supertag-cleanup-db-follow ()
+  "Cancel the idle timer which follows newer on-disk revisions."
+  (when supertag-db--follow-timer
+    (cancel-timer supertag-db--follow-timer)
+    (setq supertag-db--follow-timer nil)))
+
 (defun supertag-setup-all-timers ()
-  "Set up both auto-save and daily backup timers."
+  "Set up auto-save, daily backup, and revision-follow timers."
   (supertag-setup-auto-save)
-  (supertag-setup-daily-backup))
+  (supertag-setup-daily-backup)
+  (supertag-setup-db-follow))
 
 (defun supertag-cleanup-all-timers ()
   "Clean up all persistence-related timers."
   (supertag-cleanup-auto-save)
-  (supertag-cleanup-daily-backup))
+  (supertag-cleanup-daily-backup)
+  (supertag-cleanup-db-follow))
 
 ;;; --- Event Subscription ---
 
@@ -2380,9 +2381,8 @@ Offers every daily, pre-restore, pre-migration, and pre-format6 snapshot in
 `supertag-db-backup-directory' (see `supertag--restore-snapshot-list'), newest
 first, via `completing-read'. Shows a preview comparing the chosen snapshot
 against the live store, asks for explicit confirmation naming the snapshot,
-then takes the database lock and creates a unique
-`supertag-db-prerestore-*' recovery point before replacing
-`supertag-db-file'. Daily snapshots reload normally. Pre-migration and
+then creates a unique `supertag-db-prerestore-*' recovery point before
+replacing `supertag-db-file'. Daily snapshots reload normally. Pre-migration and
 pre-format6 snapshots reload with auto-migration disabled so they remain
 readable by pre-6.0 builds; quit Emacs immediately after restoring one for
 downgrade."
@@ -2412,22 +2412,13 @@ downgrade."
                         (file-name-nondirectory file) current-nodes (plist-get summary :nodes))))
           (message "Restore cancelled.")
         (supertag-persistence-ensure-data-directory)
-        (supertag--db-acquire-lock)
-        (when (and supertag-db-lock
-                   (or supertag--db-lock-conflict
-                       (not (eq t (supertag--db-lock-status supertag-db-file)))
-                       (not (equal supertag--db-locked-file supertag-db-file))))
-          (user-error "Cannot restore while the database lock is unavailable%s"
-                      (if supertag--db-lock-conflict
-                          (format " (%s)" supertag--db-lock-conflict)
-                        "")))
         (let* ((kind (plist-get snapshot :kind))
                (downgrade-p (memq kind '(premigrate preformat6)))
                (recovery-file (supertag--restore-create-recovery-snapshot)))
           (copy-file file supertag-db-file t)
           (let ((supertag-db-auto-migrate
                  (and supertag-db-auto-migrate (not downgrade-p))))
-            (supertag-load-store supertag-db-file t))
+            (supertag-load-store supertag-db-file))
           (message "Restored Supertag database from %s (%d nodes). Recovery point: %s.%s"
                    (file-name-nondirectory file)
                    (supertag--count-nodes)

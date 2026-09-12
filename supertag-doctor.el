@@ -6,7 +6,7 @@
 
 ;; `supertag-doctor' is a health-check function for the
 ;; Supertag persistence layer.  It inspects the on-disk database
-;; file(s), in-memory store guards, lock state, data version, and
+;; file(s), in-memory store guards, revision/presence state, data version, and
 ;; referential integrity, then renders a report to the
 ;; "*Supertag Doctor*" buffer.
 ;;
@@ -172,28 +172,41 @@ Silent when the last load succeeded normally and the default roots are clear."
                                        (plist-get (car snapshots) :mtime)))
                             "none found"))))))))
 
-(defun supertag-doctor--section-lock ()
-  "Insert the \"Lock\" section into the current buffer."
-  (supertag-doctor--insert-header "3. Lock")
-  (let ((active (and (boundp 'supertag-db-file) supertag-db-file)))
-    (cond
-     ((not active)
-      (insert (supertag-doctor--na) "\n"))
-     ((not (fboundp 'file-locked-p))
-      (insert "n/a (helper not available: file-locked-p)\n"))
-     (t
-      (let ((status (ignore-errors
-                      (if (fboundp 'supertag--db-lock-status)
-                          (supertag--db-lock-status active)
-                        (file-locked-p active)))))
-        (insert
-         (format "Lock status for %s: %s\n"
-                 active
-                 (cond
-                  ((null status) "not locked")
-                  ((eq status t) "locked by this Emacs session")
-                  ((stringp status) (format "locked by another owner: %s" status))
-                  (t (format "%S" status))))))))))
+(defun supertag-doctor--section-revision-presence ()
+  "Insert the revision-follow and presence summary into the current buffer."
+  (supertag-doctor--insert-header "3. Revision & Presence")
+  (let* ((own (if (boundp 'supertag--store-revision)
+                  supertag--store-revision
+                (supertag-doctor--na)))
+         (disk-info (when (fboundp 'supertag--disk-revision-info)
+                      (ignore-errors (supertag--disk-revision-info))))
+         (disk (if disk-info (car disk-info) (supertag-doctor--na)))
+         (writer (and disk-info (cadr disk-info)))
+         (dirty (cond ((fboundp 'supertag-dirty-p)
+                       (if (supertag-dirty-p) "dirty" "clean"))
+                      (t (supertag-doctor--na)))))
+    (insert (format "In-memory revision: %s\n" own))
+    (insert (format "On-disk revision: %s%s\n" disk
+                    (if writer (format " (writer %s)" writer) "")))
+    (insert (format "Dirty: %s\n" dirty))
+    (insert (format "Follow interval: %s\n"
+                    (if (boundp 'supertag-db-follow-interval)
+                        (or supertag-db-follow-interval "disabled")
+                      (supertag-doctor--na))))
+    (insert (format "Follow timer: %s\n"
+                    (if (boundp 'supertag-db--follow-timer)
+                        (if (timerp supertag-db--follow-timer) "active" "inactive")
+                      (supertag-doctor--na))))
+    (insert (format "Presence: %s\n"
+                    (cond
+                     ((not (boundp 'supertag-presence-enable))
+                      (supertag-doctor--na))
+                     ((not supertag-presence-enable) "disabled")
+                     ((and (fboundp 'supertag--presence-foreign-active-p)
+                           (supertag--presence-foreign-active-p))
+                      (format "foreign host active (%s)"
+                              (supertag--presence-foreign-active-p)))
+                     (t "enabled"))))))
 
 (defun supertag-doctor--section-version ()
   "Insert the \"Version\" section into the current buffer."
@@ -365,7 +378,7 @@ own / foreign-active / foreign-stale / unavailable."
   (supertag-doctor--section-database-files)
   (supertag-doctor--section-guards)
   (supertag-doctor--section-recovery)
-  (supertag-doctor--section-lock)
+  (supertag-doctor--section-revision-presence)
   (supertag-doctor--section-version)
   (supertag-doctor--section-integrity)
   (supertag-doctor--section-backups)
@@ -467,8 +480,8 @@ own / foreign-active / foreign-stale / unavailable."
   "Run health checks on the Supertag database and report to a buffer.
 
 Produces a report in the \"*Supertag Doctor*\" buffer covering
-database files, guards, lock state, data version, integrity, and
-backups.
+database files, guards, revision/presence state, data version, integrity,
+and backups.
 
 With non-nil REPORT-ONLY (or when running in batch mode,
 see `noninteractive'), only the report is produced and no repairs are

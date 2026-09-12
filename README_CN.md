@@ -212,6 +212,8 @@ Table、Schema、Kanban、Board、Graph 入口已封存，不属于当前工作�
 | 高亮概念提及 | `M-x supertag-concept-link-mode` | 将概念 title/alias 的提及显示为琥珀色语义高亮，不落库为链接 |
 | 光标处的情景动作 | `embark-act`（Embark，可选） | 识别对象并提供对应动作；RET 为默认动作 |
 | 保存数据库 | `M-x supertag-save-store` | 立即把未保存的 Store 变更写入磁盘；自动保存和退出时也会执行 |
+| 从磁盘重新加载数据库 | `M-x supertag-reload-store` | 仅在 Store 干净时重新加载；有未保存变更时拒绝，除非带前缀参数明确丢弃 |
+| 保存数据库并覆盖较新的磁盘副本 | `M-x supertag-save-store-force` | 有意用本会话的脏 Store 覆盖较新的磁盘修订版 |
 | 重建 Org 索引 | `M-x supertag-sync-full-rescan` | 从一个完整快照重建 Document Projection；绝不恢复 Semantic Facts |
 
 Discovery 初始页是不排序、无重复的阅读抽样。可通过
@@ -319,7 +321,7 @@ Supertag 按定时器读取你的文件（可通过 `doc/SYNC-CONFIGURATION.md` 
 
 ## 多机同步
 
-Git 同步只传输 Org 文本，每台机器从文档重建本地投影缓存；数据库、备份、锁和 presence 文件不由 Git 同步。
+Git 同步只传输 Org 文本，每台机器从文档重建本地投影缓存；数据库、备份和 presence 文件不由 Git 同步。
 
 ### 多库隔离
 
@@ -349,7 +351,7 @@ scheduler 与 discovery 历史文件按当前库的数据目录动态计算。�
 
 即使你觉得自己在机器 A 上"只是看看，没有编辑"，这条建议依然成立：自动保存定时器（`supertag-db-auto-save-interval`，默认 300 秒）只要会话中有任何改动被标记为脏（dirty），就会在后台把数据库写入磁盘——所以一个开着的 Emacs 进程本身就是一个后台写入者，不管你有没有在主动敲键盘。
 
-**5.9.0 的数据库锁并不能解决这个问题。** 从 5.9.0 起，Supertag 会对数据库文件加一个建议性的锁（`supertag-db-lock`），防止*同一台机器*上的两个 Emacs 实例互相踩踏。当前版本默认把本机锁放在 `temporary-file-directory/supertag-locks/`，不再把新锁写入网络/同步目录；它仍然只能保护"同机双开"，对跨机器场景没有意义。升级后，如果数据库旁还残留旧版本的 `.#supertag-db.el`，先确认没有旧版本 Emacs 正在使用该 vault，再删除这个陈旧锁文件即可。
+**多实例与修订版。** 每次保存都会写入单调递增的 `:revision` 及写入者信息。任意数量的 Emacs 实例——daemon、GUI 或 `emacsclient`——都可以打开同一 vault。没有未保存改动的空闲会话会在 `supertag-db-follow-interval` 秒后静默跟随较新的磁盘修订版；刷新 View 时也会检查。只有本会话存在未保存改动且磁盘版本更高时，保存才会被拒绝；可用 `M-x supertag-reload-store` 丢弃这些改动，或用 `M-x supertag-save-store-force` 有意覆盖。presence 只提供信息提示。跨机器同步有传播延迟，因此该机制保护同一台机器上的使用，不能保护两台机器上的并发编辑。
 
 **presence（在场）告警。** 为了至少给同步文件夹的用户一个提醒（这不是锁——同步服务动辄几分钟的传播延迟决定了它在物理上不可能是锁），Supertag 会在数据库文件旁边写一个很小的 `supertag-presence.json` 文件，记录"最后是哪台主机碰过它、什么时候"。当你加载数据库时，如果发现另一台主机大约在最近 5 分钟内（`supertag-presence-stale-seconds`）还活跃过，就会弹出一条醒目的告警，点名那台主机并说明风险。**看到告警后怎么办：** 如果你确定另一台机器已经退出 Emacs，可以放心继续——这条告警只出现一次，不会重复弹出，直到另一台主机再次声明 presence 为止。如果不确定，先去那台机器上退出 Emacs。随时可以用 `M-: (supertag-doctor)` 查看当前 presence 文件记录的主机、距今时长和判定结果（本机 / 异机活跃 / 异机过期）。将 `supertag-presence-enable` 设为 `nil` 可以完全关闭这个功能。
 
@@ -536,8 +538,7 @@ Supertag 以 GPLv3 自由软件协议开发。欢迎在 GitHub 上贡献代码�
 | `supertag-db-backup-interval` | `86400` | Daily backup interval in seconds (default: 24 hours). |
 | `supertag-db-backup-keep-days` | `3` | Number of days to keep daily backups. |
 | `supertag-db-file` | `"<data-directory>/supertag-db.el"` | Database file path. |
-| `supertag-db-lock` | `t` | When non-nil, protect the database from concurrent multi-instance access. |
-| `supertag-db-lock-directory` | `string of 64 chars, see docstring` | Directory for local database advisory lock files. |
+| `supertag-db-follow-interval` | `30` | Idle seconds between checks for a newer on-disk database revision. |
 | `supertag-db-verify-after-save` | `t` | When non-nil, verify the database file after saving. |
 | `supertag-presence-enable` | `t` | When non-nil, write and check an advisory presence file for cross-machine awareness. |
 | `supertag-presence-stale-seconds` | `300` | Age in seconds beyond which a foreign presence record is ignored. |

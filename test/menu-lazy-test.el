@@ -57,7 +57,7 @@
                 (let ((form (read (current-buffer))))
                   (when (eq (car-safe form) 'supertag-menu--defwrapper) (push form wrappers))))
             (end-of-file nil)))
-        (should (= 34 (length wrappers)))
+        (should (= 38 (length wrappers)))
         (dotimes (_ 2)
           (dolist (row wrappers)
             (should (commandp (nth 1 row)))

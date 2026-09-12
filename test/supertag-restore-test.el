@@ -84,16 +84,13 @@ VERSION defaults to `supertag-data-version' and ROOT-KEY to :nodes."
      (let ((supertag-data-directory tmp)
            (supertag-db-file (expand-file-name "supertag-db.el" tmp))
            (supertag-db-backup-directory (expand-file-name "backups" tmp))
-           (supertag-db-lock t)
            (supertag-db-auto-migrate t)
            (supertag-db-verify-after-save t)
            (supertag--store nil)
            (supertag--store-origin nil)
-           (supertag--db-lock-conflict nil)
-           (supertag--db-locked-file nil))
-       (unwind-protect
-           (progn ,@body)
-         (supertag--db-release-lock)))))
+           (supertag--store-revision 0)
+           (supertag--last-conflict-revision nil))
+       (progn ,@body))))
 
 (defun supertag-restore-test--run-command (snapshot)
   "Run `supertag-restore', selecting SNAPSHOT and confirming the restore."
@@ -210,43 +207,6 @@ VERSION defaults to `supertag-data-version' and ROOT-KEY to :nodes."
         (should (= 1 (length recovery)))
         (should (= 2 (plist-get (supertag--restore-snapshot-summary (car recovery))
                                 :nodes)))))))
-
-(ert-deftest supertag-restore-test-lock-conflict-refuses-before-replacement ()
-  (supertag-restore-test--with-temp-env
-    (supertag-persistence-ensure-data-directory)
-    (supertag-restore-test--write-store
-     supertag-db-file (supertag-restore-test--make-store '("live")))
-    (supertag-load-store)
-    (let* ((before (supertag-restore-test--read-file supertag-db-file))
-           (snapshot (expand-file-name
-                      "supertag-db-2026-07-20.el"
-                      supertag-db-backup-directory)))
-      (supertag-restore-test--write-store
-       snapshot (supertag-restore-test--make-store '("snapshot")))
-      (should-error
-       (cl-letf (((symbol-function 'supertag--db-acquire-lock)
-                  (lambda () (setq supertag--db-lock-conflict "other@host.123"))))
-         (supertag-restore-test--run-command snapshot))
-       :type 'user-error)
-      (should (equal before (supertag-restore-test--read-file supertag-db-file))))))
-
-(ert-deftest supertag-restore-test-keeps-lock-through-reload ()
-  (supertag-restore-test--with-temp-env
-    (supertag-persistence-ensure-data-directory)
-    (supertag-restore-test--write-store
-     supertag-db-file (supertag-restore-test--make-store '("live")))
-    (supertag-load-store)
-    (let ((snapshot (expand-file-name
-                     "supertag-db-2026-07-20.el"
-                     supertag-db-backup-directory))
-          (release-count 0))
-      (supertag-restore-test--write-store
-       snapshot (supertag-restore-test--make-store '("snapshot")))
-      (cl-letf (((symbol-function 'supertag--db-release-lock)
-                 (lambda () (cl-incf release-count))))
-        (supertag-restore-test--run-command snapshot))
-      (should (= 0 release-count))
-      (should (eq t (supertag--db-lock-status supertag-db-file))))))
 
 (ert-deftest supertag-restore-test-downgrade-snapshot-is-not-auto-migrated ()
   (supertag-restore-test--with-temp-env

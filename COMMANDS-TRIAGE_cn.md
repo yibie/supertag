@@ -92,7 +92,6 @@ Embark情景等产品门已解决。
 | 删 | `supertag-conflicts-use-ours-all` | 数据库是缓存，没有写入命令。备份、恢复、冲突、锁、索引、手动保存加载都由"重建"取代；自动同步常开，不提供开关 |
 | 删 | `supertag-conflicts-use-theirs-all` | 数据库是缓存，没有写入命令。备份、恢复、冲突、锁、索引、手动保存加载都由"重建"取代；自动同步常开，不提供开关 |
 | 删 | `supertag-convert-properties-to-field` | 字段/schema/链接定义/虚拟列，随 field 系统删除 |
-| 删 | `supertag-db-retry-lock` | 数据库是缓存，没有写入命令。备份、恢复、冲突、锁、索引、手动保存加载都由"重建"取代；自动同步常开，不提供开关 |
 | 删 | `supertag-doctor` | 数据库是缓存，没有写入命令。备份、恢复、冲突、锁、索引、手动保存加载都由"重建"取代；自动同步常开，不提供开关 |
 | 删 | `supertag-edit-field` | 字段/schema/链接定义/虚拟列，随 field 系统删除 |
 | 删 | `supertag-edit-fields` | 字段/schema/链接定义/虚拟列，随 field 系统删除 |

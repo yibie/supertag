@@ -113,15 +113,13 @@ and the in-memory store, so this benchmark NEVER touches the user's real
           (supertag-db-file (expand-file-name "supertag-db.el" tmp))
           (supertag-db-backup-directory (expand-file-name "backups" tmp))
           (supertag-db-verify-after-save t)
-          (supertag-db-lock nil)
           (supertag-db-auto-migrate nil)
           (supertag--store nil)
           (supertag--store-origin nil)
-          (supertag--db-lock-conflict nil)
-          (supertag--db-locked-file nil))
+          (supertag--store-revision 0)
+          (supertag--last-conflict-revision nil))
      (unwind-protect
          (progn ,@body)
-       (supertag--db-release-lock)
        (ignore-errors (delete-directory tmp t)))))
 
 (defun supertag-perf-benchmark--tag-id-for-node (i)

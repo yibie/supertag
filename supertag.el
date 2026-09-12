@@ -305,16 +305,9 @@ Consider running: M-x supertag-sync-full-rescan" db-file)
 (add-hook 'kill-emacs-hook #'supertag-cleanup-all-timers) ; Clean up all timers on exit
 (add-hook 'kill-emacs-hook #'supertag-sync-save-state) ; Save sync state on exit
 (add-hook 'kill-emacs-hook #'supertag-sync-stop-auto-sync) ; Stop auto-sync on exit
-;; Release the multi-instance DB lock last, after the final `supertag-save-store'
-;; above has run (APPEND t places this at the end of `kill-emacs-hook', which
-;; — given the other entries above are added without APPEND, i.e. prepended —
-;; runs after all of them).
-(add-hook 'kill-emacs-hook #'supertag--db-release-lock t)
 ;; Best-effort delete this host's own cross-machine presence claim on exit
 ;; (only if it still names this host; see `supertag--presence-release').
-;; Order relative to the lock release above does not matter — presence and
-;; the local lock are independent mechanisms — but it belongs in this same
-;; "final cleanup" group of appended hooks.
+;; It belongs in this final cleanup group of appended hooks.
 (add-hook 'kill-emacs-hook #'supertag--presence-release t)
 ;; If Emacs has already finished startup by the time this file loads
 ;; (lazy-load via autoload / use-package :defer / late require), the

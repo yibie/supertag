@@ -182,6 +182,11 @@ errors propagate unchanged. DOC is the generated wrapper's docstring."
   supertag-semantic supertag-semantic-resume "Continue a stopped embedding rebuild.")
 (supertag-menu--defwrapper supertag-menu--save-store
   supertag-core-persistence supertag-save-store "Save the current Store now.")
+(supertag-menu--defwrapper supertag-menu--reload-store
+  supertag-core-persistence supertag-reload-store "Reload the database from disk.")
+(supertag-menu--defwrapper supertag-menu--save-store-force
+  supertag-core-persistence supertag-save-store-force
+  "Save the Store while intentionally overwriting a newer disk copy.")
 
 (supertag-menu--defwrapper supertag-menu--extract-properties
   supertag-ai supertag-ai-extract-properties "Extract property candidates with AI.")
@@ -304,7 +309,9 @@ errors propagate unchanged. DOC is the generated wrapper's docstring."
     ("es" "Similarity status" supertag-menu--semantic-status)
     ("ec" "Continue embeddings" supertag-menu--semantic-resume)
     ("ex" "Stop embeddings" supertag-menu--semantic-stop)
-    ("ed" "Save database now" supertag-menu--save-store)]
+    ("ed" "Save database now" supertag-menu--save-store)
+    ("el" "Reload database from disk" supertag-menu--reload-store)
+    ("ef" "Save database, overwriting newer disk copy" supertag-menu--save-store-force)]
    ["Git"
     ("gs" "Setup git sync"    supertag-menu--git-setup)
     ("gc" "Clone vault"       supertag-menu--git-clone)

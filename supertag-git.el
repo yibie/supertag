@@ -734,7 +734,7 @@ root -- saves anywhere else in Emacs must never trigger a vault commit."
 
 (defun supertag-git--local-data-path-p (root path)
   "Return non-nil for local data PATH, resolving directory and file aliases.
-Configured data/backup directories and state/presence/lock files remain
+Configured data/backup directories and state/presence files remain
 local, as do conventional .supertag and backups directories."
   (let* ((file (file-truename (expand-file-name path root)))
          (relative (file-relative-name file (supertag-git--truename-dir root)))
@@ -742,17 +742,14 @@ local, as do conventional .supertag and backups directories."
                                       supertag-db-backup-directory
                                       (expand-file-name ".supertag/" root))))
          (files (delq nil (list supertag-db-file supertag-sync-state-file
-                                (supertag--presence-file)
-                                (and supertag-db-file
-                                     (supertag--db-lock-file-name supertag-db-file))))))
+                                (supertag--presence-file)))))
     (or (cl-some (lambda (dir) (supertag-git--ancestor-p dir file)) directories)
         (cl-some (lambda (entry) (equal file (file-truename entry))) files)
         (member "backups" (split-string relative "/" t))
         (member ".supertag" (split-string relative "/" t))
         (member (file-name-nondirectory file)
                 '("supertag-db.el" "sync-state.el" "presence.json"
-                  "supertag-presence.json" ".gitattributes"))
-        (string-suffix-p ".lock" file))))
+                  "supertag-presence.json" ".gitattributes")))))
 
 (defun supertag-git--retired-tracked (root)
   "Return tracked local data requiring explicit setup confirmation."
@@ -793,11 +790,10 @@ Line separators and NUL cannot safely be written as a single rule."
 RETIRED paths have separately been confirmed for removal from tracking."
   (let ((lines '("**/.supertag/" "/.gitattributes" "**/supertag-db.el"
                  "**/sync-state.el" "**/backups/" "**/presence.json"
-                 "**/supertag-presence.json" "**/*.lock")))
+                 "**/supertag-presence.json")))
     (dolist (path (append (list supertag-data-directory supertag-db-backup-directory
                                 supertag-db-file supertag-sync-state-file
-                                (supertag--presence-file)
-                                (and supertag-db-file (supertag--db-lock-file-name supertag-db-file)))
+                                (supertag--presence-file))
                          (mapcar (lambda (p) (expand-file-name p root)) retired)))
       (when (and path (supertag-git--ancestor-p root path))
         (let ((relative (file-relative-name (file-truename path) root)))

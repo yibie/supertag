@@ -37,8 +37,7 @@
 (ert-deftest supertag-storage-save-isolates-after-save-subscribers ()
   "A failing subscriber cannot undo a durable save or skip the next one."
   (supertag-document-test-with-vault
-    (let* ((supertag-db-lock nil)
-           (supertag-db--dirty t)
+    (let* ((supertag-db--dirty t)
            (supertag-persistence-after-save-hook nil)
            (second-ran nil)
            (first (lambda () (error "Subscriber failure")))
@@ -96,8 +95,7 @@
 (ert-deftest supertag-storage-reindex-real-disk-rollback-and-retry ()
   "Failed GC leaves the durable baseline intact; a retry commits deletion."
   (supertag-document-test-with-vault
-    (let ((supertag-db-lock nil)
-          (supertag-db--dirty t)
+    (let ((supertag-db--dirty t)
           (supertag-persistence-after-save-hook nil)
           (supertag-sync-orphan-grace-seconds 0)
           (supertag-sync-max-delete-ratio 1.0)
@@ -137,8 +135,7 @@
 
 (ert-deftest supertag-storage-load-retires-only-queries ()
   (supertag-document-test-with-vault
-    (let ((supertag-db-lock nil)
-          (supertag-db--dirty t)
+    (let ((supertag-db--dirty t)
           (supertag-persistence-after-save-hook nil)
           (supertag-db-auto-migrate nil)
           (before (make-hash-table :test 'eq)))

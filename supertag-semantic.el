@@ -1,6 +1,7 @@
 ;;; supertag-semantic.el --- Optional node-level similarity candidates -*- lexical-binding: t; -*-
 
-;; Commands: supertag-semantic-rebuild, supertag-semantic-status, supertag-semantic-stop
+;; Commands: supertag-semantic-rebuild, supertag-semantic-resume, supertag-semantic-status,
+;; supertag-semantic-stop
 ;; Dependencies: cl-lib, subr-x, seq, json, button, org, org-element, org-fold, supertag-core-store,
 ;; supertag-core-persistence, supertag-view-framework; guarded existing
 ;; supertag-view-node refresh capabilities. Selected navigation actions use
@@ -78,6 +79,8 @@ Nil preserves pending reconciliation across disabled or paused observations.")
 (defvar supertag-semantic--timer nil)
 (defvar supertag-semantic--error nil)
 (defvar supertag-semantic--paused nil)
+(defvar supertag-semantic--rebuild nil
+  "Active one-shot rebuild progress session, or nil.")
 (defvar supertag-semantic--needs-save nil)
 (defvar supertag-semantic--subscription-table nil)
 
@@ -268,6 +271,41 @@ Return the curl process.  Request data and process buffers are always temporary.
        (delete-file input) (kill-buffer output) (kill-buffer errors)
        (signal (car err) (cdr err))))))
 
+(defun supertag-semantic--probe ()
+  "Synchronously verify that the configured embedding endpoint accepts MODEL.
+
+The probe has no side effects on the semantic index and is deliberately capped
+at ten seconds, even when normal embedding requests are allowed more time."
+  (let ((input (make-temp-file "supertag-semantic-probe-"))
+        (output (generate-new-buffer " *supertag-semantic-probe*"))
+        (timeout (number-to-string (min 10 supertag-semantic-request-timeout)))
+        status)
+    (unwind-protect
+        (progn
+          (let ((coding-system-for-write 'utf-8-unix))
+            (with-temp-file input
+              (insert (json-serialize
+                       (list :model supertag-semantic-model :input ["supertag probe"])))))
+          (setq status
+                (call-process
+                 supertag-semantic-curl-program input output nil
+                 "--silent" "--show-error" "--fail" "--noproxy" "*"
+                 "--max-time" timeout "-H" "Content-Type: application/json"
+                 "--data-binary" (concat "@" input)
+                 (concat (string-remove-suffix "/" supertag-semantic-endpoint) "/api/embed")))
+          (unless (and (integerp status) (zerop status))
+            (error "curl exited with status %s" status))
+          (let ((embeddings
+                 (alist-get 'embeddings
+                            (with-current-buffer output
+                              (json-parse-string (buffer-string) :object-type 'alist)))))
+            (unless (and (sequencep embeddings) (= (length embeddings) 1)
+                         (sequencep (elt embeddings 0)) (> (length (elt embeddings 0)) 0))
+              (error "Invalid embedding probe response"))
+            t))
+      (when (file-exists-p input) (delete-file input))
+      (kill-buffer output))))
+
 (defun supertag-semantic--refresh (&optional node-id)
   "Refresh the matching view while preserving reading positions and window starts."
   (when (and (fboundp 'supertag-view-node--buffer)
@@ -290,6 +328,33 @@ Return the curl process.  Request data and process buffers are always temporary.
                   (set-window-point (car state) (min (nth 2 state) (point-max)))
                   (set-window-start (car state) (min (nth 1 state) (point-max)) t))))))))))
 
+(defun supertag-semantic--advance-rebuild (count)
+  "Advance the active rebuild progress session by COUNT embedded notes."
+  (when supertag-semantic--rebuild
+    (let* ((session supertag-semantic--rebuild)
+           (done (+ (plist-get session :done) count)))
+      (setq supertag-semantic--rebuild (plist-put session :done done))
+      (progress-reporter-update (plist-get supertag-semantic--rebuild :reporter) done))))
+
+(defun supertag-semantic--finish-rebuild ()
+  "Complete and announce the active rebuild progress session."
+  (when supertag-semantic--rebuild
+    (let* ((session supertag-semantic--rebuild)
+           (done (plist-get session :done))
+           (elapsed (- (float-time) (plist-get session :started))))
+      (setq supertag-semantic--rebuild nil)
+      (progress-reporter-done (plist-get session :reporter))
+      (message "Similar notes ready: %d notes embedded with %s in %.1fs"
+               done supertag-semantic-model elapsed))))
+
+(defun supertag-semantic--pause-rebuild (failure)
+  "Clear and report the active rebuild progress session after FAILURE."
+  (when supertag-semantic--rebuild
+    (let ((reporter (plist-get supertag-semantic--rebuild :reporter)))
+      (setq supertag-semantic--rebuild nil)
+      (progress-reporter-done reporter)
+      (message "Embedding paused: %s — M-x supertag-semantic-rebuild to retry" failure))))
+
 (defun supertag-semantic--receive (token context batch vectors failure &optional view-id)
   "Commit a valid BATCH response only for the current TOKEN and CONTEXT."
   (when (eq token supertag-semantic--active)
@@ -297,39 +362,47 @@ Return the curl process.  Request data and process buffers are always temporary.
     (setq supertag-semantic--active nil supertag-semantic--process nil)
     (when (and supertag-semantic-enabled
                (equal context (supertag-semantic--current-context)))
-      (condition-case err
-          (progn
-            (when failure (error "%s" failure))
-            (unless (and (sequencep vectors) (= (length vectors) (length batch)))
-              (error "Embedding count mismatch"))
-            (let* ((quantized (mapcar #'supertag-semantic--quantize (append vectors nil)))
-                   (dim (length (car quantized))))
-              (unless (cl-every (lambda (v) (= (length v) dim)) quantized)
-		(error "Embedding dimensions differ within batch"))
-              (when (and supertag-semantic--dim (/= dim supertag-semantic--dim))
-		(clrhash supertag-semantic--vectors)
-		(supertag-semantic--scan))
-              (setq supertag-semantic--dim dim)
-              (cl-mapc
-               (lambda (item vector)
-		 (let ((node (supertag-semantic--node (car item))))
-                   (when (and node (equal (nth 1 item) (supertag-semantic--hash node)))
-                     (puthash (car item) (cons (nth 1 item) vector) supertag-semantic--vectors)
-                     (remhash (car item) supertag-semantic--dirty))))
-               batch quantized)
-              (setq supertag-semantic--needs-save t)
-              (when (or (zerop (hash-table-count supertag-semantic--dirty))
-                        (>= (- (float-time) supertag-semantic--last-save)
-                            supertag-semantic-save-interval))
-                (supertag-semantic--save))))
-	(error (setq supertag-semantic--error (error-message-string err)
-                     supertag-semantic--paused t)))
-      (cond
-       ;; A failed round must display its explicit Retry action immediately.
-       (supertag-semantic--error (supertag-semantic--refresh view-id))
-       ((zerop (hash-table-count supertag-semantic--dirty)) (supertag-semantic--refresh))
-       (t (dolist (item batch) (supertag-semantic--refresh (car item)))))
-      (supertag-semantic--schedule))))
+      (let (committed)
+        (condition-case err
+            (progn
+              (when failure (error "%s" failure))
+              (unless (and (sequencep vectors) (= (length vectors) (length batch)))
+                (error "Embedding count mismatch"))
+              (let* ((quantized (mapcar #'supertag-semantic--quantize (append vectors nil)))
+                     (dim (length (car quantized))))
+                (unless (cl-every (lambda (v) (= (length v) dim)) quantized)
+                  (error "Embedding dimensions differ within batch"))
+                (when (and supertag-semantic--dim (/= dim supertag-semantic--dim))
+                  (clrhash supertag-semantic--vectors)
+                  (supertag-semantic--scan))
+                (setq supertag-semantic--dim dim)
+                (cl-mapc
+                 (lambda (item vector)
+                   (let ((node (supertag-semantic--node (car item))))
+                     (when (and node (equal (nth 1 item) (supertag-semantic--hash node)))
+                       (puthash (car item) (cons (nth 1 item) vector) supertag-semantic--vectors)
+                       (remhash (car item) supertag-semantic--dirty))))
+                 batch quantized)
+                (setq supertag-semantic--needs-save t)
+                (when (or (zerop (hash-table-count supertag-semantic--dirty))
+                          (>= (- (float-time) supertag-semantic--last-save)
+                              supertag-semantic-save-interval))
+                  (supertag-semantic--save))
+                (setq committed t)))
+          (error (setq supertag-semantic--error (error-message-string err)
+                       supertag-semantic--paused t)))
+        (when committed
+          (supertag-semantic--advance-rebuild (length batch)))
+        (cond
+         ;; A failed round must display its explicit Retry action immediately.
+         (supertag-semantic--error
+          (supertag-semantic--pause-rebuild supertag-semantic--error)
+          (supertag-semantic--refresh view-id))
+         ((zerop (hash-table-count supertag-semantic--dirty))
+          (supertag-semantic--finish-rebuild)
+          (supertag-semantic--refresh))
+         (t (dolist (item batch) (supertag-semantic--refresh (car item)))))
+        (supertag-semantic--schedule)))))
 
 (defun supertag-semantic--pump ()
   "Drain at most one character-budgeted batch from the dirty set."
@@ -348,8 +421,11 @@ Return the curl process.  Request data and process buffers are always temporary.
       (if (null batch)
           (when supertag-semantic--needs-save
             (condition-case err (supertag-semantic--save)
-              (error (setq supertag-semantic--error (error-message-string err)
-                           supertag-semantic--paused t))))
+              (error
+               (setq supertag-semantic--error (error-message-string err)
+                     supertag-semantic--paused t)
+               (supertag-semantic--pause-rebuild supertag-semantic--error)
+               (supertag-semantic--refresh))))
         (let ((token (gensym "semantic-")) (context supertag-semantic--context)
               (view-id (when (fboundp 'supertag-view-node--buffer)
                          (when-let* ((buffer (supertag-view-node--buffer)))
@@ -391,23 +467,63 @@ Return the curl process.  Request data and process buffers are always temporary.
 (defun supertag-semantic-stop ()
   "Pause this round and discard late responses; leave the optional subscription."
   (interactive)
-  (setq supertag-semantic--active nil supertag-semantic--paused t)
-  (when (timerp supertag-semantic--timer) (cancel-timer supertag-semantic--timer))
-  (setq supertag-semantic--timer nil)
-  (when (process-live-p supertag-semantic--process) (delete-process supertag-semantic--process))
-  (setq supertag-semantic--process nil))
+  (let ((session supertag-semantic--rebuild))
+    (setq supertag-semantic--active nil supertag-semantic--paused t)
+    (when (timerp supertag-semantic--timer) (cancel-timer supertag-semantic--timer))
+    (setq supertag-semantic--timer nil)
+    (when (process-live-p supertag-semantic--process) (delete-process supertag-semantic--process))
+    (setq supertag-semantic--process nil)
+    (when session
+      (setq supertag-semantic--rebuild nil)
+      (progress-reporter-done (plist-get session :reporter))
+      (message "Embedding stopped at %d/%d — M-x supertag-semantic-resume to continue"
+               (plist-get session :done) (plist-get session :total)))))
+
+(defun supertag-semantic--start-rebuild ()
+  "Start visible progress for the current dirty embedding set."
+  (let* ((total (hash-table-count supertag-semantic--dirty))
+         (reporter (make-progress-reporter
+                    (format "Embedding %d notes with %s" total supertag-semantic-model)
+                    0 total)))
+    (setq supertag-semantic--rebuild
+          (list :total total :done 0 :started (float-time) :reporter reporter))
+    (message "Embedding %d notes with %s… (M-x supertag-semantic-stop to stop)"
+             total supertag-semantic-model)
+    (when (zerop total) (supertag-semantic--finish-rebuild))))
 
 ;;;###autoload
 (defun supertag-semantic-rebuild ()
-  "Rebuild all node embeddings asynchronously, when the feature is enabled."
+  "Rebuild all node embeddings asynchronously with visible progress."
   (interactive)
-  (unless supertag-semantic-enabled (user-error "Enable supertag-semantic-enabled first"))
+  (unless supertag-semantic-enabled
+    (if (yes-or-no-p "Similar notes are off. Enable for this session and index the vault? ")
+        (setq supertag-semantic-enabled t)
+      (user-error "Enable Similar notes to index the vault")))
+  (condition-case err
+      (supertag-semantic--probe)
+    (error
+     (user-error "Embedding endpoint %s / model %s unavailable: %s"
+                 supertag-semantic-endpoint supertag-semantic-model
+                 (error-message-string err))))
   (supertag-semantic--ensure)
   (supertag-semantic-stop)
   (clrhash supertag-semantic--vectors) (clrhash supertag-semantic--dirty)
   (setq supertag-semantic--dim nil supertag-semantic--paused nil supertag-semantic--error nil)
   (supertag-semantic--scan)
   (setq supertag-semantic--last-enabled t)
+  (supertag-semantic--start-rebuild)
+  (supertag-semantic--schedule)
+  (supertag-semantic--refresh))
+
+;;;###autoload
+(defun supertag-semantic-resume ()
+  "Continue a stopped rebuild without clearing already embedded vectors."
+  (interactive)
+  (unless supertag-semantic-enabled
+    (user-error "Enable Similar notes before continuing embeddings"))
+  (supertag-semantic--observe-context)
+  (setq supertag-semantic--paused nil supertag-semantic--error nil)
+  (supertag-semantic--start-rebuild)
   (supertag-semantic--schedule)
   (supertag-semantic--refresh))
 
@@ -420,7 +536,15 @@ Return the curl process.  Request data and process buffers are always temporary.
                       :dirty (hash-table-count supertag-semantic--dirty)
                       :running (and supertag-semantic--active t)
                       :paused supertag-semantic--paused :error supertag-semantic--error)))
-    (when (called-interactively-p 'interactive) (message "Semantic candidates: %S" status))
+    (when (called-interactively-p 'interactive)
+      (message "Similar notes: %s, model %s, %d indexed, %d pending, %s"
+               (if supertag-semantic-enabled "enabled" "disabled")
+               supertag-semantic-model (plist-get status :indexed) (plist-get status :dirty)
+               (cond (supertag-semantic--active "running")
+                     (supertag-semantic--error
+                      (format "error: %s" supertag-semantic--error))
+                     (supertag-semantic--paused "paused")
+                     (t "idle"))))
     status))
 
 (defun supertag-semantic--retry (node-id)

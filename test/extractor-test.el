@@ -269,6 +269,22 @@
        (equal title
               "[[file:Copyright.xhtml#Copyright.xhtml][Label #linked]] word#embedded ~#code~")))))
 
+(ert-deftest extractor-inline-tags-reject-org-keyword-syntax ()
+  "Org keyword and block syntax cannot become inline tag occurrences."
+  (should-not (supertag-transform-extract-inline-tags "#+begin_quote"))
+  (should-not (supertag-transform-extract-inline-tags "#+END_TABLE"))
+  (should (equal '("emacs")
+                 (supertag-transform-extract-inline-tags "#emacs")))
+  (should-not (supertag-transform-extract-inline-tags "#+"))
+  (with-temp-buffer
+    (org-mode)
+    (insert "* Heading\nParagraph #+begin_quote #+END_TABLE #emacs #+\n")
+    (let* ((headline (car (org-element-contents (org-element-parse-buffer))))
+           (tags (plist-get
+                  (supertag-extractor--tags headline "/tmp/f" nil)
+                  :tag-occurrences)))
+      (should (equal '("emacs") tags)))))
+
 (ert-deftest extractor-inline-tags-ignore-commented-subtrees ()
   "COMMENT subtree prose does not create stored inline tags."
   (with-temp-buffer

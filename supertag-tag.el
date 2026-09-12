@@ -176,10 +176,11 @@ terminates the name (see `supertag-inline-tag-terminator-chars').")
 (defun supertag-transform-inline-tag-name-p (name)
   "Return non-nil when NAME can be an inline tag.
 An apostrophe immediately after # is Emacs Lisp function-quote syntax,
+not a tag.  A plus immediately after # starts Org keyword or block syntax,
 not a tag."
   (and (stringp name)
        (not (string-empty-p name))
-       (not (eq (aref name 0) ?'))))
+       (not (memq (aref name 0) '(?' ?+)))))
 
 (defun supertag-transform--inline-tag-object-ranges
     (begin end &optional element restriction)

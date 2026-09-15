@@ -1428,13 +1428,34 @@ Return nil when no configured opener ends exactly at START."
   (string-trim
    (replace-regexp-in-string "[ \t\n\r]+" " " (or title ""))))
 
+(defconst supertag-reference--link-scheme-regexp
+  "\\`\\(?:id\\|denote\\|file\\|https?\\|ftp\\|mailto\\):"
+  "Regexp matching the path of an Org link that names a real target scheme.")
+
+(defconst supertag-reference--create-suffix "  [Create new node]"
+  "Suffix of the explicit create row offered by reference completion.")
+
+(defun supertag-reference--shorthand-link-p (context)
+  "Return non-nil when link CONTEXT is still an unfinished shorthand title.
+
+`org-element' parses `[[Title]]' as a `link' from the moment the opener is
+typed, and an auto-pairing input method adds the closer before the title is
+chosen.  Such a link carries no description and no known link scheme."
+  (and (not (org-element-property :contents-begin context))
+       (not (string-match-p
+             supertag-reference--link-scheme-regexp
+             (or (org-element-property :raw-link context) "")))))
+
 (defun supertag-reference--completion-context-p ()
   "Return non-nil when point is prose that may own a reference shorthand."
-  (let ((type (org-element-type (org-element-context))))
-    (and (not (memq type '(link code verbatim comment comment-block keyword
-                           node-property property-drawer drawer src-block
-                           example-block table table-row table-cell
-                           fixed-width)))
+  (let* ((context (org-element-context))
+         (type (org-element-type context)))
+    (and (or (and (eq type 'link)
+                  (supertag-reference--shorthand-link-p context))
+             (not (memq type '(link code verbatim comment comment-block keyword
+                               node-property property-drawer drawer src-block
+                               example-block table table-row table-cell
+                               fixed-width))))
          (not (org-in-commented-heading-p)))))
 
 (defun supertag-reference--get-prefix-bounds ()
@@ -1454,7 +1475,7 @@ links using a known link scheme are deliberately ignored."
             (when (and (not (string-match-p
                              (supertag-reference--closer-regexp) prefix))
                        (not (string-match-p
-                             "\\`\\(?:id\\|denote\\|file\\|https?\\|ftp\\|mailto\\):"
+                             supertag-reference--link-scheme-regexp
                              prefix)))
               (cons start end))))))))
 
@@ -1500,6 +1521,46 @@ links using a known link scheme are deliberately ignored."
                  (string-equal folded (downcase candidate-term)))
                (supertag-reference-service-node-terms node)))))
 
+(defun supertag-reference--create-row-p (candidate)
+  "Return non-nil when CANDIDATE is the explicit create row."
+  (get-text-property 0 'supertag-reference-create-title candidate))
+
+(defun supertag-reference--completion-candidates (title exclude-id)
+  "Return completion candidates for TITLE, excluding EXCLUDE-ID.
+
+Existing node terms come first; an explicit create row is offered last when
+TITLE would create a node EXCLUDE-ID does not already own."
+  (let* ((clean (supertag-reference--normalize-title title))
+         (existing (supertag-reference--candidate-strings exclude-id))
+         (row-regexp (concat "[ \t]+"
+                             (regexp-quote
+                              (string-trim-left supertag-reference--create-suffix))
+                             "\\'"))
+         (create
+          (when (and (not (string-empty-p clean))
+                     ;; The completion machinery calls the table again after it
+                     ;; inserted the row; never grow a second create row from
+                     ;; the row text already in the buffer.
+                     (not (string-match-p row-regexp clean))
+                     (not (supertag-reference--node-has-term-p exclude-id clean)))
+            (list
+             (propertize
+              (concat clean supertag-reference--create-suffix)
+              'supertag-reference-create-title clean)))))
+    (append existing create)))
+
+(defun supertag-reference--completion-title (string live-prefix)
+  "Return the title the create row should name for STRING at LIVE-PREFIX.
+
+STRING is the text the completion style completes, so it still names the
+typed title when a UI calls the table back with an already inserted create
+row (Corfu checks `test-completion' that way)."
+  (if (and (stringp string)
+           (string-suffix-p supertag-reference--create-suffix string))
+      (substring string 0 (- (length string)
+                             (length supertag-reference--create-suffix)))
+    (supertag-reference--normalize-title live-prefix)))
+
 (defun supertag-reference--completion-table (captured-prefix exclude-id)
   "Return a dynamic completion table for CAPTURED-PREFIX and EXCLUDE-ID."
   (lambda (string predicate action)
@@ -1510,17 +1571,11 @@ links using a known link scheme are deliberately ignored."
                 (buffer-substring-no-properties
                  (car live-bounds) (cdr live-bounds))
               captured-prefix))
-           (clean-prefix (supertag-reference--normalize-title live-prefix))
-           (existing (supertag-reference--candidate-strings exclude-id))
-           (create
-            (when (and (not (string-empty-p clean-prefix))
-                       (not (supertag-reference--node-has-term-p
-                             exclude-id clean-prefix)))
-              (list
-               (propertize
-                (format "%s  [Create new node]" clean-prefix)
-                'supertag-reference-create-title clean-prefix))))
-           (candidates (append existing create)))
+           (candidates
+            (supertag-reference--completion-candidates
+             (supertag-reference--completion-title string live-prefix)
+             exclude-id))
+           (existing (cl-remove-if #'supertag-reference--create-row-p candidates)))
       (cond
        ((eq (car-safe action) 'boundaries) nil)
        ((eq action 'metadata)
@@ -1529,25 +1584,62 @@ links using a known link scheme are deliberately ignored."
           (cycle-sort-function . identity)
           (company-kind
            . (lambda (candidate)
-               (if (get-text-property
-                    0 'supertag-reference-create-title candidate)
+               (if (supertag-reference--create-row-p candidate)
                    'snippet
                  'reference)))))
        ((eq action t)
         (complete-with-action t candidates string predicate))
        ((eq action 'lambda)
-        ;; A create row is an explicit action, never an exact completion.
-        (test-completion string existing predicate))
+        ;; Only the explicit create row authorizes creation; a typed prefix
+        ;; never equals the full row string, and an existing term still does.
+        (test-completion string candidates predicate))
        ((null action)
-        (or (try-completion string existing predicate) string))
+        ;; An exact row completes; otherwise only existing targets shape the
+        ;; common prefix, so a unique existing match still expands while the
+        ;; create row never dilutes it.
+        (or (try-completion string existing predicate)
+            (and (test-completion string candidates predicate) t)
+            string))
        (t
         (complete-with-action action candidates string predicate))))))
 
-(defun supertag-reference--post-completion (selected status open-marker)
-  "Commit SELECTED completion with STATUS beginning at OPEN-MARKER."
+(defun supertag-reference--recover-selection (selected prefix exclude-id)
+  "Return SELECTED as a completion candidate string, restoring properties.
+
+Some UI paths (Corfu falls back to the plain string when its candidate list
+is gone) hand the exit function text without the `supertag-reference-*'
+properties.  Match the plain text against the table's candidates: a full row
+plus the create title, so a bare title still creates instead of doing
+nothing."
+  (let ((plain (substring-no-properties selected))
+        (candidates (supertag-reference--completion-candidates prefix exclude-id)))
+    (or (cl-find plain candidates
+                 :key #'substring-no-properties :test #'equal)
+        (cl-find plain candidates
+                 :key (lambda (candidate)
+                        (get-text-property
+                         0 'supertag-reference-create-title candidate))
+                 :test #'equal)
+        selected)))
+
+(defun supertag-reference--post-completion
+    (selected status open-marker &optional prefix exclude-id)
+  "Commit SELECTED completion with STATUS beginning at OPEN-MARKER.
+
+PREFIX and EXCLUDE-ID describe the completion table SELECTED came from; they
+recover SELECTED when it arrives without reference text properties."
   (unwind-protect
       (when (and (memq status '(finished exact sole))
                  (marker-buffer open-marker))
+        (when (and prefix
+                   (not (get-text-property
+                         0 'supertag-reference-node-id selected))
+                   (not (get-text-property
+                         0 'supertag-reference-create-title selected))
+                   (not (get-text-property 0 'supertag-reference-title selected)))
+          (setq selected
+                (supertag-reference--recover-selection
+                 selected prefix exclude-id)))
         (let* ((target-id
                 (get-text-property 0 'supertag-reference-node-id selected))
                (create-title
@@ -1597,7 +1689,7 @@ See `supertag-reference-shorthand-openers' for the recognised openers."
             :exit-function
             (lambda (selected status)
               (supertag-reference--post-completion
-               selected status open-marker))))))
+               selected status open-marker prefix source-id))))))
 
 (defun supertag-reference--read-candidate (initial exclude-id)
   "Read a reference target with INITIAL input, excluding EXCLUDE-ID."

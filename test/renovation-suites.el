@@ -53,7 +53,8 @@
     ("promote" ("test/promote-workflow-test.el" . t))
     ("stream" ("test/stream-workflow-test.el" . t) ("test/test-view-stream.el" . t))
     ("find-node" ("test/find-node-workflow-test.el" . t))
-    ("add-link" ("test/add-link-workflow-test.el" . t))
+    ("add-link" ("test/add-link-workflow-test.el" . t)
+     ("test/reference-capf-commit-test.el" . t))
     ("discovery" ("test/discovery-workflow-test.el" . t))
     ;; Relations P4, tags/completion P3, old field DSL G2: named transitions.
     ("query-links" ("test/query-model-test.el" .

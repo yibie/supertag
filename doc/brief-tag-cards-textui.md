@@ -464,3 +464,25 @@ Key facts about the new core:
    over width), byte-compile clean, ERT green, append Round 9 to the report
    with the line count of `supertag-view-tag-cards.el` before and after. No
    commits; do not edit TextUI or `supertag-view-framework.el`.
+
+## Round 10: one grid for the whole field
+
+TextUI `dfb5e72` adds `:column-gap` and `:row-gap` to `:grid` (`:gap` stays
+the shorthand; axis-specific properties override it). The per-row grids
+from Round 9 existed only because one `:gap` controlled both axes.
+
+1. Render the card field as a single `:grid` with `:column-gap 3` and
+   `:row-gap 1` (keep the current `:columns` and `:min-column-width`).
+   Delete the code that splits cards into visual rows and builds one grid
+   per row, including any duplicated responsive column calculation.
+2. The measure command needs a (row . card) identity per card. Derive the
+   row index from the card's position and the grid's responsive column
+   count at render width, or have the measure command group cards by the
+   line where their title starts; pick whichever needs less code, and keep
+   the report output format unchanged.
+3. Tests: the render at widths 120 and 80 must stay line-for-line
+   identical to the Round 9 render (compare against the text files the
+   render script writes before your change), and the Iosevka-geometry
+   regression must still show equal card edges on every line.
+4. Byte-compile clean, ERT green, append Round 10 to the report with the
+   line count before and after. No commits; no TextUI or framework edits.

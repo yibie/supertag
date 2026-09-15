@@ -421,6 +421,38 @@ and 840px, so no truncation can grow a track and no later card can shift."
                             (split-string text "\n" nil)))
           (supertag-tag-cards-test--assert-grid-tracks text width))))))
 
+(ert-deftest supertag-tag-cards-one-grid-separates-rows-by-one-blank-line ()
+  "Six minimal cards form two grid rows with a single blank line between.
+
+The field is one grid, so the blank line comes from the grid's own `:row-gap'
+and each card keeps the row and column that same grid gives it -- which is
+exactly what the measurement command groups its lines by."
+  (supertag-tag-cards-test--with-card-metrics
+    (let* ((width 120)
+           (tracks (supertag-view-tag-cards--card-track-widths width))
+           (cards (cl-loop for index below 6
+                           collect (list :budget (nth (% index (length tracks))
+                                                      tracks)
+                                         :row (/ index 3) :column (% index 3)
+                                         :overline "" :title "TAG / CARDS"
+                                         :count 1 :face 'supertag-view-chip1
+                                         :records nil :recent-node-ids nil
+                                         :scope (cons 'tag (format "t%d" index)))))
+           (text (textui--render-frame
+                  (list (supertag-view-tag-cards--field cards nil width)) width))
+           ;; Keep the null run: the empty string between the rows is the gap.
+           (lines (split-string text "\n")))
+      (should (= 5 (length lines)))
+      (should (equal '((0 . 0) (0 . 1) (0 . 2))
+                     (mapcar #'car
+                             (supertag-tag-cards-test--row-card-edges
+                              (nth 0 lines)))))
+      (should-not (supertag-tag-cards-test--row-card-edges (nth 2 lines)))
+      (should (equal '((1 . 0) (1 . 1) (1 . 2))
+                     (mapcar #'car
+                             (supertag-tag-cards-test--row-card-edges
+                              (nth 3 lines))))))))
+
 (ert-deftest supertag-tag-cards-sibling-groups-share-a-chip-face ()
   "A hierarchy's root and child share a rotated accent; loose tags use chip2."
   (supertag-tag-cards-test--with-store

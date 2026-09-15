@@ -824,3 +824,122 @@ action buttons and then the card facet and entry links (`widget-forward` /
 page to the narrowed state; a state with no cards renders
 `No co-occurring facets.` plus the muted `EMPTY / NN` line without error; and
 the no-match, group, and empty-group frames all render within 120 columns.
+
+## Round 10: one grid for the whole field
+
+TextUI `dfb5e72` gives `:grid` a per-axis `:column-gap` and `:row-gap`
+(`:gap` stays the shorthand), so the per-row grids from Round 9, which existed
+only because one `:gap` had to serve both axes, could fold into one grid.
+`supertag-view-tag-cards.el` went from **1466** lines before this round to
+**1459** lines after it.  No TextUI file and no
+`supertag-view-framework.el` was touched.
+
+### The change
+
+`supertag-view-tag-cards--card-grid` is now the field's single grid:
+
+```elisp
+(:type :grid
+ :columns supertag-view-tag-cards--maximum-columns
+ :min-column-width supertag-view-tag-cards--minimum-card-width
+ :column-gap supertag-view-tag-cards--grid-gap
+ :row-gap 1)
+```
+
+`:column-gap` keeps the 3-column track whitespace and drives the responsive
+column count and track shares exactly as the old `:gap 3` did; `:row-gap 1` is
+the single blank line `design.md` wants between card rows, which the field's
+column flex used to supply between per-row grids.  `--grid-gap` keeps its name
+and is now documented as the column gap; the row gap is the one-cell literal
+in the grid element, next to the docstring that says why.
+
+Deleted: `supertag-view-tag-cards--card-rows` and the field's per-row
+`mapcar` of `--card-grid`, which was the only reason the field needed the
+responsive column count for layout.
+
+Kept: `--grid-columns` and `--card-track-widths`.  They are not a duplicated
+layout path -- they are the package's own track arithmetic, and the label
+fitter must know a card's track *before* TextUI allocates it, because TextUI
+grows a track instead of clipping an over-wide block.  Both now mirror the
+core's `:column-gap` math (`textui--grid-column-count` and
+`textui--proportional-shares` agree with them cell for cell at 120 and 80, as
+the render check and the 120/80 fixture comparison below confirm).
+
+The card identity needed no new code.  `--place-card` already assigns each
+card `(row . column)` from its index and the responsive column count at the
+render width, and `textui--partition-fixed` gives the single grid exactly
+those rows, so the measurement command keeps grouping by the same
+`supertag-view-tag-cards--card` property and the report format is unchanged.
+Taking the row from the card's position was less code than grouping cards by
+the line where their title starts, so that is the option implemented.
+
+### Render identity
+
+The Round 9 renders were captured before the change
+(`/tmp/tcards/r10/before-*.txt`, and the user's own
+`round9-all.txt` / `round9-drill.txt`, which the pre-change renderer matched
+byte for byte).  Comparing the Round 9 code against the Round 10 code on the
+*same* store gives identical bytes at both widths for the all-tags page, the
+drill-down page, and the width-80 render:
+
+```text
+1a02b954ce37702c842446ec06d2283e  round-9    /tmp/tcards/r10/old-120.txt
+1a02b954ce37702c842446ec06d2283e  round-10   /tmp/tcards/r10/new-120.txt
+d72e49e19f55312056477eb56c411db4  round-9    /tmp/tcards/r10/old-drill.txt
+d72e49e19f55312056477eb56c411db4  round-10   /tmp/tcards/r10/new-drill.txt
+6973cbaf0c6ca29dfd19ec1637dc6ddb  round-9    /tmp/tcards/r10/old-80.txt
+6973cbaf0c6ca29dfd19ec1637dc6ddb  round-10   /tmp/tcards/r10/new-80.txt
+```
+
+The same old-versus-new comparison on the older git-tracked store (94 tags,
+756 notes, 319 lines at 120 and 428 at 80) is also identical, so the result
+does not depend on one vault state.
+
+The live vault gained one diary note while this round was being implemented,
+so the current render differs from the Round 9 reference files only in the
+lines that carry that note's data: 9 changed line pairs on the all-tags page
+(the masthead `VOL. 46 / 688`, the `TAG / DIARY` title fill's counts, the
+diary facet counts, and the new `→ 测试集应当由最强的模型来编写` entry row
+with the rows it displaced) and 1 on the drill-down page (its node count).
+The controlled same-vault comparison above is the layout evidence; the
+reference diff is data drift, not rendering drift.
+
+### Tests
+
+`test/tag-cards-test.el` gained
+`supertag-tag-cards-one-grid-separates-rows-by-one-blank-line`: six minimal
+cards, all with the fake card metrics, must render as two grid rows of three
+with exactly one empty line between them, with the first row's cards marked
+`(0 . 0)` ... `(0 . 2)`, the blank line unmarked, and the second row's cards
+marked `(1 . 0)` ... `(1 . 2)`.  That covers both the new `:row-gap` and the
+row identity the measure command groups by; mutating `:row-gap` to 2 fails it.
+The Round 9 Iosevka-geometry regression still passes with one grid: every line
+of card 1 ends at 266px, cards 2 and 3 at 553px and 840px.  The batch track
+check (`--assert-grid-tracks`) now walks the single grid's card runs and still
+finds every run at its track's start offset and width at widths 120 and 80.
+
+### Round 10 verification
+
+```text
+TAG-CARDS fills width=120 card-tracks=(38 38 38) masthead=(39 38) faces=preserved
+TAG-CARDS fills width=80 card-tracks=(39 38) masthead=(26 25) faces=preserved
+TAG-CARDS grid-tracks width=120 spans=412; width=80 spans=412
+TAG-CARDS histogram=((0 . 1130) (1 . 672) (2 . 16))
+TAG-CARDS all width=120 max-line=120 frame=127.136ms refresh=192.324ms file=/private/tmp/supertag-tag-cards-all.txt
+TAG-CARDS drill width=120 max-line=120 frame=84.875ms refresh=96.777ms file=/private/tmp/supertag-tag-cards-diary-idea.txt
+TAG-CARDS width=80 max-line=80
+```
+
+A live-vault batch run of `M-x supertag-view-tag-cards-measure` on the same
+store reports 44 card groups, 44 PASS, 0 FAIL, with cards of a grid row
+sharing one line band, each band followed by exactly one blank line, and each
+card's right edge constant across its lines (38 columns for track one and 79
+for track two in the batch buffer's 80-column window).  Frame construction and
+refresh timings are unchanged from Round 9 within noise.
+
+```text
+Byte compile: supertag-view-tag-cards.el, scripts/tag-cards-render.el, and
+              test/tag-cards-test.el compiled with byte-compile-error-on-warn
+              and exited 0 with no task-local warnings
+ERT:          14 tests, 14 results as expected, 0 unexpected
+```

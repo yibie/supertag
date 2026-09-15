@@ -75,7 +75,7 @@ global `supertag-view-palette' and Node View use `paper'."
   "Default number of recent nodes shown in a card.")
 
 (defconst supertag-view-tag-cards--grid-gap 3
-  "Horizontal and vertical gap between card grid cells.")
+  "Gap in columns between card grid tracks.")
 
 (defconst supertag-view-tag-cards--text-button-chrome-width 4
   "Width contributed by the `[ ' and ` ]' around a TextUI text button.")
@@ -1045,25 +1045,18 @@ remaining pixel edge of each track."
           :children (nreverse children))))
 
 (defun supertag-view-tag-cards--card-grid (cards)
-  "Return CARDS as one native TextUI grid of exact equal tracks.
+  "Return CARDS as the field's one native TextUI grid.
 
-One grid per visual row, as in the pre-composer page: TextUI v1 has a single
-`:gap' for both axes, and design.md wants the three columns of track
-whitespace with a single blank line between card rows.  The field's column
-flex supplies that blank line."
+The grid's column gap is the three columns of track whitespace the design
+wants, and its row gap is the single blank line between card rows; `:gap'
+would force one value on both axes and was why the field used to build one
+grid per row."
   (list :type :grid
         :columns supertag-view-tag-cards--maximum-columns
         :min-column-width supertag-view-tag-cards--minimum-card-width
-        :gap supertag-view-tag-cards--grid-gap
+        :column-gap supertag-view-tag-cards--grid-gap
+        :row-gap 1
         :children (mapcar #'supertag-view-tag-cards--card-element cards)))
-
-(defun supertag-view-tag-cards--card-rows (cards columns)
-  "Split CARDS into visual rows of at most COLUMNS cards."
-  (let (rows)
-    (while cards
-      (push (cl-subseq cards 0 (min columns (length cards))) rows)
-      (setq cards (nthcdr columns cards)))
-    (nreverse rows)))
 
 (defun supertag-view-tag-cards--empty-tags-item (tag-ids width)
   "Return the muted one-line acknowledgement for zero-count TAG-IDS."
@@ -1077,15 +1070,15 @@ flex supplies that blank line."
 (defun supertag-view-tag-cards--field (cards empty-tags width)
   "Return the field band for CARDS and optional EMPTY-TAGS at WIDTH.
 
-The cards are the children of responsive TextUI grids; sibling bands are
-separated by single blank lines like every other page band."
+Every card is a child of one TextUI grid; `--place-card' gives each card the
+row and column that same grid will give it, so the measurement command can
+group its lines.  Sibling bands are separated by single blank lines like
+every other page band."
   (list :type :flex :direction :column :gap 1
         :children
         (append
          (if cards
-             (mapcar #'supertag-view-tag-cards--card-grid
-                     (supertag-view-tag-cards--card-rows
-                      cards (supertag-view-tag-cards--grid-columns width)))
+             (list (supertag-view-tag-cards--card-grid cards))
            (list (supertag-view-tag-cards--plain-item
                   "No co-occurring facets." 'supertag-view-mute)))
          (when-let* ((empty (supertag-view-tag-cards--empty-tags-item

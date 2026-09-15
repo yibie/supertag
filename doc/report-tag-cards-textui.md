@@ -261,71 +261,71 @@ for All Tags and 53.701 ms for the diary/idea drill-down.
 ### All Tags text render: first 40 lines at width 120
 
 ```text
- SUPERTAG / TAGS                         VOL. 45 / 674 NOTES                       COMPOSITION / LIVE                   
-                                                                                                                        
-MAKE ROOM                                                                                                               
-FOR THE UNEXPECTED.                                                                                                     
-Tags are fuel. The connections are computed for you: click any + row to narrow.                                         
-                                                                                                                        
-[ ALL TAGS ]  [ RESET ]  [ CONTACT ]  [ DIARY ]  [ MEDIA ]  [ NOTE ]  [ NOTE / REF ]  [ PRJ ]  [ PRJ / TASK ]           
-                                                                                                                        
-                                                                                  contact                               
- TAG / COMPANY                      7     TAG / CONTACT                     26     CONTACT / FAMILY                   3 
-                                                                                                                        
+ SUPERTAG / TAGS                         VOL. 45 / 674 NOTES                       COMPOSITION / LIVE
+
+MAKE ROOM
+FOR THE UNEXPECTED.
+Tags are fuel. The connections are computed for you: click any + row to narrow.
+
+[ ALL TAGS ]  [ RESET ]  [ CONTACT ]  [ DIARY ]  [ MEDIA ]  [ NOTE ]  [ NOTE / REF ]  [ PRJ ]  [ PRJ / TASK ]
+
+                                                                                  contact
+ TAG / COMPANY                      7     TAG / CONTACT                     26     CONTACT / FAMILY                   3
+
 → ANYCOLOR / COVER                       + CONTACT / FRIEND                  19   ↗ 什么是 LSP 协议？                  2
-→ Facebook                               ↗ 签字汪炜提供的合同解除书           4                                         
-→ Andreessen Horowitz（a16z）            + CONTACT / FAMILY                   3   → 姑姑                                
-→ [2025-03-21 Fri 21:30]创始人宣布成…    ↗ 那些与亲朋好友一起做的事           3   → 老妈                                
-→ Vercel                                 ↗ [2025-09-08 Mon 16:19] 很郁闷，其… 2   → 老爸                                
-                                         ↗ [2025-10-28 Tue 08:30] 要去镇上的… 2                                         
-                                                                                                                        
-                                         → iSouthRain                                                                   
-                                         → OwenYang                                                                     
-                                         → #contact                                                                     
-                                         → MJ                                                                           
-                                         → 施宏斌                                                                       
-                                                                                                                        
-contact                                  contact                                                                        
- CONTACT / FRIEND                  19     CONTACT / PARTNER                  2     TAG / DIARY                      240 
-                                                                                                                        
+→ Facebook                               ↗ 签字汪炜提供的合同解除书           4
+→ Andreessen Horowitz（a16z）            + CONTACT / FAMILY                   3   → 姑姑
+→ [2025-03-21 Fri 21:30]创始人宣布成…    ↗ 那些与亲朋好友一起做的事           3   → 老妈
+→ Vercel                                 ↗ [2025-09-08 Mon 16:19] 很郁闷，其… 2   → 老爸
+                                         ↗ [2025-10-28 Tue 08:30] 要去镇上的… 2
+
+                                         → iSouthRain
+                                         → OwenYang
+                                         → #contact
+                                         → MJ
+                                         → 施宏斌
+
+contact                                  contact
+ CONTACT / FRIEND                  19     CONTACT / PARTNER                  2     TAG / DIARY                      240
+
 ↗ 签字汪炜提供的合同解除书           3   → 阿聪                                   + DIARY / IDEA                     104
 ↗ [2025-11-05 Wed 22:35] 昨天下午和… 2   → 陈建聪                                 + DIARY / HAPPY                     39
 ↗ 那些与亲朋好友一起做的事           2                                            + DIARY / THINK                     36
                                                                                   + DIARY / NEW                       17
 → iSouthRain                                                                      + DIARY / RECORD                    15
 → OwenYang                                                                        + DIARY / EXP                       14
-→ MJ                                                                                                                    
-→ 施宏斌                                                                          → Emacs 配置：一键切换字体            
-→ 黄杰敏                                                                          → 将网页高亮注释，转换成剪报          
-                                                                                  → 将 SPEC-AGENTS 项目归档了           
-                                                                                  → 可以让 Zed 的 zeta2 模型，用在本地… 
-                                                                                  → 安伯尼可这类游戏机可以作为桌面 AI … 
-                                                                                                                        
+→ MJ
+→ 施宏斌                                                                          → Emacs 配置：一键切换字体
+→ 黄杰敏                                                                          → 将网页高亮注释，转换成剪报
+                                                                                  → 将 SPEC-AGENTS 项目归档了
+                                                                                  → 可以让 Zed 的 zeta2 模型，用在本地…
+                                                                                  → 安伯尼可这类游戏机可以作为桌面 AI …
+
 ```
 
 ### Diary / idea drill-down text render: first 40 lines at width 120
 
 ```text
- SUPERTAG / TAGS                         VOL. 45 / 674 NOTES                       DIARY / IDEA                         
-                                                                                                                        
-MAKE ROOM                                                                                                               
-FOR THE UNEXPECTED.                                                                                                     
-Tags are fuel. The connections are computed for you: click any + row to narrow.                                         
-                                                                                                                        
-[ ALL TAGS ]  [ RESET ]  [ CONTACT ]  [ DIARY ]  [ MEDIA ]  [ NOTE ]  [ NOTE / REF ]  [ PRJ ]  [ PRJ / TASK ]           
-                                                                                                                        
-                                                                                                                        
- TODO / DONE                        4     TAG / EMACS                        2     LINK / ORG-SUPERTAG                2 
-                                                                                                                        
-→ 文件级别 tag                           → Emacs 配置：一键切换字体               → 让窗口可以临时 Zoom in/Zoom out     
-→ 升级 org-zettel-ref-mode 的格式转换…   → AI 管家                                → org-supertag 的标签支持嵌套标签     
-→ 将 pdf-craft 集成到 convert-to-org.…                                                                                  
-→ 将书信体作为博客输出主要体裁                                                                                          
-                                                                                                                        
-                                                                                                                        
-+ . + . + .                                                                                                             
-01 / TAG FIELD   live store, recomputed on every refresh                                                                
-SUPERTAG / TAGS                                                                                                         
+ SUPERTAG / TAGS                         VOL. 45 / 674 NOTES                       DIARY / IDEA
+
+MAKE ROOM
+FOR THE UNEXPECTED.
+Tags are fuel. The connections are computed for you: click any + row to narrow.
+
+[ ALL TAGS ]  [ RESET ]  [ CONTACT ]  [ DIARY ]  [ MEDIA ]  [ NOTE ]  [ NOTE / REF ]  [ PRJ ]  [ PRJ / TASK ]
+
+
+ TODO / DONE                        4     TAG / EMACS                        2     LINK / ORG-SUPERTAG                2
+
+→ 文件级别 tag                           → Emacs 配置：一键切换字体               → 让窗口可以临时 Zoom in/Zoom out
+→ 升级 org-zettel-ref-mode 的格式转换…   → AI 管家                                → org-supertag 的标签支持嵌套标签
+→ 将 pdf-craft 集成到 convert-to-org.…
+→ 将书信体作为博客输出主要体裁
+
+
++ . + . + .
+01 / TAG FIELD   live store, recomputed on every refresh
+SUPERTAG / TAGS
 ```
 
 ### Round 3 verification output
@@ -649,3 +649,178 @@ Byte compile: supertag-view-tag-cards.el, scripts/tag-cards-render.el, and
               test/tag-cards-test.el completed with no task-local warnings
 ERT:          14 tests, 14 expected, 0 unexpected
 ```
+
+## Round 9: back to the native `:grid` on the pixel-composing core
+
+TextUI `e71d9bf` composes flex and grid rows, and layout boxes, from the
+cumulative rendered pixel prefix, so the local card-row composer from Rounds 5
+to 7 was redundant.  `supertag-view-tag-cards.el` went from **1649** lines
+before this round to **1466** lines after it.  No TextUI file and no
+`supertag-view-framework.el` was touched.
+
+### What the grid does now, and what the package keeps
+
+The field is native TextUI grids again: every grid's children are the cards,
+and each card is one `:flex :direction :column :gap 0` whose children are
+single-line elements -- the muted parent line, the `:textui-attach` title fill,
+a blank line, the facet links, a blank line, and the entry links.  Facet rows
+and entry rows are `supertag-view-tag-cards-link` widgets again; the mode maps
+TAB and S-TAB back to `widget-forward` and `widget-backward`, and each card
+link carries a scoped `:focus-id` (`(facet SCOPE FACET)`, `(node SCOPE
+NODE-ID)`) so point restoration is TextUI's again.
+
+Deleted, because the core now owns it: `--compose-card-row-line`,
+`--compose-card-row`, `--card-line-specs`, `--card-line-at`,
+`--card-row-specs`, `--card-title-into`, `--facet-into`, `--node-into`,
+`--card-rows`, `--card-row-block`, `--card-row-block-layout`,
+`--card-row-block-attach`, the `supertag-view-tag-cards-card-row-block` widget
+type, `--separator-block`, `--field-elements`, `--display-window`,
+`--string-pixel-width`, and the residual-spacer half of the old layout:
+`--spacer-to-width`, `--append-to-width`, `--append-to-cell`.  The
+`--card-row-block` widget type was the only attached block in the file, so no
+package-private block widget remains.
+
+Kept, because the core does not do it: `--fit-label-to-target` and
+`--truncate-for-track` still truncate every label, title, and facet count to
+the card's own track -- now measured in the same pixels the core composes
+with.  The package reads one measurer and one cell width from
+`textui--pixel-metrics` (the override-aware `(MEASURE . CELL-WIDTH)` pair the
+core uses for its own padding), so a label can no longer pass the package's
+budget and still grow the track TextUI lays out.  `--pad-right` and
+`--pad-between` remain as column padding with a pixel ceiling: they add whole
+spaces only while the next one still fits the column-derived pixel track, and
+they emit no residual spacers.  TextUI closes the fractional remainder of the
+track itself, and its residual is not face-filled, so on a font whose glyphs
+are whole cells (the reported Iosevka geometry) a fill still reaches the exact
+pixel edge.
+
+Fills pad by columns and stop before the pixel boundary; the core finishes the
+edge.  Labels, facet count reservations, and fills all keep their pixel
+truncation.
+
+### One grid per visual row
+
+The field is one TextUI grid per visual row rather than one grid for the whole
+field.  TextUI v1 has a single `:gap` for both axes; a single grid with
+`:gap 3` would put three blank lines between card rows, while `:gap 1` would
+leave a single column between tracks.  `design.md` requires the three columns
+of track whitespace *and* one blank line between cards, and that is the shape
+Rounds 3 and 4 shipped (one-row responsive grids with `:gap 3`, stacked with
+one blank line).  The field's `:flex :direction :column :gap 1` supplies the
+blank line, and the grid supplies the 3-column track gap.  Because every card
+line is truncated to its track before TextUI composes, no row widens its
+tracks and all rows keep the same columns; the render check below asserts
+every card's start offset and width in every row.
+
+### The measurement command
+
+`supertag-view-tag-cards-measure` needed no change to how it reads a card:
+the `supertag-view-tag-cards--card` text property (row, column) now travels on
+the element value through TextUI's measure, render, and materialization paths
+(`--card-marked`), instead of being written by the composer.  The command
+measures each card line from the logical line origin to the end of its marked
+text, groups by card, and prints PASS/FAIL.  On the reported font every glyph
+advances by a whole cell and the package's column padding lands exactly on the
+track edge, so the marked text ends on the track's pixel; the core's residual
+spacer would only matter for sub-cell glyphs, and the FAIL lines keep the raw
+text, live width, `…` font, and residual diagnostics for that case.  A live
+GUI run of `M-x supertag-view-tag-cards-measure` is still the user's own check;
+this round verified the batch `COLUMN-ONLY` path and the composed geometry
+below.
+
+### All Tags text render: first 36 lines at width 120
+
+```text
+SUPERTAG / TAGS                          VOL. 46 / 687 NOTES                      COMPOSITION / LIVE
+
+MAKE ROOM
+FOR THE UNEXPECTED.
+Tags are fuel. The connections are computed for you: click any + row to narrow.
+
+[ ALL TAGS ]  [ RESET ]  [ CONTACT ]  [ DIARY ]  [ MEDIA ]  [ NOTE ]  [ NOTE / REF ]  [ PRJ ]  [ PRJ / TASK ]
+
+
+ TAG / AI                           1     TAG / COMPANY                      7     TAG / CONTACT                     2
+
++ NOTE / TOOLS                       1   → ANYCOLOR / COVER                       + CONTACT / FRIEND
+                                         → Facebook                               ↗ 签字汪炜提供的合同解除书           4
+→ Pi                                     → Andreessen Horowitz（a16z）            + CONTACT / FAMILY                   3
+                                         → [2025-03-21 Fri 21:30]创始人宣布成…    ↗ 那些与亲朋好友一起做的事           3
+                                         → Vercel                                 ↗ [2025-09-08 Mon 16:19] 很郁闷，其… 2
+                                                                                  ↗ [2025-10-28 Tue 08:30] 要去镇上的… 2
+
+                                                                                  → iSouthRain
+                                                                                  → OwenYang
+                                                                                  → #contact
+                                                                                  → MJ
+                                                                                  → 施宏斌
+
+contact                                  contact                                  contact
+ CONTACT / FAMILY                   3     CONTACT / FRIEND                  19     CONTACT / PARTNER
+
+↗ 什么是 LSP 协议？                  2   ↗ 签字汪炜提供的合同解除书           3   → 阿聪
+                                         ↗ [2025-11-05 Wed 22:35] 昨天下午和… 2   → 陈建聪
+→ 姑姑                                   ↗ 那些与亲朋好友一起做的事           2
+→ 老妈
+→ 老爸                                   → iSouthRain
+                                         → OwenYang
+                                         → MJ
+                                         → 施宏斌
+                                         → 黄杰敏
+```
+
+### Tests
+
+`test/tag-cards-test.el` dropped from 14 to 13 tests.  The
+composer-only `supertag-tag-cards-composed-truncated-card-one-keeps-all-edges`
+was removed, and the eight-failing-strings regression became
+`supertag-tag-cards-round-nine-failing-rows-keep-every-card-edge`: it renders
+the production field (three cards, one row, the eight reported strings on
+card 1) through `textui--render-frame` with `textui--pixel-metrics-override`
+bound to the fake card font -- cell 7px, and 14px for CJK, the arrows, and the
+`…` ellipsis, which is the user's real Iosevka geometry -- and asserts that
+every line of card 1 ends at 266px, card 2 at 553px, and card 3 at 840px,
+with exactly the eight reported strings truncated.  Mutating the fitter to
+measure with `string-width` (one column for `…`) makes it fail with four
+distinct edges instead of one, so the test does catch the reported overshoot.
+`--assert-local-tracks` became `--assert-grid-tracks`, and the batch track test
+now checks the native grid; facet counting, narrowing, drill-down, label
+budgets, editorial labels, fill widths, sibling chip faces, materialized fills
+with the neon remap, and the batch measurement command are unchanged.  The
+materialized-fills test now asserts a widget-button overlay with an `:action`
+for an entry row, since native links are widget.el buttons rather than
+button.el text buttons.
+
+### Round 9 verification
+
+```text
+TAG-CARDS fills width=120 card-tracks=(38 38 38) masthead=(39 38) faces=preserved
+TAG-CARDS fills width=80 card-tracks=(39 38) masthead=(26 25) faces=preserved
+TAG-CARDS grid-tracks width=120 spans=412; width=80 spans=412
+TAG-CARDS histogram=((0 . 1130) (1 . 671) (2 . 16))
+TAG-CARDS all width=120 max-line=120 frame=124.203ms refresh=184.803ms file=/private/tmp/supertag-tag-cards-all.txt
+TAG-CARDS drill width=120 max-line=120 frame=81.487ms refresh=93.018ms file=/private/tmp/supertag-tag-cards-diary-idea.txt
+TAG-CARDS width=80 max-line=80
+```
+
+At width 80 the field falls to two 39/38-column tracks, so narrow widths drop
+columns instead of overflowing.  A native grid materializes one widget per
+card line instead of one block per row, so a full refresh costs about 185ms
+against Round 8's 132ms on the same 46-tag, 687-node vault; frame construction
+moved from 104ms to 124ms.  Everything else -- fills, faces, masthead cells,
+tracks, and rendered output -- is unchanged apart from the card spacing
+restored above.
+
+```text
+Byte compile: supertag-view-tag-cards.el, scripts/tag-cards-render.el, and
+              test/tag-cards-test.el compiled with byte-compile-error-on-warn
+              and exited 0 with no task-local warnings
+ERT:          13 tests, 13 results as expected, 0 unexpected
+```
+
+Additional batch checks run this round, beyond the script: TAB/S-TAB walk the
+action buttons and then the card facet and entry links (`widget-forward` /
+`widget-backward`); pressing a facet link runs its action and refreshes the
+page to the narrowed state; a state with no cards renders
+`No co-occurring facets.` plus the muted `EMPTY / NN` line without error; and
+the no-match, group, and empty-group frames all render within 120 columns.

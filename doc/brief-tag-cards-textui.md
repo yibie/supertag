@@ -408,3 +408,59 @@ Cards keeps `neon` (see design.md §2).
    shows paper's.
 3. Rerun render script, byte-compile, ERT; append Round 8 to the report.
    No commits; no TextUI or framework edits.
+
+## Round 9: back to TextUI `:grid` now that the core composes by pixels
+
+TextUI `e71d9bf` ("compose rows and boxes by pixels on graphical frames")
+is committed and verified in the user's GUI: stock composition keeps every
+right edge on the same pixel. The local card-row composer from Rounds 5 to
+7 is now redundant. Read
+`/Users/chenyibin/Documents/emacs/package/textui/docs/report-pixel-composition.md`
+("what Tag Cards can delete") and ADR 0039 first.
+
+Key facts about the new core:
+- On graphical frames, row blocks and gaps are padded from the cumulative
+  line prefix with a residual `(space :width (N))`; terminal and batch
+  output are unchanged (column based).
+- Overflow is not clipped: a block wider than its allocation still grows
+  its track, now measured in pixels. So labels must still be truncated to
+  the track's pixel budget before they reach TextUI, or tracks become
+  unequal.
+
+1. **Restore the field as a TextUI `:grid`.** Replace the attached
+   card-row blocks with one `:grid` whose children are the cards (as in
+   Round 4: each card a `:flex :direction :column :gap 0`). Facet rows and
+   node rows go back to the bracket-free link widgets
+   (`supertag-view-tag-cards-link`) and TAB/S-TAB go back to
+   `widget-forward`/`widget-backward`; the title fill stays the static item
+   with `:textui-attach` that preserves faces.
+2. **Keep pixel truncation, drop pixel padding.** Keep
+   `--fit-label-to-target` (or its equivalent) so every label, facet count
+   reservation and title fill fits the track's pixel budget
+   (`track-columns * frame-char-width`, measured with the target window's
+   fonts; column fallback in batch). Delete what the core now does:
+   `--compose-card-row-line`, `--compose-card-row`, `--card-row-block*`,
+   `--append-to-cell`, `--append-to-width`, `--spacer-to-width`, the
+   layout half of `--pad-right`/`--pad-between`, and any attached-block
+   widget type that only existed for the composer. Fills pad to the track
+   by columns and let the core finish the pixel edge.
+3. **Keep `supertag-view-tag-cards-measure` working.** It currently finds
+   cards through the `supertag-view-tag-cards--card` text property set by
+   the composer. Put that property (row index, card index) on each card's
+   rendered text through the card element instead, so the command still
+   measures every card edge in the live buffer and prints PASS/FAIL. Keep
+   the diagnostic fields.
+4. **Tests.** Remove tests that only exercised the deleted composer.
+   Keep and adapt: facet counting, narrowing, label budgets, fill faces
+   after materialization, per-view palette, and the eight-failing-strings
+   regression, now asserted through `textui--render-frame` with
+   `textui--pixel-metrics-override` bound to the fake font
+   (`(MEASURE . 7)` with CJK 14px, arrows and `…` 14px, space 7px, which is
+   the user's real Iosevka geometry) so every card's right edge is equal on
+   every line.
+5. Load path: TextUI is at
+   `/Users/chenyibin/Documents/emacs/package/textui` at commit `e71d9bf` or
+   later. Rerun `scripts/tag-cards-render.el` (widths 120 and 80, no line
+   over width), byte-compile clean, ERT green, append Round 9 to the report
+   with the line count of `supertag-view-tag-cards.el` before and after. No
+   commits; do not edit TextUI or `supertag-view-framework.el`.

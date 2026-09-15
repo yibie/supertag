@@ -67,9 +67,10 @@
                 (equal (plist-get record :facet) (cons kind value)))
               records))
 
-(defun supertag-tag-cards-test--assert-local-tracks (text width)
-  "Assert TEXT's locally composed card spans fill WIDTH's column tracks."
+(defun supertag-tag-cards-test--assert-grid-tracks (text width)
+  "Assert TEXT's grid card runs fill WIDTH's column tracks."
   (let ((tracks (supertag-view-tag-cards--card-track-widths width))
+        (gap supertag-view-tag-cards--grid-gap)
         (position 0)
         (limit (length text))
         (count 0))
@@ -86,7 +87,7 @@
               (let* ((column (cdr card))
                      (expected-start
                       (cl-loop for index below column
-                               sum (+ (nth index tracks) 3))))
+                               sum (+ (nth index tracks) gap))))
                 (should (= expected-start
                            (string-width (substring text line-start cursor))))
                 (should (= (nth column tracks)
@@ -242,115 +243,76 @@ row within its absolute pixel target."
             (when (string= kind "facet")
               (should (string-suffix-p " 2" (concat fitted suffix))))))))))
 
-(defun supertag-tag-cards-test--row-pixel-width (text)
-  "Measure TEXT with the Round 7 7px/17px/9px fake GUI font.
+(defconst supertag-tag-cards-test--card-cell 7
+  "Cell width of the fake card font, in pixels.")
 
-The helper honors a Variant-C residual `space :width' property exactly, so it
-tests the actual composed row rather than only a label before its padding.
-ASCII (including an ordinary space) is seven pixels, CJK is 17 pixels, and
-the ellipsis is nine pixels."
-  (let ((position 0)
-        (limit (length text))
-        (width 0))
-    (while (< position limit)
-      (let* ((next (next-single-property-change position 'display text limit))
-             (residual
-              (supertag-view-tag-cards--display-space-width
-               (get-text-property position 'display text))))
-        (if residual
-            (setq width (+ width residual))
-          (cl-loop for character across (substring text position next)
-                   do (setq width
-                            (+ width
-                               (cond
-                                ((eq character ?…) 9)
-                                ((and (>= character ?\u4e00)
-                                      (<= character ?\u9fff))
-                                 17)
-                                (t 7))))))
-        (setq position next)))
+(defun supertag-tag-cards-test--card-measure (text)
+  "Return TEXT's advance with the reported Iosevka card geometry.
+
+ASCII advances by one seven-pixel cell and every other glyph -- CJK, the
+arrows, and the `…' ellipsis -- by fourteen pixels, so the ellipsis is twice
+its column count.  Display spacers contribute their declared width."
+  (let ((width 0)
+        (index 0))
+    (while (< index (length text))
+      (let ((display (get-text-property index 'display text)))
+        (if (and (consp display) (eq (car display) 'space))
+            (let ((value (plist-get (cdr display) :width)))
+              (setq width (+ width (if (consp value) (car value) value))))
+          (setq width
+                (+ width (if (< (aref text index) 128)
+                             supertag-tag-cards-test--card-cell
+                           14)))))
+      (setq index (1+ index)))
     width))
 
+(defmacro supertag-tag-cards-test--with-card-metrics (&rest body)
+  "Run BODY with the fake card pixel metrics installed."
+  (declare (indent 0))
+  `(let ((textui--pixel-metrics-override
+          (cons #'supertag-tag-cards-test--card-measure
+                supertag-tag-cards-test--card-cell))
+         (textui--pixel-width-cache nil))
+     ,@body))
+
 (defun supertag-tag-cards-test--row-card-edges (text)
-  "Return TEXT's three card edge positions in fake pixels."
+  "Return TEXT's `(CARD . EDGE-PIXELS)' pairs in source order.
+
+A card run holds only the card's own line text; TextUI composes the closing
+pixel padding of the track after it, so the card's edge is the end of that
+run, exactly as `supertag-view-tag-cards-measure' reads it in a live buffer."
   (let ((position 0)
         (limit (length text))
-        (edges (make-vector 3 nil)))
+        edges)
     (while (< position limit)
       (let* ((next (next-single-property-change
                     position 'supertag-view-tag-cards--card text limit))
              (card (get-text-property
                     position 'supertag-view-tag-cards--card text)))
         (when card
-          (aset edges (cdr card)
-                (supertag-tag-cards-test--row-pixel-width
-                 (substring text 0 next))))
-        (setq position next)))
-    (append edges nil)))
+          (push (cons card
+                      (supertag-tag-cards-test--card-measure
+                       (substring text 0 next)))
+                edges))
+        (setq position (or next limit))))
+    (nreverse edges)))
 
-(ert-deftest supertag-tag-cards-composed-truncated-card-one-keeps-all-edges ()
-  "Every reported truncated first-card fixture preserves all three edges.
+(defun supertag-tag-cards-test--card-edges (text)
+  "Return TEXT's `(CARD . EDGES)' table with every measured line edge."
+  (let ((edges (make-hash-table :test 'equal)))
+    (dolist (line (split-string text "\n" t))
+      (dolist (edge (supertag-tag-cards-test--row-card-edges line))
+        (push (cdr edge) (gethash (car edge) edges))))
+    edges))
 
-This exercises the production attached-block composer, its full-prefix label
-fitting, and its residual padding with the specified batch-safe fake font.
-It is therefore distinct from the isolated-label regression above: should a
-GUI still differ, the live renderer/measurement pair rather than this card-one
-composition path is the remaining suspect."
-  (let ((fixtures
-         '((facet 2 "[2025-11-05 Wed 22:35] 昨天下午和朋友一起整理笔记")
-           (node nil "[2025-11-20 Thu 20:12] 在手机上实现一个自动同步方案")
-           (node nil "[2026-01-16 Fri 08:40] 在邻居旁边创建一间共享工作室")
-           (facet 2 "[2025-08-26 Tue 23:09] 我今天开始把所有想法写下来")
-           (node nil "一门语言的表面语法来自哪里？它的数字模型如何工作")
-           (node nil "Oibeater：突然觉得有了 AI 后程序猿的工作发生变化")
-           (node nil "我对自己的要求很低：我活在世上，无须证明更多事情")
-           (facet 4 "[2025-11-03 Mon 02:22] 看到 Sky 交出了一份新的提案"))))
-    (cl-letf (((symbol-function 'supertag-view-tag-cards--pixel-layout-p)
-               (lambda () t))
-              ((symbol-function 'supertag-view-tag-cards--display-window)
-               (lambda () t))
-              ((symbol-function 'supertag-view-tag-cards--render-width)
-               #'supertag-tag-cards-test--row-pixel-width)
-              ((symbol-function 'supertag-view-tag-cards--target-width)
-               (lambda (columns) (* columns 7))))
-      (dolist (fixture fixtures)
-        (pcase-let ((`(,kind ,count ,label) fixture))
-          (cl-letf (((symbol-function 'supertag-view-tag-cards--node-title)
-                     (lambda (node-id)
-                       (if (equal node-id "first") label "ordinary note")))
-                    ((symbol-function 'supertag-view-tag-cards--facet-row-label)
-                     (lambda (_facet) label)))
-            (let* ((first
-                    (if (eq kind 'facet)
-                        (list :kind :facet
-                              :record (list :facet (cons 'link "fixture")
-                                            :count count)
-                              :scope (cons 'tag "fixture"))
-                      (list :kind :node :node-id "first")))
-                   (line (supertag-view-tag-cards--compose-card-row-line
-                          (list first
-                                (list :kind :node :node-id "second")
-                                (list :kind :node :node-id "third"))
-                          (list (list :budget 38)
-                                (list :budget 38)
-                                (list :budget 38))
-                          0))
-                   (first-end
-                    (next-single-property-change
-                     0 'supertag-view-tag-cards--card line (length line))))
-              (should (string-match-p "…" (substring line 0 first-end)))
-              (should (equal '(266 553 840)
-                             (supertag-tag-cards-test--row-card-edges line))))))))))
+(ert-deftest supertag-tag-cards-round-nine-failing-rows-keep-every-card-edge ()
+  "The eight reported truncated rows keep every card edge in the grid.
 
-(ert-deftest supertag-tag-cards-round-seven-eight-failing-rows-keep-card-one-edge ()
-  "The eight reported card-1 failures stay edge-exact in one composed row.
-
-This composes a single three-card block whose first card carries all eight
-Round 6 failing strings (three facet rows and five node rows) with the batch
-fake GUI font: 7px cells, 17px CJK, 9px ellipsis, 7px space.  The production
-attached-block composer must put card 1's right edge at exactly its own
-53-column track (371px) on every line and keep both inter-card steps equal at
-385px -- the exact passing geometry the GUI measurement reported."
+The production field grid composes one three-card row with the fake card font:
+seven-pixel cells and fourteen pixels for CJK, the arrows, and the `…'
+ellipsis, which is the reported Iosevka geometry.  Card 1 must end at its own
+38-column track (266px) on all twelve of its lines, and cards 2 and 3 at 553px
+and 840px, so no truncation can grow a track and no later card can shift."
   (let* ((fixtures
           '(("n1" facet 2 "[2025-11-05 Wed 22:35] 昨天下午和朋友一起整理笔记")
             ("n2" node nil "[2025-11-20 Thu 20:12] 在手机上实现一个自动同步方案")
@@ -368,47 +330,51 @@ attached-block composer must put card 1's right edge at exactly its own
                           collect (list :facet (cons 'link id) :count count)))
          (nodes (cl-loop for (id kind _count _label) in fixtures
                          when (eq kind 'node) collect id)))
-    (cl-letf (((symbol-function 'supertag-view-tag-cards--pixel-layout-p)
-               (lambda () t))
-              ((symbol-function 'supertag-view-tag-cards--display-window)
-               (lambda () t))
-              ((symbol-function 'supertag-view-tag-cards--render-width)
-               #'supertag-tag-cards-test--row-pixel-width)
-              ((symbol-function 'supertag-view-tag-cards--target-width)
-               (lambda (columns) (* columns 7)))
-              ((symbol-function 'supertag-view-tag-cards--node-title)
+    (cl-letf (((symbol-function 'supertag-view-tag-cards--node-title)
                (lambda (node-id)
                  (or (cdr (assoc node-id titles)) "ordinary note"))))
-      (let* ((card-1
-              (list :budget 53 :overline "" :title "DIARY / IDEA" :count 8
-                    :face 'supertag-view-chip1 :records facets
-                    :recent-node-ids nodes :scope '(link . "n1")))
-             (card-2
-              (list :budget 52 :overline "" :title "TAG / PROJECT" :count 3
-                    :face 'supertag-view-chip2 :records nil
-                    :recent-node-ids '("o1" "o2") :scope '(tag . "project")))
-             (card-3
-              (list :budget 52 :overline "" :title "TAG / READING" :count 2
-                    :face 'supertag-view-chip3 :records nil
-                    :recent-node-ids '("o3") :scope '(tag . "reading")))
-             (block (supertag-view-tag-cards--compose-card-row
-                     (list card-1 card-2 card-3) 155))
-             (lines (split-string block "\n" t))
-             (truncated 0))
-        (should (= 12 (length lines)))
-        (dolist (line lines)
-          (let ((edges (supertag-tag-cards-test--row-card-edges line)))
-            ;; Card 1 ends at its own 53-column track, and both inter-card
-            ;; steps are the same 52-column track plus the 3-column gap.
-            (should (equal '(371 756 1141) edges))
-            (should (= 371 (nth 0 edges)))
-            (should (= (- (nth 1 edges) (nth 0 edges))
-                       (- (nth 2 edges) (nth 1 edges)))))
-          (let ((end (next-single-property-change
-                      0 'supertag-view-tag-cards--card line (length line))))
-            (when (string-match-p "…" (substring line 0 end))
-              (setq truncated (1+ truncated)))))
-        (should (= 8 truncated))))))
+      (supertag-tag-cards-test--with-card-metrics
+        (let* ((width 120)
+               (tracks (supertag-view-tag-cards--card-track-widths width))
+               (card-1
+                (list :budget (nth 0 tracks) :row 0 :column 0
+                      :overline "" :title "DIARY / IDEA" :count 8
+                      :face 'supertag-view-chip1 :records facets
+                      :recent-node-ids nodes :scope '(link . "n1")))
+               (card-2
+                (list :budget (nth 1 tracks) :row 0 :column 1
+                      :overline "" :title "TAG / PROJECT" :count 3
+                      :face 'supertag-view-chip2 :records nil
+                      :recent-node-ids '("o1" "o2") :scope '(tag . "project")))
+               (card-3
+                (list :budget (nth 2 tracks) :row 0 :column 2
+                      :overline "" :title "TAG / READING" :count 2
+                      :face 'supertag-view-chip3 :records nil
+                      :recent-node-ids '("o3") :scope '(tag . "reading")))
+               (text (textui--render-frame
+                      (list (supertag-view-tag-cards--field
+                             (list card-1 card-2 card-3) nil width))
+                      width))
+               (lines (split-string text "\n" t))
+               (edges (supertag-tag-cards-test--card-edges text))
+               (truncated 0))
+          (should (= 12 (length lines)))
+          ;; every line of a card reports one and the same edge
+          (dolist (card '((0 . 0) (0 . 1) (0 . 2)))
+            (let ((values (gethash card edges)))
+              (should values)
+              (should (= 1 (length (cl-delete-duplicates values :test #'=))))))
+          ;; and those edges are the three track ends of the 120-column page
+          (should (equal '(266 553 840)
+                         (mapcar (lambda (card) (car (gethash card edges)))
+                                 '((0 . 0) (0 . 1) (0 . 2)))))
+          ;; the eight reported strings are all truncated inside card 1
+          (dolist (line lines)
+            (let ((end (next-single-property-change
+                        0 'supertag-view-tag-cards--card line (length line))))
+              (when (string-match-p "…" (substring line 0 end))
+                (setq truncated (1+ truncated)))))
+          (should (= 8 truncated)))))))
 
 (ert-deftest supertag-tag-cards-editorial-labels-remove-hierarchy-arrows ()
   "Titles and tag facets use slash grammar; only metadata keeps `›'."
@@ -442,8 +408,8 @@ attached-block composer must put card 1's right edge at exactly its own
     (should-not (text-property-not-all
                  0 (length plain) 'face 'supertag-view-chip3 plain))))
 
-(ert-deftest supertag-tag-cards-local-blocks-keep-column-exact-tracks-in-batch ()
-  "The attached-block fallback keeps 120/80 tracks and never overflows."
+(ert-deftest supertag-tag-cards-grid-cards-keep-column-exact-tracks-in-batch ()
+  "The native grid keeps 120/80 tracks and never overflows."
   (supertag-tag-cards-test--with-store
     (dolist (width '(120 80))
       (with-temp-buffer
@@ -453,7 +419,7 @@ attached-block composer must put card 1's right edge at exactly its own
                       (supertag-view-tag-cards--frame width) width)))
           (should (cl-every (lambda (line) (<= (string-width line) width))
                             (split-string text "\n" nil)))
-          (supertag-tag-cards-test--assert-local-tracks text width))))))
+          (supertag-tag-cards-test--assert-grid-tracks text width))))))
 
 (ert-deftest supertag-tag-cards-sibling-groups-share-a-chip-face ()
   "A hierarchy's root and child share a rotated accent; loose tags use chip2."
@@ -501,7 +467,7 @@ attached-block composer must put card 1's right edge at exactly its own
             (setq buffer (supertag-view-tag-cards))
             (with-current-buffer buffer
               ;; The buffer-local neon remap must survive TextUI
-              ;; materialization and the attached-block composer.
+              ;; materialization and the card grid.
               (should (eq 'neon supertag-view--local-palette))
               (should (eq 'neon supertag-view-tag-cards-palette))
               (should (equal (supertag-tag-cards-test--palette-face-background
@@ -522,7 +488,11 @@ attached-block composer must put card 1's right edge at exactly its own
                           'supertag-view-chip2))
               (goto-char (point-min))
               (should (search-forward "→ Read the guide" nil t))
-              (should (button-at (match-beginning 0)))
+              ;; Facet and entry rows are native widget links now: they carry a
+              ;; widget button overlay (not a button.el text button).
+              (let ((button (get-char-property (match-beginning 0) 'button)))
+                (should button)
+                (should (functionp (widget-get button :action))))
               (should truncate-lines)
               (should-not word-wrap)
               (should-not visual-line-mode)))

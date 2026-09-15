@@ -33,6 +33,10 @@
 (declare-function textui--render-frame "textui" (frame width))
 (declare-function textui-refresh "textui" (&optional buffer))
 
+;; A `defconst' in the view, declared here so this standalone script also
+;; byte-compiles without a free-variable warning.
+(defvar supertag-view-tag-cards--grid-gap)
+
 (defvar supertag-tag-cards-render-vault
   "/Users/chenyibin/Documents/notes/.supertag/supertag-db.el"
   "Read-only Store file rendered by this script.")
@@ -102,13 +106,15 @@
       (error "No card fill used one of the %S-column tracks" card-widths))
     (list :card-widths card-widths :masthead-left left :masthead-right right)))
 
-(defun supertag-tag-cards-render--verify-local-card-tracks (text width)
-  "Assert locally composed card ranges in TEXT use WIDTH's exact tracks.
+(defun supertag-tag-cards-render--verify-grid-card-tracks (text width)
+  "Assert grid card ranges in TEXT use WIDTH's exact tracks.
 
-The attached blocks tag every complete card span.  In batch their Variant-C
-padding is ordinary spaces, so this check verifies both the text fallback and
-the responsive 3/2/1 track allocation without needing GUI font metrics."
+Every card line is marked with its grid identity and padded to its own track
+by columns, so this check verifies the text fallback and the responsive 3/2/1
+track allocation without needing GUI font metrics.  A label that outgrew its
+track would widen it and fail here as a start-offset error."
   (let ((tracks (supertag-view-tag-cards--card-track-widths width))
+        (gap supertag-view-tag-cards--grid-gap)
         (position 0)
         (limit (length text))
         (checked 0))
@@ -126,7 +132,7 @@ the responsive 3/2/1 track allocation without needing GUI font metrics."
                      (expected-width (nth column tracks))
                      (expected-start
                       (cl-loop for index below column
-                               sum (+ (nth index tracks) 3)))
+                               sum (+ (nth index tracks) gap)))
                      (actual-start (string-width
                                     (substring text line-start cursor)))
                      (actual-width (string-width (substring text cursor next))))
@@ -140,7 +146,7 @@ the responsive 3/2/1 track allocation without needing GUI font metrics."
             (setq cursor next)))
         (setq position (min limit (1+ line-end)))))
     (unless (> checked 0)
-      (error "No locally composed card tracks at width %d" width))
+      (error "No grid card tracks at width %d" width))
     checked))
 
 (defun supertag-tag-cards-render--frame-ms (state width)
@@ -233,11 +239,11 @@ the responsive 3/2/1 track allocation without needing GUI font metrics."
                (plist-get narrow-fills :card-widths)
                (plist-get narrow-fills :masthead-left)
                (plist-get narrow-fills :masthead-right)))
-    (message "TAG-CARDS local-tracks width=%d spans=%d; width=80 spans=%d"
+    (message "TAG-CARDS grid-tracks width=%d spans=%d; width=80 spans=%d"
              supertag-tag-cards-render-width
-             (supertag-tag-cards-render--verify-local-card-tracks
+             (supertag-tag-cards-render--verify-grid-card-tracks
               all-text supertag-tag-cards-render-width)
-             (supertag-tag-cards-render--verify-local-card-tracks narrow-text 80))
+             (supertag-tag-cards-render--verify-grid-card-tracks narrow-text 80))
     (message "TAG-CARDS histogram=%S" (supertag-tag-cards-render--tags-per-node-histogram))
     (message "TAG-CARDS all width=%d max-line=%d frame=%.3fms refresh=%.3fms file=%s"
              supertag-tag-cards-render-width all-max

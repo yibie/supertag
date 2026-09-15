@@ -13,7 +13,6 @@
 
 (require 'cl-lib)
 (require 'subr-x)
-(require 'button)
 (require 'widget)
 (require 'textui)
 (require 'textui-widgets)
@@ -131,54 +130,6 @@ the face properties used by Tag Cards fills."
   :textui-measure #'supertag-view-tag-cards--item-measure
   :textui-attach #'supertag-view-tag-cards--item-attach)
 
-(defun supertag-view-tag-cards--card-row-block-layout (widget width)
-  "Return WIDGET's precomposed card row at TextUI WIDTH.
-
-This is a top-level TextUI attached block: its layout owns the complete row,
-  including the inter-card gaps, because TextUI's public flex/grid API measures
-  those tracks in columns rather than the GUI's actual glyph pixels."
-  (if-let* ((cards (widget-get widget :cards)))
-      (supertag-view-tag-cards--compose-card-row
-       cards width (widget-get widget :row-index))
-    (or (widget-get widget :value) "\n")))
-
-(defun supertag-view-tag-cards--card-row-block-attach (widget from to)
-  "Attach WIDGET's row buttons without changing its composed text.
-
-Each action span is a plain Emacs text button, rather than a nested widget.el
-control: a TextUI attached block is necessarily precomposed and cannot contain
-native child widgets."
-  (widget-put widget :from (copy-marker from t))
-  (widget-put widget :to (copy-marker to nil))
-  (widget-put widget :delete
-              (lambda (active-widget)
-                (delete-region (widget-get active-widget :from)
-                               (widget-get active-widget :to))
-                (set-marker (widget-get active-widget :from) nil)
-                (set-marker (widget-get active-widget :to) nil)))
-  (widget-put widget :textui-attached t)
-  ;; TextUI converts a fresh widget at materialization time, so layout-local
-  ;; widget properties are not available here.  The precomposed text itself
-  ;; carries the actions until this callback turns those exact spans into
-  ;; ordinary Emacs buttons.
-  (let ((position from))
-    (while (< position to)
-      (let* ((action (get-text-property
-                      position 'supertag-view-tag-cards--button-action))
-             (next (next-single-property-change
-                    position 'supertag-view-tag-cards--button-action nil to)))
-        (when action
-          (make-text-button position next
-                            'action action
-                            'follow-link t
-                            'face 'widget-button))
-        (setq position next)))))
-
-(define-widget 'supertag-view-tag-cards-card-row-block 'item
-  "A top-level attached block that locally composes one row of cards."
-  :textui-layout #'supertag-view-tag-cards--card-row-block-layout
-  :textui-attach #'supertag-view-tag-cards--card-row-block-attach)
-
 (defun supertag-view-tag-cards--link-measure (widget)
   "Return the exact bracket-free label displayed by link WIDGET."
   (format "%s" (or (widget-get widget :tag)
@@ -213,40 +164,22 @@ native child widgets."
           "[[:space:]\n]+" " " (string-trim (format "%s" (or text ""))))))
     (truncate-string-to-width normalized (max 1 width) nil nil "…")))
 
-(defun supertag-view-tag-cards--display-window ()
-  "Return the visible window for the current Tag Cards buffer, if any.
+(defun supertag-view-tag-cards--pixel-metrics ()
+  "Return TextUI's (MEASURE . CELL-WIDTH) for the card layout, or nil.
 
-Text renders and batch buffers intentionally return nil: they have no GUI
-pixel geometry, so their deterministic `string-width' layout remains the
-fallback." 
-  (let ((window (get-buffer-window (current-buffer) 0)))
-    (and (window-live-p window)
-         (display-graphic-p (window-frame window))
-         window)))
+The label fitters and the TextUI core share this measurer and this cell
+width.  If they disagree, a label can pass its budget here and still grow the
+grid track the core composes."
+  (textui--pixel-metrics))
 
 (defun supertag-view-tag-cards--track-pixel-width (columns)
-  "Return COLUMNS' actual GUI track width in pixels, or nil in batch.
-
-The calculation deliberately uses the displayed window's frame character
-width instead of a hard-coded pixel value.  TextUI lays out in columns, but
-this view can keep wide CJK glyphs within that column-derived pixel track."
-  (when-let* ((window (supertag-view-tag-cards--display-window))
-              (character-width (frame-char-width (window-frame window))))
-    (* (max 1 columns) character-width)))
-
-(defun supertag-view-tag-cards--string-pixel-width (text)
-  "Return TEXT's pixel width in the current Tag Cards display window."
-  (let ((window (supertag-view-tag-cards--display-window)))
-    (when window
-      (with-selected-window window
-        ;; Supplying the live buffer explicitly retains its face remaps and
-        ;; default/fallback font configuration while a TextUI refresh is
-        ;; composing an unattached string.
-        (string-pixel-width text (window-buffer window))))))
+  "Return COLUMNS' track width in pixels, or nil without pixel metrics."
+  (when-let* ((metrics (supertag-view-tag-cards--pixel-metrics)))
+    (* (max 1 columns) (cdr metrics))))
 
 (defun supertag-view-tag-cards--pixel-layout-p ()
-  "Return non-nil when the current card layout has GUI pixel geometry."
-  (and (supertag-view-tag-cards--display-window) t))
+  "Return non-nil when the card layout has live pixel metrics."
+  (and (supertag-view-tag-cards--pixel-metrics) t))
 
 (defun supertag-view-tag-cards--normalized-label (text)
   "Return TEXT as one trimmed, whitespace-collapsed display label."
@@ -256,13 +189,12 @@ this view can keep wide CJK glyphs within that column-derived pixel track."
 (defun supertag-view-tag-cards--fit-label-to-target (text prefix suffix target)
   "Fit TEXT between PREFIX and SUFFIX before absolute TARGET.
 
-PREFIX is the complete, already composed line prefix, not merely the local
-card track.  SUFFIX contains every required reservation, including the marker
-or the mandatory space and count.  In a GUI each candidate is measured as the
-whole line, with its `…' appended, before it is accepted.  That is important:
-measuring an isolated label can be one cell short at the first card boundary
-when the surrounding prefix changes the rendered advance.  Batch rendering
-uses the equivalent `string-width' calculation."
+PREFIX is everything already on the row before TEXT, normally just the facet
+marker.  SUFFIX contains every required reservation, including the marker or
+the mandatory space and count.  With live metrics each candidate is measured
+with the ellipsis appended before it is accepted, so a glyph whose advance is
+not its column count cannot push the row past the track TextUI composes.
+Batch rendering uses the equivalent `string-width' calculation."
   (let* ((label (supertag-view-tag-cards--normalized-label text))
          (available (- target
                        (supertag-view-tag-cards--render-width prefix)
@@ -309,11 +241,12 @@ the complete line prefix takes part in the GUI measurement too."
    (supertag-view-tag-cards--target-width (max 1 columns))))
 
 (defun supertag-view-tag-cards--pad-right (text width)
-  "Return TEXT right-padded within WIDTH display columns and GUI pixels.
+  "Return TEXT right-padded within WIDTH columns and its pixel track.
 
-In a GUI buffer, add only spaces that still fit the column-derived pixel
-track.  A wide CJK row can therefore end a little short of the right edge,
-rather than spilling into the next visual line."
+TextUI itself closes the remaining fractional cell of a track, so this only
+refuses a space that would already cross the column-derived pixel budget: a
+wide CJK or fallback glyph then leaves the row a fraction of a cell short
+instead of growing the grid track."
   (let* ((limit (max 1 width))
          (fitted (supertag-view-tag-cards--truncate-for-track text limit))
          (pixels (supertag-view-tag-cards--track-pixel-width limit))
@@ -321,8 +254,7 @@ rather than spilling into the next visual line."
     (while (< (string-width result) limit)
       (let ((candidate (concat result " ")))
         (if (and pixels
-                 (> (or (supertag-view-tag-cards--string-pixel-width candidate)
-                        most-positive-fixnum)
+                 (> (supertag-view-tag-cards--render-width candidate)
                     pixels))
             ;; Do not fill the remaining columns: that final space is already
             ;; too wide in this font, and preserving the pixel boundary wins.
@@ -331,11 +263,11 @@ rather than spilling into the next visual line."
     result))
 
 (defun supertag-view-tag-cards--pad-between (left right width)
-  "Place LEFT and RIGHT in WIDTH columns without exceeding its GUI track.
+  "Place LEFT and RIGHT in WIDTH columns and within its pixel track.
 
 RIGHT is normally a facet or title count.  The batch fallback pads exactly to
-WIDTH; in a GUI the gap may be shorter when another space would exceed the
-pixel track." 
+WIDTH; with live metrics the gap may be shorter when another space would
+already exceed the pixel track."
   (let* ((limit (max 1 width))
          (pixels (supertag-view-tag-cards--track-pixel-width limit))
          (spaces (max 0 (- limit (string-width left) (string-width right))))
@@ -343,8 +275,7 @@ pixel track."
     (while (> spaces 0)
       (let ((candidate (concat result " " right)))
         (if (and pixels
-                 (> (or (supertag-view-tag-cards--string-pixel-width candidate)
-                        most-positive-fixnum)
+                 (> (supertag-view-tag-cards--render-width candidate)
                     pixels))
             (setq spaces 0)
           (setq result (concat result " ")
@@ -352,46 +283,15 @@ pixel track."
     (concat result right)))
 
 (defun supertag-view-tag-cards--render-width (text)
-  "Return TEXT's width in the active GUI's pixels, else in display columns."
-  (or (supertag-view-tag-cards--string-pixel-width text)
-      (string-width text)))
+  "Return TEXT's advance under the active metrics, else in display columns."
+  (if-let* ((metrics (supertag-view-tag-cards--pixel-metrics)))
+      (funcall (car metrics) text)
+    (string-width text)))
 
 (defun supertag-view-tag-cards--target-width (columns)
   "Return COLUMNS in the active GUI's pixels, else in display columns."
   (or (supertag-view-tag-cards--track-pixel-width columns)
       columns))
-
-(defun supertag-view-tag-cards--spacer-to-width (prefix target &optional face)
-  "Return relative Variant-C padding from PREFIX to absolute TARGET width.
-
-On a GUI, use as many ordinary spaces as fit and one display-only residual
-space.  Measuring the whole PREFIX is important: a preceding CJK glyph or an
-earlier residual spacer must not shift this card's edge or the next card's
-left edge.  FACE, when non-nil, is applied to all padding characters."
-  (let ((remaining (- target (supertag-view-tag-cards--render-width prefix))))
-    (when (> remaining 0)
-      (let ((spacer
-             (if (supertag-view-tag-cards--display-window)
-                 (let* ((space-width
-                         (max 1 (supertag-view-tag-cards--render-width " ")))
-                        (whole (/ remaining space-width))
-                        (residual (% remaining space-width)))
-                   (concat
-                    (make-string whole ?\s)
-                    (when (> residual 0)
-                      (propertize " " 'display `(space :width (,residual))))))
-               (make-string remaining ?\s))))
-        (if face (propertize spacer 'face face) spacer)))))
-
-(defun supertag-view-tag-cards--append-to-width (prefix target &optional face)
-  "Append Variant-C padding to PREFIX until absolute TARGET is reached."
-  (concat prefix
-          (or (supertag-view-tag-cards--spacer-to-width prefix target face) "")))
-
-(defun supertag-view-tag-cards--append-to-cell (prefix cell &optional face)
-  "Append Variant-C padding to PREFIX until absolute CELL is reached."
-  (supertag-view-tag-cards--append-to-width
-   prefix (supertag-view-tag-cards--target-width cell) face))
 
 (defun supertag-view-tag-cards--filled-string (label width face)
   "Return LABEL as a FACE-filled string exactly WIDTH columns wide.
@@ -771,36 +671,53 @@ copy of its root card; the root itself remains visible in the all-tags view."
                 :action action)
           (when focus-id (list :layout (list :focus-id focus-id)))))
 
-(defun supertag-view-tag-cards--link (label action &optional focus-id)
-  "Return a bracket-free native link named LABEL running ACTION."
-  (append (list :type 'supertag-view-tag-cards-link
-                :tag label
-                :value label
-                :action action)
-          (when focus-id (list :layout (list :focus-id focus-id)))))
+(defun supertag-view-tag-cards--card-marked (text card)
+  "Return TEXT marked with CARD's `(ROW . COLUMN)' grid identity.
 
-(defun supertag-view-tag-cards--plain-item (text &optional face)
-  "Return an atomic TEXT element optionally carrying FACE.
+TextUI composes the closing pixel padding of a track outside the widget's own
+text, so the measurement command reads card lines from this property on the
+text itself; the mark travels from the element value through TextUI's
+measure, render, and materialization paths."
+  (if card (propertize text 'supertag-view-tag-cards--card card) text))
+
+(defun supertag-view-tag-cards--link (label action card &optional focus-id)
+  "Return a bracket-free native link named LABEL running ACTION for CARD.
+
+CARD is its `(ROW . COLUMN)' grid identity; the link carries it so the
+measurement command can attribute every rendered line to a card."
+  (let ((marked (supertag-view-tag-cards--card-marked label card)))
+    (append (list :type 'supertag-view-tag-cards-link
+                  :tag marked
+                  :value marked
+                  :action action)
+            (when focus-id (list :layout (list :focus-id focus-id))))))
+
+(defun supertag-view-tag-cards--plain-item (text &optional face card)
+  "Return an atomic TEXT element optionally carrying FACE and CARD identity.
 
 The custom static item preserves FACE in TextUI's text renderer instead of
 letting stock widget measurement discard it."
   (list :type 'supertag-view-tag-cards-item :format "%v"
-        :value (if face (propertize text 'face face) text)))
+        :value (supertag-view-tag-cards--card-marked
+                (if face (propertize text 'face face) text)
+                card)))
 
-(defun supertag-view-tag-cards--fixed-item (text width &optional face)
+(defun supertag-view-tag-cards--fixed-item (text width &optional face card)
   "Return TEXT right-padded to WIDTH display columns with optional FACE."
   (supertag-view-tag-cards--plain-item
-   (supertag-view-tag-cards--pad-right text width) face))
+   (supertag-view-tag-cards--pad-right text width) face card))
 
-(defun supertag-view-tag-cards--filled-item (label width face)
+(defun supertag-view-tag-cards--filled-item (label width face &optional card)
   "Return LABEL in a whole-width FACE fill of WIDTH display columns."
   (supertag-view-tag-cards--plain-item
-   (supertag-view-tag-cards--filled-string label width face)))
+   (supertag-view-tag-cards--filled-string label width face) nil card))
 
-(defun supertag-view-tag-cards--filled-title-item (label count width face)
+(defun supertag-view-tag-cards--filled-title-item
+    (label count width face &optional card)
   "Return a whole-width FACE fill with LABEL and right-aligned COUNT."
   (supertag-view-tag-cards--plain-item
-   (supertag-view-tag-cards--filled-title-string label count width face)))
+   (supertag-view-tag-cards--filled-title-string label count width face)
+   nil card))
 
 (defun supertag-view-tag-cards--set-state (key value)
   "Set current Tag Cards TextUI KEY to VALUE."
@@ -948,11 +865,10 @@ remain whole-Store measures so the volume stays stable while drilling down."
 
 (defun supertag-view-tag-cards--card-model
     (facet node-ids state width &optional track-width)
-  "Return one data model for FACET's locally composed card at WIDTH.
+  "Return one data model for FACET's card at WIDTH.
 
-TRACK-WIDTH is the exact responsive column track.  The attached block uses it
-as a hard local pixel budget rather than allowing an individual widget's
-natural width to change the neighbour card's origin."
+TRACK-WIDTH is the exact responsive column track.  The card element uses it as
+a hard pixel budget, so no line can grow the track the grid gives it."
   (let* ((kind (car facet))
          (tag-id (and (eq kind 'tag) (cdr facet)))
          (ancestors (and tag-id (supertag-tag-ancestors tag-id)))
@@ -1007,8 +923,11 @@ from element construction so it remains easy to exercise in ERT."
   "Return `(:cards ... :empty-tags ...)' for STATE at WIDTH.
 
 Empty tag families are intentionally kept out of the grid.  Their names are
-returned separately so the field can acknowledge them in one quiet line."
+returned separately so the field can acknowledge them in one quiet line.
+Every card carries the grid row and column it occupies, so the measurement
+command can group its lines."
   (let ((filters (plist-get state :filter))
+        (columns (supertag-view-tag-cards--grid-columns width))
         (track-widths (supertag-view-tag-cards--card-track-widths width)))
     (if filters
         (let* ((base-node-ids (supertag-view-tag-cards--display-node-ids state))
@@ -1018,11 +937,13 @@ returned separately so the field can acknowledge them in one quiet line."
                 cards)
             (dolist (record records)
               (let ((facet (plist-get record :facet)))
-                (push (supertag-view-tag-cards--card-model
-                       facet
-                       (supertag-view-tag-cards--card-node-ids facet filters)
-                       state width
-                       (nth (mod index (length track-widths)) track-widths))
+                (push (supertag-view-tag-cards--place-card
+                       (supertag-view-tag-cards--card-model
+                        facet
+                        (supertag-view-tag-cards--card-node-ids facet filters)
+                        state width
+                        (nth (% index columns) track-widths))
+                       index columns)
                       cards)
                 (setq index (1+ index))))
             (list :cards (nreverse cards) :empty-tags nil)))
@@ -1033,211 +954,118 @@ returned separately so the field can acknowledge them in one quiet line."
           (let ((node-ids (supertag-view-tag-cards--node-ids-for-tag tag-id)))
             (if node-ids
                 (progn
-                  (push (supertag-view-tag-cards--card-model
-                         (cons 'tag tag-id) node-ids state width
-                         (nth (mod index (length track-widths)) track-widths))
+                  (push (supertag-view-tag-cards--place-card
+                         (supertag-view-tag-cards--card-model
+                          (cons 'tag tag-id) node-ids state width
+                          (nth (% index columns) track-widths))
+                         index columns)
                         cards)
                   (setq index (1+ index)))
               (push tag-id empty-tags))))
         (list :cards (nreverse cards) :empty-tags (nreverse empty-tags))))))
 
-(defun supertag-view-tag-cards--card-line-specs (card)
-  "Return CARD's unpadded visual line specifications in display order."
-  (let ((lines
-         (list (list :kind :mute :text (plist-get card :overline)
-                     :face 'supertag-view-mute)
-               (list :kind :title :label (plist-get card :title)
-                     :count (plist-get card :count)
-                     :face (plist-get card :face)))))
-    (when-let* ((records (plist-get card :records)))
-      (setq lines
-            (append lines (list (list :kind :blank))
-                    (mapcar (lambda (record)
-                              (list :kind :facet :record record
-                                    :scope (plist-get card :scope)))
-                            records))))
-    (when-let* ((node-ids (plist-get card :recent-node-ids)))
-      (setq lines
-            (append lines (list (list :kind :blank))
-                    (mapcar (lambda (node-id)
-                              (list :kind :node :node-id node-id
-                                    :scope (plist-get card :scope)))
-                            node-ids))))
-    lines))
+(defun supertag-view-tag-cards--card-identity (card)
+  "Return CARD's `(ROW . COLUMN)' identity in the field grid."
+  (cons (or (plist-get card :row) 0)
+        (or (plist-get card :column) 0)))
 
-(defun supertag-view-tag-cards--card-line-at (line specs)
-  "Return SPECS' LINE, or the blank card-line specification."
-  (or (nth line specs) (list :kind :blank)))
+(defun supertag-view-tag-cards--place-card (card index columns)
+  "Return CARD carrying the grid position of INDEX in COLUMNS tracks."
+  (plist-put (plist-put card :row (/ index columns))
+             :column (% index columns)))
 
-(defun supertag-view-tag-cards--card-row-specs (cards)
-  "Return equal-height line-spec rows for CARDS.
+(defun supertag-view-tag-cards--card-blank (track identity)
+  "Return a blank card line of TRACK columns marked with IDENTITY."
+  (supertag-view-tag-cards--fixed-item " " track nil identity))
 
-Shorter cards receive blank lines only within this local block, which keeps
-all cards' following lines and right edges aligned without a TextUI grid."
-  (let* ((per-card (mapcar #'supertag-view-tag-cards--card-line-specs cards))
-         (height (apply #'max 1 (mapcar #'length per-card)))
-         rows
-         (line 0))
-    (while (< line height)
-      (push (mapcar (apply-partially #'supertag-view-tag-cards--card-line-at
-                                     line)
-                    per-card)
-            rows)
-      (setq line (1+ line)))
-    (nreverse rows)))
+(defun supertag-view-tag-cards--card-facet-element (record card)
+  "Return RECORD as CARD's clickable facet row element.
 
-(defun supertag-view-tag-cards--card-title-into (text spec edge)
-  "Append SPEC's filled title to TEXT, ending exactly at absolute EDGE."
-  (let* ((face (plist-get spec :face))
-         (count (format "%s" (plist-get spec :count)))
-         (target (supertag-view-tag-cards--target-width edge))
-         ;; The leading title-fill space and the literal title/count separator
-         ;; are part of the candidate.  Reserving that separator here means a
-         ;; count cannot be glued to a truncated title.
-         (prefix (concat text " "))
-         (suffix (concat " " count " "))
-         (title (supertag-view-tag-cards--fit-label-to-target
-                 (plist-get spec :label) prefix suffix target))
-         (left (propertize (concat " " title " ") 'face face))
-         (right (propertize (concat count " ") 'face face)))
-    (setq text (concat text left))
-    (setq text (supertag-view-tag-cards--append-to-width
-                text (- target (supertag-view-tag-cards--render-width right))
-                face))
-    (setq text (concat text right))
-    (supertag-view-tag-cards--append-to-width text target face)))
-
-(defun supertag-view-tag-cards--facet-into (text spec edge)
-  "Append SPEC's clickable facet row to TEXT, ending at absolute EDGE.
-
-Return `(TEXT ACTION)' so the attached-block callback can turn the exact
-already composed range into a text button after TextUI materializes it."
-  (let* ((record (plist-get spec :record))
-         (facet (plist-get record :facet))
+The label is fitted to the card's own track, with the marker and the
+mandatory label/count gap reserved.  The count is right-aligned inside the
+track like the title's, and the row is padded by columns only: the grid then
+closes the track's pixel edge itself."
+  (let* ((facet (plist-get record :facet))
          (count (format "%d" (plist-get record :count)))
-         (prefix (supertag-view-tag-cards--facet-marker facet))
-         (target (supertag-view-tag-cards--target-width edge))
-         ;; Fit the complete row and reserve one literal label/count space.
-         ;; Measuring LABEL alone was what allowed card one to overshoot a
-         ;; cell and, in the tightest case, join the count to the ellipsis.
-         (line-prefix (concat text prefix))
+         (marker (supertag-view-tag-cards--facet-marker facet))
+         (track (plist-get card :budget))
+         (scope (plist-get card :scope))
          (label (supertag-view-tag-cards--fit-label-to-target
                  (supertag-view-tag-cards--facet-row-label facet)
-                 line-prefix (concat " " count) target))
-         (right count)
-         (action (lambda (&rest _)
-                   (supertag-view-tag-cards--add-facet
-                    facet (plist-get spec :scope)))))
-    (setq text (concat line-prefix label " "))
-    (setq text (supertag-view-tag-cards--append-to-width
-                text (- target (supertag-view-tag-cards--render-width right))))
-    (setq text (concat text right))
-    (list (supertag-view-tag-cards--append-to-width text target) action)))
+                 marker (concat " " count)
+                 (supertag-view-tag-cards--target-width track))))
+    (supertag-view-tag-cards--link
+     (supertag-view-tag-cards--pad-between (concat marker label) count track)
+     (lambda (&rest _) (supertag-view-tag-cards--add-facet facet scope))
+     (supertag-view-tag-cards--card-identity card)
+     (list 'facet scope facet))))
 
-(defun supertag-view-tag-cards--node-into (text spec edge)
-  "Append SPEC's clickable node row to TEXT, ending at absolute EDGE."
-  (let* ((node-id (plist-get spec :node-id))
-         (prefix "→ ")
-         (target (supertag-view-tag-cards--target-width edge))
-         (line-prefix (concat text prefix))
+(defun supertag-view-tag-cards--card-node-element (node-id card)
+  "Return NODE-ID as CARD's clickable entry row element."
+  (let* ((track (plist-get card :budget))
          (title (supertag-view-tag-cards--fit-label-to-target
                  (supertag-view-tag-cards--node-title node-id)
-                 line-prefix "" target))
-         (action (lambda (&rest _) (supertag-goto-node node-id))))
-    (list (supertag-view-tag-cards--append-to-cell
-           (concat line-prefix title) edge)
-          action)))
+                 "→ " "" (supertag-view-tag-cards--target-width track))))
+    (supertag-view-tag-cards--link
+     (supertag-view-tag-cards--pad-right (concat "→ " title) track)
+     (lambda (&rest _) (supertag-goto-node node-id))
+     (supertag-view-tag-cards--card-identity card)
+     (list 'node (plist-get card :scope) node-id))))
 
-(defun supertag-view-tag-cards--compose-card-row-line
-    (specs cards row-index)
-  "Return one locally composed card line from SPECS and CARDS.
+(defun supertag-view-tag-cards--card-element (card)
+  "Return CARD as one TextUI grid child: a column of native card lines.
 
-Every boundary is padded from the complete prefix with Variant C's relative
-pixel spacer.  Thus a wide glyph in any card cannot move a sibling card or a
-later count column." 
-  (let ((text "")
-        (origin 0)
-        (card-index 0))
-    (cl-mapc
-     (lambda (spec card)
-       (let* ((track (plist-get card :budget))
-              (edge (+ origin track))
-              (start (length text))
-              action)
-         (setq text (supertag-view-tag-cards--append-to-cell text origin))
-         (setq start (length text)
-               spec (plist-put (copy-sequence spec) :track track))
-         (pcase (plist-get spec :kind)
-           (:title
-            (setq text (supertag-view-tag-cards--card-title-into text spec edge)))
-           (:facet
-            (pcase-let ((`(,next ,next-action)
-                         (supertag-view-tag-cards--facet-into text spec edge)))
-              (setq text next action next-action)))
-           (:node
-            (pcase-let ((`(,next ,next-action)
-                         (supertag-view-tag-cards--node-into text spec edge)))
-              (setq text next action next-action)))
-           (:mute
-            (let ((face (plist-get spec :face)))
-              (setq text
-                    (concat text
-                            (propertize
-                             (supertag-view-tag-cards--fit-label-to-target
-                              (plist-get spec :text) text ""
-                              (supertag-view-tag-cards--target-width edge))
-                             'face face)))
-              (setq text (supertag-view-tag-cards--append-to-cell text edge face))))
-           (_
-            (setq text (supertag-view-tag-cards--append-to-cell text edge))))
-         (let ((end (length text)))
-           (put-text-property start end 'supertag-view-tag-cards--card
-                              (cons row-index card-index) text)
-           (when action
-             (put-text-property start end
-                                'supertag-view-tag-cards--button-action
-                                action text))
-         (setq origin (+ edge supertag-view-tag-cards--grid-gap)
-               card-index (1+ card-index)))))
-     specs cards)
-    text))
+Every line is fitted to the card's own track before TextUI lays the grid out,
+because TextUI grows a track instead of clipping a block that is wider than
+its allocation.  Padding is added by columns only; the core composes the
+remaining pixel edge of each track."
+  (let* ((track (plist-get card :budget))
+         (identity (supertag-view-tag-cards--card-identity card))
+         (overline (format "%s" (or (plist-get card :overline) "")))
+         children)
+    (push (supertag-view-tag-cards--fixed-item
+           (if (string-empty-p overline) " " overline)
+           track 'supertag-view-mute identity)
+          children)
+    (push (supertag-view-tag-cards--filled-title-item
+           (plist-get card :title) (plist-get card :count) track
+           (plist-get card :face) identity)
+          children)
+    (when-let* ((records (plist-get card :records)))
+      (push (supertag-view-tag-cards--card-blank track identity) children)
+      (dolist (record records)
+        (push (supertag-view-tag-cards--card-facet-element record card)
+              children)))
+    (when-let* ((node-ids (plist-get card :recent-node-ids)))
+      (push (supertag-view-tag-cards--card-blank track identity) children)
+      (dolist (node-id node-ids)
+        (push (supertag-view-tag-cards--card-node-element node-id card)
+              children)))
+    (list :type :flex :direction :column :gap 0
+          :children (nreverse children))))
 
-(defun supertag-view-tag-cards--compose-card-row (cards width &optional row-index)
-  "Return CARDS as one attached multiline block at WIDTH."
-  ;; Card models already contain the exact responsive tracks made at WIDTH;
-  ;; accept the public block-layout argument without recomputing the model.
-  (ignore width)
-  (let (lines)
-    (dolist (specs (supertag-view-tag-cards--card-row-specs cards))
-      (push (supertag-view-tag-cards--compose-card-row-line
-             specs cards (or row-index 0))
-            lines))
-    (concat (mapconcat #'identity (nreverse lines) "\n") "\n")))
+(defun supertag-view-tag-cards--card-grid (cards)
+  "Return CARDS as one native TextUI grid of exact equal tracks.
 
-(defun supertag-view-tag-cards--card-rows (cards width)
-  "Split CARDS into the responsive visual rows selected at WIDTH."
-  (let ((columns (supertag-view-tag-cards--grid-columns width))
-        rows)
+One grid per visual row, as in the pre-composer page: TextUI v1 has a single
+`:gap' for both axes, and design.md wants the three columns of track
+whitespace with a single blank line between card rows.  The field's column
+flex supplies that blank line."
+  (list :type :grid
+        :columns supertag-view-tag-cards--maximum-columns
+        :min-column-width supertag-view-tag-cards--minimum-card-width
+        :gap supertag-view-tag-cards--grid-gap
+        :children (mapcar #'supertag-view-tag-cards--card-element cards)))
+
+(defun supertag-view-tag-cards--card-rows (cards columns)
+  "Split CARDS into visual rows of at most COLUMNS cards."
+  (let (rows)
     (while cards
       (push (cl-subseq cards 0 (min columns (length cards))) rows)
       (setq cards (nthcdr columns cards)))
     (nreverse rows)))
 
-(defun supertag-view-tag-cards--card-row-block (cards row-index)
-  "Return one top-level attached block for CARDS at ROW-INDEX."
-  (list :type 'supertag-view-tag-cards-card-row-block
-        :value " "
-        :cards cards
-        :row-index row-index))
-
-(defun supertag-view-tag-cards--separator-block (&optional blank-line)
-  "Return a top-level attached block separating frame sections.
-
-BLANK-LINE adds an empty visual line after the ordinary line separator."
-  (list :type 'supertag-view-tag-cards-card-row-block
-        :value (if blank-line "\n\n" "\n")))
-
-(defun supertag-view-tag-cards--empty-tags-line (tag-ids width)
+(defun supertag-view-tag-cards--empty-tags-item (tag-ids width)
   "Return the muted one-line acknowledgement for zero-count TAG-IDS."
   (when tag-ids
     (supertag-view-tag-cards--fixed-item
@@ -1246,27 +1074,23 @@ BLANK-LINE adds an empty visual line after the ordinary line separator."
              (mapconcat #'supertag-view-tag-cards--tag-label tag-ids ", "))
      width 'supertag-view-mute)))
 
-(defun supertag-view-tag-cards--field-elements (cards empty-tags width)
-  "Return top-level field elements for CARDS and optional EMPTY-TAGS.
+(defun supertag-view-tag-cards--field (cards empty-tags width)
+  "Return the field band for CARDS and optional EMPTY-TAGS at WIDTH.
 
-Attached blocks are intentionally top-level, as required by TextUI's public
-block-widget API.  A small block separator replaces the outer column flex's
-former gaps without nesting a block in a layout container."
-  (if (null cards)
-      (append (list (supertag-view-tag-cards--plain-item
-                     "No co-occurring facets." 'supertag-view-mute)
-                    (supertag-view-tag-cards--separator-block t))
-              (when-let* ((empty (supertag-view-tag-cards--empty-tags-line
-                                  empty-tags width)))
-                (list empty (supertag-view-tag-cards--separator-block t))))
-    (append
-     (cl-loop for row in (supertag-view-tag-cards--card-rows cards width)
-              for row-index from 0
-              append (list (supertag-view-tag-cards--card-row-block row row-index)
-                           (supertag-view-tag-cards--separator-block)))
-     (when-let* ((empty (supertag-view-tag-cards--empty-tags-line
-                         empty-tags width)))
-       (list empty (supertag-view-tag-cards--separator-block t))))))
+The cards are the children of responsive TextUI grids; sibling bands are
+separated by single blank lines like every other page band."
+  (list :type :flex :direction :column :gap 1
+        :children
+        (append
+         (if cards
+             (mapcar #'supertag-view-tag-cards--card-grid
+                     (supertag-view-tag-cards--card-rows
+                      cards (supertag-view-tag-cards--grid-columns width)))
+           (list (supertag-view-tag-cards--plain-item
+                  "No co-occurring facets." 'supertag-view-mute)))
+         (when-let* ((empty (supertag-view-tag-cards--empty-tags-item
+                             empty-tags width)))
+           (list empty)))))
 
 (defun supertag-view-tag-cards--colophon ()
   "Return the shared three-line Tag Cards colophon."
@@ -1291,18 +1115,21 @@ former gaps without nesting a block in a layout container."
          (supertag-view-tag-cards--render-chip-face-map
           (supertag-view-tag-cards--chip-face-map))
          (card-data (supertag-view-tag-cards--cards state width)))
-    (append
-     (list
-      (supertag-view-tag-cards--masthead
-       state (length all-tag-ids) (length tagged-node-ids) width)
-      (supertag-view-tag-cards--separator-block t)
-      (supertag-view-tag-cards--manifesto width)
-      (supertag-view-tag-cards--separator-block t)
-      (supertag-view-tag-cards--action-row width)
-      (supertag-view-tag-cards--separator-block t))
-     (supertag-view-tag-cards--field-elements
-      (plist-get card-data :cards) (plist-get card-data :empty-tags) width)
-     (list (supertag-view-tag-cards--colophon)))))
+    ;; One page column separates the five bands with a single blank line,
+    ;; exactly like the field's own rows are separated inside the grid.
+    (list
+     (list :type :flex :direction :column :gap 1
+           :children
+           (list
+            (supertag-view-tag-cards--masthead
+             state (length all-tag-ids) (length tagged-node-ids) width)
+            (supertag-view-tag-cards--manifesto width)
+            (supertag-view-tag-cards--action-row width)
+            (supertag-view-tag-cards--field
+             (plist-get card-data :cards)
+             (plist-get card-data :empty-tags)
+             width)
+            (supertag-view-tag-cards--colophon))))))
 
 (defun supertag-view-tag-cards--install-store-refresh (buffer)
   "Subscribe BUFFER to tag and node changes, once for its lifetime."
@@ -1348,16 +1175,6 @@ loaded standalone without `supertag-view-framework'."
   (interactive)
   (textui-refresh (current-buffer)))
 
-(defun supertag-view-tag-cards-next-button ()
-  "Move to the next native or locally composed Tag Cards button."
-  (interactive)
-  (forward-button 1 t t))
-
-(defun supertag-view-tag-cards-previous-button ()
-  "Move to the previous native or locally composed Tag Cards button."
-  (interactive)
-  (backward-button 1 t t))
-
 (defun supertag-view-tag-cards--card-edge-x (window line-start edge graphic)
   "Return WINDOW's x coordinate from LINE-START through EDGE.
 
@@ -1386,8 +1203,8 @@ terminal invocation useful without claiming it verifies GUI pixel alignment."
     (window line-start from to graphic)
   "Return live measurements for residual display spaces between FROM and TO.
 
-The `space :width' property is the Variant-C remainder that closes a local
-pixel boundary.  Measure its actual contribution from the logical line origin
+The `space :width' property is one displayed remainder that closes a track
+boundary in pixels.  Measure its actual contribution from the line origin
 rather than assuming the property survived or that the font maps it to the
 declared width."
   (let ((position from)
@@ -1452,12 +1269,12 @@ declared width."
 
 ;;;###autoload
 (defun supertag-view-tag-cards-measure ()
-  "Report every locally composed card edge in the visible Tag Cards buffer.
+  "Report every card edge in the visible Tag Cards buffer.
 
-The report is a live GUI measurement, not a text-render approximation.  Each
-card segment carries its row/card identity from the attached block.  Its edge
-is measured from the logical line origin with `window-text-pixel-size', then
-all lines belonging to that card PASS only when their spread is at most 1px.
+The report is a live measurement, not a text-render approximation.  Each card
+line carries its row/card identity from the card element.  Its edge is
+measured from the logical line origin with `window-text-pixel-size', then all
+lines belonging to that card PASS only when their spread is at most 1px.
 For a failing line, include its text, live string width, ellipsis font, and
 residual display-space measurement so the renderer and measurement can be
 compared directly."
@@ -1506,7 +1323,7 @@ compared directly."
               (setq position next)))
           (forward-line 1))))
     (unless records
-      (user-error "No locally composed Tag Cards rows are present"))
+      (user-error "No Tag Cards card lines are present"))
     (let ((report-buffer (get-buffer-create "*Supertag Tag Cards Measurement*"))
           (keys nil))
       (maphash (lambda (key _value) (push key keys)) edges)
@@ -1588,8 +1405,8 @@ compared directly."
     (define-key map (kbd "g") #'supertag-view-tag-cards-refresh)
     (define-key map (kbd "r") #'supertag-view-tag-cards--reset)
     (define-key map (kbd "q") #'quit-window)
-    (define-key map (kbd "TAB") #'supertag-view-tag-cards-next-button)
-    (define-key map (kbd "<backtab>") #'supertag-view-tag-cards-previous-button)
+    (define-key map (kbd "TAB") #'widget-forward)
+    (define-key map (kbd "<backtab>") #'widget-backward)
     map)
   "Keymap for `supertag-view-tag-cards-mode'.")
 

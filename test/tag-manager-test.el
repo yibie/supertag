@@ -37,45 +37,47 @@
   (supertag-tag-manager-test--with-store
     (let ((media (plist-get (supertag-tag-create '(:name "media")) :id))
           (book (plist-get (supertag-tag-create '(:name "book")) :id)))
-      (should-not (supertag-tag-parent book))
-      (supertag-tag-set-parent book media)
-      (should (equal media (supertag-tag-parent book))))))
+      (should-not (supertag-tag-parents book))
+      (supertag-tag-set-parent book (list media))
+      (should (equal (list media) (supertag-tag-parents book))))))
 
 (ert-deftest supertag-tag-set-parent-rejects-cycle ()
   (supertag-tag-manager-test--with-store
     (let* ((a (plist-get (supertag-tag-create '(:name "a")) :id))
-           (b (plist-get (supertag-tag-create `(:name "b" :extends ,a)) :id)))
-      (should-error (supertag-tag-set-parent a b) :type 'user-error)
-      (should-not (supertag-tag-parent a)))))
+           (b (plist-get (supertag-tag-create (list :name "b" :extends (list a))) :id)))
+      (should-error (supertag-tag-set-parent a (list b)) :type 'user-error)
+      (should-not (supertag-tag-parents a)))))
 
 (ert-deftest supertag-tag-set-parent-rejects-missing-parent ()
   (supertag-tag-manager-test--with-store
     (let ((book (plist-get (supertag-tag-create '(:name "book")) :id)))
-      (should-error (supertag-tag-set-parent book "does-not-exist")
+      (should-error (supertag-tag-set-parent book (list "does-not-exist"))
                     :type 'user-error)
-      (should-not (supertag-tag-parent book)))))
+      (should-not (supertag-tag-parents book)))))
 
 (ert-deftest supertag-tag-set-parent-clears-with-explicit-nil ()
   (supertag-tag-manager-test--with-store
     (let* ((media (plist-get (supertag-tag-create '(:name "media")) :id))
-           (book (plist-get (supertag-tag-create `(:name "book" :extends ,media))
+           (book (plist-get (supertag-tag-create (list :name "book" :extends (list media)))
                             :id)))
-      (should (equal media (supertag-tag-parent book)))
+      (should (equal (list media) (supertag-tag-parents book)))
       (supertag-tag-set-parent book nil)
-      (should-not (supertag-tag-parent book)))))
+      (should-not (supertag-tag-parents book)))))
 
-(ert-deftest supertag-tag-set-parent-interactive-none-candidate-clears ()
+(ert-deftest supertag-tag-set-parent-interactive-empty-clears ()
   (supertag-tag-manager-test--with-store
     (let* ((media (plist-get (supertag-tag-create '(:name "media")) :id))
-           (book (plist-get (supertag-tag-create `(:name "book" :extends ,media))
+           (book (plist-get (supertag-tag-create (list :name "book" :extends (list media)))
                             :id)))
-      (cl-letf (((symbol-function 'completing-read)
-                 (lambda (prompt _table &rest _)
-                   (if (string-prefix-p "Parent" prompt)
-                       "(none)"
+      (should (equal (list media) (supertag-tag-parents book)))
+      (cl-letf (((symbol-function 'completing-read-multiple)
+                 (lambda (prompt &rest _)
+                   (if (string-prefix-p "Parents for" prompt)
+                       (list "")
                      (error "Unexpected prompt: %s" prompt)))))
         (supertag-tag-set-parent book))
-      (should-not (supertag-tag-parent book)))))
+      ;; Empty input clears every parent.
+      (should-not (supertag-tag-parents book)))))
 
 (ert-deftest supertag-tag-set-parent-defaults-to-tag-at-point ()
   (supertag-tag-manager-test--with-store
@@ -87,21 +89,22 @@
         (goto-char (point-min))
         (search-forward "#book")
         (backward-char 2)
-        (cl-letf (((symbol-function 'completing-read)
-                   (lambda (prompt _table &rest _)
-                     (if (string-prefix-p "Tag:" prompt)
-                         (error "Should not prompt for the tag itself")
-                       "media"))))
+        (cl-letf (((symbol-function 'completing-read-multiple)
+                   (lambda (prompt &rest _)
+                     (if (string-prefix-p "Parents for" prompt)
+                         (list "media")
+                       (error "Unexpected prompt: %s" prompt)))))
           (supertag-tag-set-parent))
-        (should (equal media (supertag-tag-parent
-                               (supertag-tag-resolve-occurrence "book"))))))))
+        (should (equal (list media)
+                       (supertag-tag-parents
+                        (supertag-tag-resolve-occurrence "book"))))))))
 
 ;;; --- supertag-tag-affixate-candidates hierarchy prefix ---
 
 (ert-deftest supertag-tag-affixate-shows-ancestor-chain-for-flat-candidates ()
   (supertag-tag-manager-test--with-store
     (let* ((media (plist-get (supertag-tag-create '(:name "media")) :id))
-           (book (plist-get (supertag-tag-create `(:name "book" :extends ,media))
+           (book (plist-get (supertag-tag-create (list :name "book" :extends (list media)))
                             :id))
            (existing (propertize "book" 'supertag-tag-id book))
            (new-candidate (propertize "newtag" 'new-tag-name "newtag"
@@ -125,16 +128,16 @@
                                :aliases '("media")))
           (supertag-store-put-entity
            :tags "book" (list :id "book" :name "book" :type :tag
-                              :extends "media" :aliases '("book")))
+                              :extends (list "media") :aliases '("book")))
           (supertag-store-put-entity
            :tags "novel" (list :id "novel" :name "novel" :type :tag
-                               :extends "book" :aliases '("novel" "fiction")))
+                               :extends (list "book") :aliases '("novel" "fiction")))
           (supertag-store-put-entity
            :tags "work" (list :id "work" :name "work" :type :tag
                               :aliases '("work")))
           (supertag-store-put-entity
            :tags "ghost" (list :id "ghost" :name "ghost" :type :tag
-                               :extends "missing-parent" :aliases '("ghost")))
+                               :extends (list "missing-parent") :aliases '("ghost")))
           (supertag-store-put-entity
            :nodes "n1" (list :id "n1" :title "N1" :tags '("media")))
           (supertag-store-put-entity
@@ -164,8 +167,9 @@
               (cl-letf (((symbol-function 'read-string)
                          (lambda (&rest _) "book")))
                 (supertag-view-tags-create-child))
-              (should (equal "media" (supertag-tag-parent
-                                       (supertag-tag-resolve-occurrence "book"))))
+              (should (equal (list "media")
+                             (supertag-tag-parents
+                              (supertag-tag-resolve-occurrence "book"))))
               (should (string-match-p "^    book  (0 个节点)$" (buffer-string)))
               (supertag-view-tags-quit))))
       (supertag-tag-manager-test--kill-buffers))))
@@ -181,11 +185,85 @@
               (goto-char (point-min))
               (should (string-match-p "^  book  (0 个节点)$" (buffer-string)))
               (search-forward "book")
-              (cl-letf (((symbol-function 'completing-read)
-                         (lambda (&rest _) "media")))
+              (cl-letf (((symbol-function 'completing-read-multiple)
+                         (lambda (&rest _) (list "media"))))
                 (supertag-view-tags-set-parent))
-              (should (equal "media" (supertag-tag-parent "book")))
+              (should (equal (list "media") (supertag-tag-parents "book")))
               (should (string-match-p "^    book  (0 个节点)$" (buffer-string)))
+              (supertag-view-tags-quit))))
+      (supertag-tag-manager-test--kill-buffers))))
+
+(ert-deftest supertag-view-tags-shows-a-multi-parent-tag-under-each-parent ()
+  (supertag-tag-manager-test--with-store
+    (unwind-protect
+        (save-window-excursion
+          (supertag-tag-create '(:id "tools" :name "tools"))
+          (supertag-tag-create '(:id "topics" :name "topics"))
+          (supertag-tag-create
+           '(:id "emacs" :name "emacs" :extends ("tools" "topics")))
+          (let ((buffer (supertag-view-tags)))
+            (with-current-buffer buffer
+              (let ((text (buffer-string)))
+                ;; The DAG expands into the tree: one child row under each
+                ;; parent, while the header still counts Tags, not rows.
+                (should (equal 2
+                               (length
+                                (seq-filter
+                                 (lambda (line)
+                                   (string-match-p "^    emacs  (0 个节点)$" line))
+                                 (split-string text "\n")))))
+                (should (string-match-p "^  tools  (0 个节点)$" text))
+                (should (string-match-p "^  topics  (0 个节点)$" text))
+                (should (string-match-p " Tag Manager   3 tags" header-line-format)))
+              (supertag-view-tags-quit))))
+      (supertag-tag-manager-test--kill-buffers))))
+
+(ert-deftest supertag-view-tags-create-command-makes-a-root-or-a-path ()
+  (supertag-tag-manager-test--with-store
+    (unwind-protect
+        (save-window-excursion
+          (let ((buffer (supertag-view-tags)))
+            (with-current-buffer buffer
+              (cl-letf (((symbol-function 'read-string) (lambda (&rest _) "media")))
+                (supertag-view-tags-create))
+              (should (equal "media"
+                             (plist-get (supertag-tag-get
+                                         (supertag-tag-resolve-occurrence "media"))
+                                        :name)))
+              (should (string-match-p "^  media  (0 个节点)$" (buffer-string)))
+              ;; `/' creates the whole chain under the new root.
+              (cl-letf (((symbol-function 'read-string)
+                         (lambda (&rest _) "media/book")))
+                (supertag-view-tags-create))
+              (let ((book (supertag-tag-resolve-occurrence "book")))
+                (should book)
+                (should (equal (list (supertag-tag-resolve-occurrence "media"))
+                               (supertag-tag-parents book)))
+                (should (string-match-p "^    book  (0 个节点)$" (buffer-string))))
+              (supertag-view-tags-quit))))
+      (supertag-tag-manager-test--kill-buffers))))
+
+(ert-deftest supertag-view-tags-create-child-accepts-a-path ()
+  (supertag-tag-manager-test--with-store
+    (unwind-protect
+        (save-window-excursion
+          (supertag-tag-create '(:id "media" :name "media"))
+          (let ((buffer (supertag-view-tags)))
+            (with-current-buffer buffer
+              (goto-char (point-min))
+              (search-forward "media")
+              (cl-letf (((symbol-function 'read-string)
+                         (lambda (&rest _) "book/fiction")))
+                (supertag-view-tags-create-child))
+              ;; The first segment hangs under this row; the leaf follows it.
+              (let ((book (supertag-tag-resolve-occurrence "book"))
+                    (fiction (supertag-tag-resolve-occurrence "fiction")))
+                (should book)
+                (should fiction)
+                (should (equal (list "media") (supertag-tag-parents book)))
+                (should (equal (list book) (supertag-tag-parents fiction))))
+              (should (string-match-p "^    book  (0 个节点)$" (buffer-string)))
+              (should (string-match-p "^      fiction  (0 个节点)$" (buffer-string)))
               (supertag-view-tags-quit))))
       (supertag-tag-manager-test--kill-buffers))))
 

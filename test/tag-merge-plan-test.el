@@ -97,7 +97,7 @@
            (progn
              (dolist (id sources) (supertag-tag-create (list :id id :name id)))
              (when (eq operation 'rename)
-               (supertag-tag-create '(:id "child" :name "child" :extends "old")))
+               (supertag-tag-create '(:id "child" :name "child" :extends ("old"))))
              (puthash 'retained (list :id 'retained :tag (car sources) :tags (copy-sequence sources))
                       supertag--view-configs)
              (cl-loop for file in files for index from 1 do
@@ -131,7 +131,7 @@
   (dolist (source sources) (should-not (supertag-tag-get source)))
   (dolist (target targets) (should (supertag-tag-get target)))
   (when (eq operation 'rename)
-    (should (equal "new" (supertag-tag-parent "child")))
+    (should (equal (list "new") (supertag-tag-parents "child")))
     (should (equal '("child") (supertag-query-tag-children "new"))))
   (dolist (id '("merge-node-1" "merge-node-2"))
     (should (equal targets (plist-get (supertag-node-get id) :tags))))

@@ -136,6 +136,24 @@
     (if entries (puthash :legacy-fields (nreverse entries) store) (remhash :legacy-fields store))
     (dolist (key supertag-migrate--field-roots) (remhash key store))))
 
+(defun supertag-migrate--normalize-extends-lists (store)
+  "Rewrite every string Tag `:extends' in STORE into a one-element list.
+DB-only and idempotent.  Tag `:extends' is a parent list; stores written
+before 7.2.0 hold one parent ID as a plain string.  Return non-nil when any
+Tag changed."
+  (let ((tags (gethash :tags store))
+        (changed nil))
+    (when (hash-table-p tags)
+      (maphash
+       (lambda (id raw-tag)
+         (let ((tag (and raw-tag (supertag--ensure-plist raw-tag))))
+           (when (and tag (stringp (plist-get tag :extends)))
+             (puthash id (plist-put tag :extends (list (plist-get tag :extends)))
+                      tags)
+             (setq changed t))))
+       tags))
+    changed))
+
 (defun supertag-migrate--explain-extends (store)
   "Keep every legacy inheritance edge and explain its path or conflict."
   (let ((tags (gethash :tags store))
@@ -145,14 +163,19 @@
                  (let ((tag (gethash id tags)))
                    (unless tag (error "Missing parent %s" id))
                    (let ((name (or (plist-get tag :name) id))
-                         (parent (plist-get tag :extends)))
+                         ;; A Tag with several parents has no single path; the
+                         ;; first stored parent names it.
+                         (parent (car (supertag-tag--tag-parents tag))))
                      (if parent (concat (path parent (cons id seen)) "/" name) name)))))
       (maphash (lambda (id tag)
-                 (when-let* ((parent (plist-get tag :extends)))
+                 (when-let* ((parents (supertag-tag--tag-parents tag)))
                    (puthash id
                             (condition-case err
-                                (list :parent parent :path (path id nil))
-                              (error (list :parent parent :conflict (error-message-string err)))) result))) tags))
+                                (list :parent (car parents) :path (path id nil))
+                              (error (list :parent (car parents)
+                                           :conflict (error-message-string err))))
+                            result)))
+               tags))
     (if (> (hash-table-count result) 0) (puthash :legacy-extends result store)
       (remhash :legacy-extends store))))
 
@@ -168,27 +191,31 @@ even though its own ID stays indexed as an occurrence token."
 
 (defun supertag-migrate--legacy-extends-cycle-p (child-id parent-id tags)
   "Non-nil when CHILD-ID extending PARENT-ID would create an `:extends' cycle.
-Walks PARENT-ID's current ancestor chain in TAGS, which already reflects any
-edge this same migration pass applied to an earlier record."
-  (let ((current parent-id) (seen (list child-id)))
+Walks every parent path of PARENT-ID in TAGS, which already reflects any edge
+this same migration pass applied to an earlier record."
+  (let ((stack (list parent-id))
+        (seen (list child-id)))
     (catch 'cycle
-      (while current
-        (when (member current seen) (throw 'cycle t))
-        (push current seen)
-        (setq current (plist-get (supertag--ensure-plist (gethash current tags)) :extends)))
+      (while stack
+        (let ((current (pop stack)))
+          (when (member current seen) (throw 'cycle t))
+          (push current seen)
+          (let ((tag (supertag--ensure-plist (gethash current tags))))
+            (when tag
+              (setq stack (append (supertag-tag--tag-parents tag) stack))))))
       nil)))
 
 (defun supertag-migrate--apply-legacy-extends (store)
   "Resolve `:legacy-extends' records into real Tag `:extends' edges in STORE.
 DB-only and idempotent.  For each pending record, the child key and the
 `:parent' name are resolved to live Tag IDs (entity ID, then `:name'/alias).
-A record whose child already carries that identical `:extends' is dropped
-without writing.  A record whose child and parent both resolve, do not
-already differ, and would not form a cycle has `:extends' written onto the
-child Tag entity and is then dropped.  Everything else is kept, annotated
-with `:conflict', for `supertag-migrate-status' to report under
-`:unresolved-extends'.  Return non-nil when any record's disposition
-changed."
+A record whose child already lists that parent is dropped without writing.  A
+record whose child and parent both resolve, and whose edge would not form a
+cycle, has the parent appended to the child's `:extends' list -- an existing
+different parent is no longer a conflict, because a Tag may have several -- and
+is then dropped.  Everything else is kept, annotated with `:conflict', for
+`supertag-migrate-status' to report under `:unresolved-extends'.  Return
+non-nil when any record's disposition changed."
   (let ((pending (gethash :legacy-extends store))
         (tags (gethash :tags store))
         rows changed)
@@ -201,23 +228,27 @@ changed."
                (parent-id (and (stringp parent-name)
                                 (supertag-migrate--legacy-extends-resolve parent-name tags)))
                (child-tag (and child-id (supertag--ensure-plist (gethash child-id tags))))
-               (current (and child-tag (plist-get child-tag :extends)))
+               (current (and child-tag (supertag-tag--tag-parents child-tag)))
+               (present (and parent-id (member parent-id current)))
                (conflict
                 (cond
                  ((not child-id) "Missing child tag")
                  ((not parent-id) "Missing parent tag")
-                 ((and current (not (equal current parent-id)))
-                  "Tag already extends a different parent")
+                 ;; A stored cycle is reported even when the edge is already
+                 ;; there; otherwise an identical edge is simply applied.
                  ((supertag-migrate--legacy-extends-cycle-p child-id parent-id tags)
-                  "Would create an :extends cycle"))))
+                  "Would create an :extends cycle")
+                 (present nil))))
           (cond
            (conflict
             (let ((updated (plist-put (copy-sequence entry) :conflict conflict)))
               (unless (equal updated entry) (setq changed t))
               (puthash key updated pending)))
-           ((equal current parent-id) (remhash key pending) (setq changed t))
+           (present (remhash key pending) (setq changed t))
            (t
-            (puthash child-id (plist-put child-tag :extends parent-id) tags)
+            (puthash child-id (plist-put child-tag :extends
+                                         (append current (list parent-id)))
+                     tags)
             (remhash key pending)
             (setq changed t)))))
       (when (= (hash-table-count pending) 0) (remhash :legacy-extends store)))
@@ -227,6 +258,7 @@ changed."
   "Perform DB-only steps before the version stamp; never write Org."
   (supertag--migrate-4x-to-5x store)
   (supertag--retire-node-tag-projection store)
+  (supertag-migrate--normalize-extends-lists store)
   (maphash (lambda (id node)
              (when (listp node)
                (when (and (plist-get node :file-path) (not (plist-get node :file)))

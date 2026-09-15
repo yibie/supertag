@@ -61,7 +61,7 @@
 ;; Tag management is loaded lazily from its feature.
 (declare-function supertag-tag-rename "supertag-tag" (&optional old-id new-name))
 (declare-function supertag-delete-tag-everywhere "supertag-tag" (&optional tag-name))
-(declare-function supertag-tag-set-parent "supertag-tag" (&optional tag-id parent-id))
+(declare-function supertag-tag-set-parent "supertag-tag" (&optional tag-id parent-ids))
 (declare-function supertag-view-tags "supertag-view-tags" ())
 (declare-function supertag-find-node "supertag-node" (&optional other-window))
 (declare-function supertag-add-link "supertag-link"

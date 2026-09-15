@@ -184,7 +184,7 @@
       (supertag-store-put-entity :nodes (car row)
         (plist-put (copy-tree (cdr row)) :created-at (encode-time 0 0 0 2 1 2020))))
     (supertag-store-put-entity :tags "parent" '(:id "parent" :name "root"))
-    (supertag-store-put-entity :tags "child" '(:id "child" :name "child" :extends "parent"))
+    (supertag-store-put-entity :tags "child" '(:id "child" :name "child" :extends ("parent")))
     (supertag-store-put-entity :relations "named" '(:id "named" :from "p" :to "c" :type :reference :kind :document-link :origin :org :relation-name "knows"))
     (supertag-store-put-entity :relations "plain" '(:id "plain" :from "p" :to "m" :type :reference :kind :document-link :origin :org)))
   (let* ((file (expand-file-name "input.org" qa-tmp))
@@ -637,7 +637,7 @@
      ('tags
       (supertag--ensure-store)
       (dolist (row '(("p" :id "p" :name "root" :aliases ("alias"))
-                     ("c" :id "c" :name "root/child" :extends "p")
+                     ("c" :id "c" :name "root/child" :extends ("p"))
                      ("v" :id "v" :name "virtual/child")))
         (supertag-store-put-entity :tags (car row) (cdr row)))
       (dolist (row '(("n1" :id "n1" :tags ("p" "p")) ("n2" :id "n2" :tags ("c"))
@@ -1170,7 +1170,7 @@
                 (t
                  ;; Direct Store seeds; saved-property control uses real Org projection.
                  (dolist (entry '(("parent" :id "parent" :name "Parent" :aliases ("alias"))
-                                  ("parent/child" :id "parent/child" :name "Parent/Child" :extends "parent")))
+                                  ("parent/child" :id "parent/child" :name "Parent/Child" :extends ("parent"))))
                    (supertag-store-put-entity :tags (car entry) (cdr entry)))
                  (dolist (entry '(("a" :id "a" :title "Alpha" :tags ("parent"))
                                   ("b" :id "b" :title "Beta" :tags ("parent/child"))))

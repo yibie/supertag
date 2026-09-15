@@ -105,7 +105,7 @@
 (ert-deftest migration-preflight-tags-rules-edges-and-determinism ()
   (migration-preflight-test--fixture
     (puthash :tags (migration-preflight-test--table
-                    "c" '(:name "book" :extends "p" :aliases ("books"))
+                    "c" '(:name "book" :extends ("p") :aliases ("books"))
                     "p" '(:name "media")) store)
     (puthash :automations (migration-preflight-test--table "rule" '(:name "Rule")) store)
     (puthash :relations (migration-preflight-test--table
@@ -128,7 +128,7 @@
                 :nodes (migration-preflight-test--table
                         "n" '(:file "/ssh:example:/notes.org"))
                 :tags (migration-preflight-test--table
-                       "t" '(:name "tag" :extends "t")))))
+                       "t" '(:name "tag" :extends ("t"))))))
     (let ((issues (mapcar #'car (plist-get (supertag-migration-preflight store) :issues))))
       (should (memq :source-unavailable issues))
       (should (memq :tag-mapping-unavailable issues)))))

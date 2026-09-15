@@ -409,7 +409,7 @@ This is a stopgap, not a solution — real multi-machine sync needs something th
 ## Migration from older versions
 
 Loading a supported 5.x/6.x database automatically upgrades its data version to
-7.1.0. Before any migration changes, SuperTag copies the database into
+7.2.0. Before any migration changes, SuperTag copies the database into
 `backups/supertag-db-premigrate-<old-version>-*.el` and verifies the snapshot
 byte for byte. Database-only conversion preserves old fields as pending
 records; it does not edit Org files. For versions before 5.0, use

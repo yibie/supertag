@@ -325,7 +325,11 @@
                    '("document-node" "second-node") '("alias" "media/book"))))
       (should (equal (car ids) "stable"))
       (should (= (length ids) 2))
-      (should-not (supertag-tag-resolve-occurrence "media"))
+      ;; `media/book' is a path: it creates `media' and links the `book' leaf.
+      (let ((leaf (supertag-tag-resolve-occurrence "book")))
+        (should leaf)
+        (should (equal (list (supertag-tag-resolve-occurrence "media"))
+                       (supertag-tag-parents leaf))))
       (dolist (pair (list (cons "document-node" file) (cons "second-node" plain)))
         (should (= 1 (cl-count (car pair) records :test #'equal)))
         (should (= 1 (cl-count (cdr pair) saves :test #'equal)))
@@ -335,7 +339,8 @@
           (should-not (buffer-modified-p))
           (should (equal (buffer-string) (supertag-document-test-disk (cdr pair))))
           (should (string-match-p "#canonical" (buffer-string)))
-          (should (string-match-p "#media/book" (buffer-string))))))))
+          (should (string-match-p "#book" (buffer-string)))
+          (should-not (string-match-p "#media/book" (buffer-string))))))))
 
 (defun supertag-tag-change-test--late-member-failure (fail-compensation)
   "Observe durable first write, then fail verification and optionally recovery."

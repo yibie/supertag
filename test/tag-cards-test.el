@@ -32,7 +32,7 @@
                     ("reading" :name "Reading")
                     ("writing" :name "Writing")
                     ("archive" :name "Archive")
-                    ("archive-child" :name "Archive child" :extends "archive")))
+                    ("archive-child" :name "Archive child" :extends ("archive"))))
        (supertag-store-put-entity
         :tags (car tag)
         (append (list :id (car tag) :type :tag :aliases (list (car tag)))

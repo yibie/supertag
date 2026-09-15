@@ -291,8 +291,8 @@ Delegates to the single physical-link writer in supertag-link."
   (supertag-tag-rename
    (plist-get (supertag-embark--require-target :tag) :tag-id)))
 
-(defun supertag-embark-tag-set-parent (&optional _target)
-  "Set the `:extends' parent of this tag."
+(defun supertag-embark-tag-set-parents (&optional _target)
+  "Set the `:extends' parents of this tag."
   (supertag-tag-set-parent
    (plist-get (supertag-embark--require-target :tag) :tag-id)))
 
@@ -345,13 +345,20 @@ Delegates to the single physical-link writer in supertag-link."
     (let ((name (supertag-ui-read-tag "Add tag: " (supertag-view-api-list-tag-ids) t t)))
       (when (and name (not (string-empty-p name)))
         (let* ((token (supertag-sanitize-tag-name (string-remove-prefix "=" name)))
-               (tag-id (or (and (supertag-tag-get token) token)
-                           (supertag-tag-resolve-occurrence token))))
+               (path-p (and (string-match-p supertag-tag-path-separator-regexp
+                                            token)
+                            t))
+               (tag-id (and (not path-p)
+                            (or (and (supertag-tag-get token) token)
+                                (supertag-tag-resolve-occurrence token)))))
           (when (or tag-id
                     (yes-or-no-p (format "Tag '%s' does not exist. Create and add it? " token)))
             ;; Re-check after the prompts, before creating anything or writing.
             (supertag-embark--require-saved-node id)
-            (unless tag-id (supertag-tag-create (list :name token)))
+            (unless tag-id
+              (setq tag-id (supertag-tag-ensure token))
+              ;; A path writes its leaf token, the only name a node carries.
+              (when path-p (setq token (supertag-tag--name tag-id))))
             (supertag-service-org-add-tag id token)))))))
 
 (defun supertag-embark-node-reference-remove-tag (&optional _target)
@@ -393,7 +400,7 @@ Delegates to the single physical-link writer in supertag-link."
   "c" #'supertag-embark-tag-change
   "R" #'supertag-embark-tag-rename
   "D" #'supertag-embark-tag-delete
-  "P" #'supertag-embark-tag-set-parent)
+  "P" #'supertag-embark-tag-set-parents)
 
 (defvar-keymap supertag-embark-link-map
   "RET" #'supertag-embark-link-open

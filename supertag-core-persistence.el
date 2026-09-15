@@ -31,9 +31,15 @@ The primary customization is in supertag-vault.el.")
 
 (defvar supertag--config-guard-allow)
 
-(defconst supertag-data-version "7.1.0"
+(defconst supertag-data-version "7.2.0"
   "Current data format version.
 Used for data format compatibility checks and automatic migration.
+
+Bumped 7.1.0 -> 7.2.0: a Tag's `:extends' is a list of parent Tag IDs, not a
+single parent ID.  `supertag-migrate--normalize-extends-lists' rewrites every
+stored string into a one-element list (DB-only, idempotent), and
+`supertag-migrate--apply-legacy-extends' now adds a parent to the list
+instead of reporting a second parent as a conflict.
 
 Bumped 7.0.0 -> 7.1.0: `supertag-migrate--apply-legacy-extends' now resolves
 `:legacy-extends' records directly into `:extends' on Tag entities (DB-only,

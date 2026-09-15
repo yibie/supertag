@@ -353,7 +353,7 @@
     (dolist (spec '(("stable-parent" "topic" nil) ("stable-child" "child" "stable-parent")
                     ("stable-grand" "grand" "stable-child") ("stable-leaf" "solo" nil)))
       (supertag-tag-create (append (list :id (nth 0 spec) :name (nth 1 spec))
-                                   (when (nth 2 spec) (list :extends (nth 2 spec))))))
+                                   (when (nth 2 spec) (list :extends (list (nth 2 spec)))))))
     (with-current-buffer (find-file-noselect file)
       (erase-buffer)
       (insert "* Parent #topic\n:PROPERTIES:\n:ID: p\n:END:\nParent body\n* Child #child\n:PROPERTIES:\n:ID: c\n:END:\nChild body\n* Grand #grand\n:PROPERTIES:\n:ID: g\n:END:\nGrand body\n* Leaf #solo\n:PROPERTIES:\n:ID: l\n:END:\nLeaf body\n")

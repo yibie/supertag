@@ -641,8 +641,7 @@ Append inline #tag at the end of the headline when it is not present."
     (when-let ((tag-name (plist-get params :tag)))
       (let ((tag-id (supertag-automation--semantic-tag-id tag-name)))
         (unless (supertag-tag-get tag-id)
-          (setq tag-id
-                (plist-get (supertag-tag-create `(:name ,tag-name)) :id)))
+          (setq tag-id (supertag-tag-ensure tag-name)))
         (supertag-service-org-add-tag node-id tag-id 'end)
         (supertag-automation--log
          "Automation: Added tag '%s' to node %s" tag-name node-id)))))

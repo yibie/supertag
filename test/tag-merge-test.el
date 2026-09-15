@@ -54,7 +54,7 @@
 
 (defun tag-merge-test--create-tag (id fields &optional parent)
   "Create tag ID with FIELDS and optional PARENT."
-  (supertag-tag-create (list :id id :name id :extends parent))
+  (supertag-tag-create (list :id id :name id :extends (list parent)))
   (dolist (field fields)
     (let* ((field-id (or (plist-get field :id)
                          (supertag-sanitize-field-id

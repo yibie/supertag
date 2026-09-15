@@ -21,11 +21,11 @@
   (supertag-path-test--with-store
     (let* ((media (plist-get (supertag-tag-create '(:name "media")) :id))
            (other (plist-get (supertag-tag-create '(:name "mediax")) :id))
-           (book (plist-get (supertag-tag-create `(:name "book" :extends ,media)) :id))
+           (book (plist-get (supertag-tag-create (list :name "book" :extends (list media))) :id))
            (note (plist-get (supertag-tag-create '(:name "note")) :id))
-           (ref (plist-get (supertag-tag-create `(:name "ref" :extends ,note)) :id))
-           (paper (plist-get (supertag-tag-create `(:name "paper" :extends ,ref)) :id)))
-      (should (equal media (supertag-tag-parent book)))
+           (ref (plist-get (supertag-tag-create (list :name "ref" :extends (list note))) :id))
+           (paper (plist-get (supertag-tag-create (list :name "paper" :extends (list ref))) :id)))
+      (should (equal (list media) (supertag-tag-parents book)))
       (should (equal (list media) (supertag-tag-ancestors book)))
       (should (equal "media › book" (supertag-tag-display-name book)))
       (should (member book (supertag-tag-descendants media)))
@@ -38,14 +38,124 @@
                      (supertag-tag-descendants note)))
       (should (equal (list book) (supertag-query-tag-children media))))))
 
+(ert-deftest supertag-path-multi-parent-hierarchy ()
+  (supertag-path-test--with-store
+    (let* ((tools (plist-get (supertag-tag-create '(:name "tools")) :id))
+           (topics (plist-get (supertag-tag-create '(:name "topics")) :id))
+           (work (plist-get (supertag-tag-create (list :name "work" :extends (list topics)))
+                            :id))
+           (emacs (plist-get (supertag-tag-create
+                              (list :name "emacs" :extends (list tools topics)))
+                             :id)))
+      ;; two direct parents, in stored order
+      (should (equal (list tools topics) (supertag-tag-parents emacs)))
+      ;; the transitive union is breadth-first and deduplicated
+      (should (equal (list tools topics) (supertag-tag-ancestors emacs)))
+      (should (equal "tools · topics › emacs" (supertag-tag-display-name emacs)))
+      ;; both parents own the same descendant
+      (should (equal (sort (list emacs work) #'string<)
+                     (supertag-tag-descendants topics)))
+      (should (equal (list emacs) (supertag-tag-descendants tools)))
+      (should (member emacs (supertag-query-tag-children tools)))
+      (should (member emacs (supertag-query-tag-children topics)))
+      ;; a third parent appends; nothing is replaced
+      (supertag-tag-add-parent emacs work)
+      (should (equal (list tools topics work) (supertag-tag-parents emacs)))
+      (should (equal "tools · topics · work › emacs"
+                     (supertag-tag-display-name emacs)))
+      ;; a cycle through any parent path is rejected and writes nothing
+      (should-error (supertag-tag-add-parent topics emacs) :type 'user-error)
+      (should-not (supertag-tag-parents topics))
+      (should-error (supertag-tag-set-parent tools (list emacs)) :type 'user-error)
+      (should-not (supertag-tag-parents tools))
+      ;; clearing the parents is what nil means
+      (should-not (supertag-tag-set-parent emacs nil))
+      (should-not (supertag-tag-parents emacs))
+      (should (equal "emacs" (supertag-tag-display-name emacs)))
+      ;; several segments of one path are all created and linked
+      (let* ((leaf (supertag-tag-ensure-path "tools/git/config"))
+             (git (supertag-tag-resolve-occurrence "git")))
+        (should (equal "config" (plist-get (supertag-tag-get leaf) :name)))
+        (should (equal (list tools) (supertag-tag-parents git)))
+        (should (equal (list git) (supertag-tag-parents leaf)))
+        (should (equal (list git tools) (supertag-tag-ancestors leaf)))
+        (should (equal "tools › git › config" (supertag-tag-display-name leaf))))
+      ;; full-width `／' is the same separator
+      (let ((shell (supertag-tag-ensure-path "tools／shell")))
+        (should (equal "shell" (plist-get (supertag-tag-get shell) :name)))
+        (should (equal (list tools) (supertag-tag-parents shell)))))))
+
+(ert-deftest supertag-path-capf-offers-new-for-a-missing-parent-edge ()
+  (supertag-path-test--with-store
+    (let* ((topics (plist-get (supertag-tag-create '(:name "topics")) :id))
+           (emacs (plist-get (supertag-tag-create '(:name "emacs")) :id)))
+      ;; Both Tags exist but are unrelated: `[New]' completes the edge.
+      (let* ((candidates (supertag-completion--get-completion-table "topics/emacs"))
+             (candidate (cl-find-if (lambda (s) (get-text-property 0 'is-new-tag s))
+                                    candidates)))
+        (should candidate)
+        (should (equal "topics › emacs"
+                       (substring-no-properties
+                        (car (car (supertag-tag-affixate-candidates (list candidate)))))))
+        ;; Committing runs `supertag-tag-ensure-path' for the typed path; the
+        ;; full buffer commit is covered by
+        ;; `supertag-path-completion-creates-the-path-and-writes-the-leaf'.
+        (supertag-tag-ensure-path "topics/emacs"))
+      (should (equal (list topics) (supertag-tag-parents emacs)))
+      ;; With the edge in place a path has nothing left to offer.
+      (should-not (cl-find-if (lambda (s) (get-text-property 0 'is-new-tag s))
+                              (supertag-completion--get-completion-table "topics/emacs")))
+      (should emacs))))
+
+(ert-deftest supertag-path-ensure-path-adds-a-parent-edge ()
+  (supertag-path-test--with-store
+    ;; Both ends exist already: the path only adds the missing edge.
+    (let* ((topics (plist-get (supertag-tag-create '(:name "topics")) :id))
+           (tools (plist-get (supertag-tag-create '(:name "tools")) :id))
+           (emacs (plist-get (supertag-tag-create '(:name "emacs")) :id)))
+      (should (equal emacs (supertag-tag-ensure-path "topics/emacs")))
+      (should (equal (list topics) (supertag-tag-parents emacs)))
+      ;; Idempotent: a second call adds nothing.
+      (should (equal emacs (supertag-tag-ensure-path "topics/emacs")))
+      (should (equal (list topics) (supertag-tag-parents emacs)))
+      ;; An existing Tag keeps its parents; the path adds one more.
+      (supertag-tag-add-parent emacs tools)
+      (should (equal emacs (supertag-tag-ensure-path "topics/emacs")))
+      (should (equal (list topics tools) (supertag-tag-parents emacs)))
+      ;; A path with one segment is ordinary creation by token.
+      (should (equal emacs (supertag-tag-ensure-path "emacs")))
+      (should (equal "fresh" (plist-get (supertag-tag-get
+                                         (supertag-tag-ensure-path "fresh"))
+                                        :name)))
+      (should-error (supertag-tag-ensure-path "topics//emacs") :type 'user-error)
+      (should-error (supertag-tag-ensure-path "") :type 'user-error))))
+
+(ert-deftest supertag-path-ensure-path-rolls-back-a-cycle ()
+  (supertag-path-test--with-store
+    (let ((tags-before (hash-table-count (supertag-store-get-collection :tags)))
+          (dirty-before (supertag-dirty-p)))
+      ;; `b' extends `a', so completing `side/b/a' would close a loop.
+      (let* ((a (plist-get (supertag-tag-create '(:name "a")) :id))
+             (b (plist-get (supertag-tag-create (list :name "b" :extends (list a))) :id)))
+        (should-error (supertag-tag-ensure-path "side/b/a") :type 'user-error)
+        ;; nothing was written, not even the new `side' segment
+        (should-not (supertag-tag-resolve-occurrence "side"))
+        (should (equal (list a) (supertag-tag-parents b)))
+        (should (equal (+ 2 tags-before)
+                       (hash-table-count (supertag-store-get-collection :tags))))
+        (should (equal dirty-before (supertag-dirty-p)))))))
+
 (ert-deftest supertag-path-validates-explicit-inheritance ()
   (supertag-path-test--with-store
     (let* ((media (plist-get (supertag-tag-create '(:name "media")) :id))
-           (book (plist-get (supertag-tag-create `(:name "book" :extends ,media)) :id))
-           (slash (plist-get (supertag-tag-create '(:name "#media/book")) :id)))
-      (should-error (supertag-tag-create '(:name "orphan" :extends "missing"))
+           (book (plist-get (supertag-tag-create (list :name "book" :extends (list media)))
+                            :id)))
+      (should-error (supertag-tag-create '(:name "orphan" :extends ("missing")))
                     :type 'user-error)
       (should-error (supertag-tag-create '(:name "wrong-type" :extends 42))
+                    :type 'user-error)
+      ;; `:extends' is a parent list; the single-parent string shape is gone.
+      (should-error (supertag-tag-create '(:name "string-parent" :extends "media"))
                     :type 'user-error)
       (should-error (supertag-tag-update media
                                          (lambda (tag) (plist-put tag :extends book)))
@@ -53,8 +163,10 @@
       (should-error (supertag-tag-update book
                                          (lambda (tag) (plist-put tag :extends 42)))
                     :type 'user-error)
-      (should (equal "media/book" (plist-get (supertag-tag-get slash) :name)))
-      (should-not (supertag-tag-parent slash)))))
+      ;; A path separator belongs to `supertag-tag-ensure-path', not to a name.
+      (should-error (supertag-tag-create '(:name "#media/book"))
+                    :type 'user-error)
+      (should-not (supertag-tag-resolve-occurrence "media/book")))))
 
 (ert-deftest supertag-path-org-native-tags-require-explicit-import ()
   (with-temp-buffer
@@ -70,35 +182,44 @@
                        (plist-get (supertag-extractor--tags headline nil nil)
                                   :tag-occurrences)))))))
 
-(ert-deftest supertag-path-import-does-not-require-parent ()
+(ert-deftest supertag-path-import-completes-the-hierarchy ()
   (supertag-path-test--with-store
-    (supertag--create-tag-entities '("media/book"))
-    (should (supertag-tag-resolve-occurrence "media/book"))
-    (should-not (supertag-tag-resolve-occurrence "media"))
-    (should (equal "x/y" (supertag--normalize-tag-id "x/y")))))
+    ;; A legacy `media/book' occurrence token resolves through the hierarchy it
+    ;; names; the import creates the path and never rewrites the Org token.
+    (let* ((leaf (car (supertag--create-tag-entities '("media/book"))))
+           (media (supertag-tag-resolve-occurrence "media")))
+      (should leaf)
+      (should (equal "book" (plist-get (supertag-tag-get leaf) :name)))
+      (should (equal (list media) (supertag-tag-parents leaf)))
+      (should (equal '("book")
+                     (mapcar (lambda (id) (plist-get (supertag-tag-get id) :name))
+                             (supertag--create-tag-entities '("media/book")))))
+      (should (equal "x/y" (supertag--normalize-tag-id "x/y"))))))
 
 (ert-deftest supertag-path-membership-creates-path-name ()
   (supertag-path-test--with-store
     (supertag-store-put-entity :nodes "node" '(:id "node" :title "Node" :tags nil))
     (should (supertag-ops-add-tag-to-node "node" "media/book" :create-if-needed t))
-    (let ((id (supertag-tag-resolve-occurrence "media/book")))
-      (should (equal "media/book" (plist-get (supertag-tag-get id) :name)))
-      (should (member id (plist-get (supertag-node-get "node") :tags))))))
+    (let* ((leaf (supertag-tag-resolve-occurrence "book"))
+           (media (supertag-tag-resolve-occurrence "media")))
+      (should (equal "book" (plist-get (supertag-tag-get leaf) :name)))
+      (should (equal (list media) (supertag-tag-parents leaf)))
+      (should (member leaf (plist-get (supertag-node-get "node") :tags))))))
 
 (ert-deftest supertag-path-stored-inheritance-is-active ()
   (supertag-path-test--with-store
     (let ((media (plist-get (supertag-tag-create '(:name "media")) :id)))
       (supertag-store-put-entity :tags "legacy"
                                 (list :id "legacy" :name "legacy" :type :tag
-                                      :extends media :aliases '("media/book")))
+                                      :extends (list media) :aliases '("book")))
       (supertag-tag-index-rebuild)
       (should (member "legacy" (supertag-tag-descendants media)))
       (should (equal '("legacy") (supertag-query-tag-children media)))
-      (should (equal "legacy" (supertag-tag-resolve-occurrence "media/book")))
-      (should (equal media (plist-get (supertag-tag-get "legacy") :extends)))
+      (should (equal "legacy" (supertag-tag-resolve-occurrence "book")))
+      (should (equal (list media) (plist-get (supertag-tag-get "legacy") :extends)))
       (should-not (plist-member (supertag-api-schema "legacy") :extends)))))
 
-(ert-deftest supertag-path-completion-creates-whole-name-without-parent ()
+(ert-deftest supertag-path-completion-creates-the-path-and-writes-the-leaf ()
   (supertag-path-test--with-store
     (with-temp-buffer
       (org-mode)
@@ -109,13 +230,22 @@
              (candidate (cl-find-if (lambda (s) (get-text-property 0 'is-new-tag s)) candidates)))
         (should candidate)
         (should (equal "media/book" (get-text-property 0 'new-tag-name candidate)))
+        (should (equal "media › book"
+                       (substring-no-properties
+                        (car (car (supertag-tag-affixate-candidates (list candidate)))))))
         (supertag-completion--post-completion-action candidate)
-        (should (supertag-tag-resolve-occurrence "media/book"))
-        (should-not (supertag-tag-resolve-occurrence "media"))
-        (should (string-match-p "#media/book" (buffer-string)))
-        (should (equal "media/book"
-                       (supertag-service-org--tag-token
-                        (supertag-tag-resolve-occurrence "media/book"))))))))
+        (let ((leaf (supertag-tag-resolve-occurrence "book")))
+          (should leaf)
+          (should (equal "book" (supertag-service-org--tag-token leaf)))
+          (should (equal (list (supertag-tag-resolve-occurrence "media"))
+                         (supertag-tag-parents leaf)))
+          ;; the typed path is replaced by the leaf token
+          (should (string-match-p "#book" (buffer-string)))
+          (should-not (string-match-p "#media/book" (buffer-string)))
+          ;; a second pass has nothing left to create or link
+          (should-not (cl-find-if (lambda (s) (get-text-property 0 'is-new-tag s))
+                                  (supertag-completion--get-completion-table
+                                   "media/book"))))))))
 
 
 ;;; D1 independent process: parent projection is setup, never the cold caller.
@@ -286,7 +416,10 @@
                       (princ (format "D1-BULK-COUNTS saves=%S records=%S\n" saves records))
                       (should (equal (car ids) "stable"))
                       (should (= (length ids) 2))
-                      (should-not (supertag-tag-resolve-occurrence "media"))
+                      (let ((leaf (supertag-tag-resolve-occurrence "book")))
+                        (should leaf)
+                        (should (equal (list (supertag-tag-resolve-occurrence "media"))
+                                       (supertag-tag-parents leaf))))
                       (dolist (pair ',(list (cons "document-node" file) (cons "second-node" plain)))
                         (should (= 1 (cl-count (car pair) records :test #'equal)))
                         (should (= 1 (cl-count (cdr pair) saves :test #'equal)))
@@ -305,8 +438,11 @@
                        (supertag-service-org-remove-tag node "alias"))
                      (should-not (member "stable" (plist-get (supertag-node-get node) :tags)))
                      (when (memq ',operation '(replace file-replace))
-                       (should (member (supertag-tag-resolve-occurrence "work/new")
-                                       (plist-get (supertag-node-get node) :tags))))
+                       (let ((leaf (supertag-tag-resolve-occurrence "new")))
+                         (should (member leaf
+                                         (plist-get (supertag-node-get node) :tags)))
+                         (should (equal (list (supertag-tag-resolve-occurrence "work"))
+                                        (supertag-tag-parents leaf)))))
                      (should (string-suffix-p suffix (disk ,plain)))
                      (unless file-level (should (string-prefix-p original-file-body (disk ,plain))))
                      (with-current-buffer (find-file-noselect ,plain)
@@ -483,7 +619,7 @@
                                        ,(expand-file-name "supertag-tag.el" root)))
                      (error "Merged function owner is not Tag: %s (%S)"
                             symbol (symbol-file symbol 'defun))))
-                 (dolist (symbol '(supertag-tag-parent supertag-tag-ancestors
+                 (dolist (symbol '(supertag-tag-parents supertag-tag-ancestors
                                    supertag-tag-display-name supertag-tag-create
                                    supertag-tag-get supertag-tag-update supertag-tag-delete
                                    supertag-tag-resolve-occurrence supertag-tag-index-rebuild
@@ -568,7 +704,7 @@
 (defmacro supertag-path-test--input-store (&rest body)
   (declare (indent 0))
   `(supertag-path-test--with-store
-     (supertag-tag-create '(:id "book-id" :name "media/book" :aliases ("reading")))
+     (supertag-tag-create '(:id "book-id" :name "media" :aliases ("reading")))
      (supertag-tag-create '(:id "work-id" :name "work"))
      (let* ((org-file (expand-file-name "unchanged.org" tmp))
             (facts (prin1-to-string supertag--store)))
@@ -588,11 +724,11 @@
                         (candidate (car candidates))
                         (affix (plist-get completion-extra-properties :affixation-function)))
                    (should require-match)
-                   (should (equal (mapcar #'substring-no-properties candidates) '("media/book" "work")))
+                   (should (equal (mapcar #'substring-no-properties candidates) '("media" "work")))
                    (should (equal (get-text-property 0 'supertag-tag-id candidate) "book-id"))
                    (should (= 2 (length (funcall affix candidates))))
                    ;; Return plain canonical text, exercising candidate-map lookup.
-                   "media/book"))))
+                   "media"))))
       (should (equal "book-id" (supertag-ui-read-tag "Tag: "))))
     ;; Arbitrary alias text is not a read-tag candidate; don't claim otherwise.
     (cl-letf (((symbol-function 'completing-read) (lambda (&rest _) "reading")))
@@ -622,7 +758,7 @@
                  (lambda (_prompt table _predicate _require-match &rest _)
                    (cl-incf calls)
                    (let ((names (all-completions "" table)))
-                     (should-not (member "media/book" names))
+                     (should-not (member "media" names))
                      (if (= calls 1) "work" "")))))
         (should (equal '("book-id" "work-id")
                        (supertag-ui-read-tags "More: " nil nil initial))))
@@ -633,7 +769,7 @@
       (cl-letf (((symbol-function 'completing-read)
                  (lambda (_prompt table _predicate _require-match &rest _)
                    (cl-incf calls)
-                   (should-not (member "media/book" (all-completions "" table)))
+                   (should-not (member "media" (all-completions "" table)))
                    (prog1 (car answers) (setq answers (cdr answers))))))
         (should (equal '("book-id" "work-id")
                        (supertag-capture--get-from-tags-prompt
@@ -642,7 +778,7 @@
 
 (ert-deftest supertag-path-input-field-string-and-manual-fallback ()
   (supertag-path-test--input-store
-    (let ((answers '("media/book" "")))
+    (let ((answers '("media" "")))
       (cl-letf (((symbol-function 'completing-read)
                  (lambda (&rest _) (prog1 (car answers) (setq answers (cdr answers))))))
         (should (equal "book-id" (supertag-ui--read-tag-field "work-id")))))
@@ -753,7 +889,7 @@
                                   ,(expand-file-name "supertag-tag.el" root))
                      (error "D2 owner is not Tag: %s (%S)" symbol (symbol-file symbol 'defun))))
                  (supertag--ensure-store)
-                 (supertag-tag-create '(:id "stable" :name "media/book" :aliases ("reading")))
+                 (supertag-tag-create '(:id "stable" :name "media" :aliases ("reading")))
                  (should-not (featurep 'supertag-query))
                  (should-not (featurep 'supertag-services-query))
                  (should-not (featurep 'supertag-services-note-query))
@@ -763,7 +899,7 @@
                                 (cl-incf calls)
                                 (should require-match)
                                 (let ((candidates (all-completions "" table)))
-                                  (should (equal (mapcar #'substring-no-properties candidates) '("media/book")))
+                                  (should (equal (mapcar #'substring-no-properties candidates) '("media")))
                                   (should (equal "stable" (get-text-property 0 'supertag-tag-id (car candidates))))
                                   (should (= 1 (length (funcall (plist-get completion-extra-properties :affixation-function) candidates))))
                                   (car candidates)))))
@@ -884,6 +1020,7 @@
         (should-not (test-completion "new/path" table))
         (funcall exit candidate nil)
         (funcall exit candidate 'partial)
+        ;; Nothing is created by a partial exit.
         (should-not (supertag-tag-resolve-occurrence "new/path"))
         (insert "/updated")
         (setq candidate (cl-find-if (lambda (s) (get-text-property 0 'is-new-tag s))
@@ -892,10 +1029,15 @@
         (funcall exit candidate 'finished)
         (should-not (buffer-modified-p))
         (should (equal (buffer-string) (supertag-document-test-disk file)))
-        (should (string-match-p "#new/path/updated " (buffer-string)))
+        ;; The whole typed path becomes the leaf token, and the node carries it.
+        (should (string-match-p "#updated " (buffer-string)))
         (should-not (string-match-p "＃" (buffer-string)))
-        (let ((id (supertag-tag-resolve-occurrence "new/path/updated")))
-          (should (member id (plist-get (supertag-node-get "document-node") :tags)))))
+        (let* ((id (supertag-tag-resolve-occurrence "updated"))
+               (path (supertag-tag-resolve-occurrence "path"))
+               (new (supertag-tag-resolve-occurrence "new")))
+          (should (member id (plist-get (supertag-node-get "document-node") :tags)))
+          (should (equal (list path) (supertag-tag-parents id)))
+          (should (equal (list new) (supertag-tag-parents path)))))
       (goto-char (point-max)) (insert "#can")
       (let* ((capf (supertag-completion-at-point))
              (table (nth 2 capf))
@@ -945,10 +1087,15 @@
                      'supertag-sync--resolve-node-tag-occurrences)))
         (cl-letf (((symbol-function seam) (lambda (&rest _) (error "D3 injected"))))
           (should-error (funcall (plist-get (nthcdr 3 capf) :exit-function) candidate 'finished)))
-        (should (string-match-p "#d3/failure " (buffer-string)))
-        (should (supertag-tag-resolve-occurrence "d3/failure"))
-        (should-not (member (supertag-tag-resolve-occurrence "d3/failure")
-                            (plist-get (supertag-node-get "document-node") :tags)))
+        ;; The typed path survives as the draft, and the created hierarchy
+        ;; stays too: only the membership write failed.
+        (should (string-match-p "#failure " (buffer-string)))
+        (let ((leaf (supertag-tag-resolve-occurrence "failure")))
+          (should leaf)
+          (should (equal (list (supertag-tag-resolve-occurrence "d3"))
+                         (supertag-tag-parents leaf)))
+          (should-not (member leaf
+                              (plist-get (supertag-node-get "document-node") :tags))))
         (if (eq stage 'save)
             (progn (should (equal disk (supertag-document-test-disk file)))
                    (should (buffer-modified-p)))
@@ -1108,7 +1255,7 @@
   (supertag-document-test-with-vault
     (supertag-tag-create '(:id "old-id" :name "old"))
     (supertag-tag-create
-     '(:id "child-id" :name "old/child" :extends "old-id"))
+     '(:id "child-id" :name "child" :extends ("old-id")))
     (with-current-buffer (find-file-noselect file)
       (goto-char (point-max)) (insert "#old\n") (save-buffer))
     (should (eq 'complete (plist-get (supertag-reindex-org) :status)))
@@ -1190,10 +1337,10 @@
                            ;; prebound batch option; only user input is simulated.
                            (with-current-buffer (find-file-noselect ,file)
                              (goto-char (point-min))
-                             (cl-letf (((symbol-function 'completing-read) (lambda (&rest _) "old/child")))
+                             (cl-letf (((symbol-function 'completing-read) (lambda (&rest _) "child")))
                                (supertag-add-tag (point-min) (point-max)))
                              ;; Frozen before places beginning after the first title word.
-                             (should (string-prefix-p "* Property #old/child Node\n" (buffer-string)))
+                             (should (string-prefix-p "* Property #child Node\n" (buffer-string)))
                              (should-not (buffer-modified-p))
                              (should (member "child-id" (plist-get (supertag-node-get "document-node") :tags)))))
                        (when (eq ',entry 'ui)
@@ -1320,10 +1467,15 @@
         (should-not (buffer-modified-p))
         (should (equal (buffer-string) (supertag-document-test-disk file))))
       (should (equal "document-node" (save-excursion (goto-char (point-min)) (org-entry-get nil "ID"))))
-      (let ((new (supertag-tag-resolve-occurrence "d5/new")))
+      (let* ((new (supertag-tag-resolve-occurrence "new"))
+             (parent (supertag-tag-resolve-occurrence "d5")))
         (should new)
+        (should (equal (list parent) (supertag-tag-parents new)))
         (should (equal (sort (list "stable" new) #'string<)
-                       (sort (copy-sequence (plist-get (supertag-node-get "document-node") :tags)) #'string<)))))))
+                       (sort (copy-sequence (plist-get (supertag-node-get "document-node") :tags)) #'string<)))
+        ;; The node carries the leaf token, never the typed path.
+        (should (string-match-p "#new" (buffer-string)))
+        (should-not (string-match-p "#d5/new" (buffer-string)))))))
 
 (ert-deftest supertag-path-add-region-keeps-integer-bound-and-order ()
   (supertag-document-test-with-vault
@@ -1849,8 +2001,8 @@
 (defun supertag-path-test--d7-cold (entry)
   (supertag-document-test-with-vault
     (dolist (props '((:id "parent-id" :name "topic")
-                     (:id "child-id" :name "child" :extends "parent-id")
-                     (:id "grand-id" :name "grand" :extends "child-id")))
+                     (:id "child-id" :name "child" :extends ("parent-id"))
+                     (:id "grand-id" :name "grand" :extends ("child-id"))))
       (supertag-tag-create props))
     (with-temp-file file
       (insert "* Parent #topic\n:PROPERTIES:\n:ID: p\n:END:\nP\n* Child #child\n:PROPERTIES:\n:ID: c\n:END:\nC\n* Grand #grand\n:PROPERTIES:\n:ID: g\n:END:\nG\n"))
@@ -2167,19 +2319,21 @@
     (supertag-tag-create '(:id "stable" :name "canonical" :aliases ("alias")))
     (let* ((original (copy-tree (supertag-tag-get "stable")))
            (ids (supertag--create-tag-entities '("stable" "canonical" "alias" "new/child" "stable" "new/child")))
-           (child (supertag-tag-resolve-occurrence "new/child")))
+           (child (supertag-tag-resolve-occurrence "child")))
       (should (equal (list "stable" "stable" "stable" child "stable" child) ids))
       (should (equal original (supertag-tag-get "stable")))
       (should child)
-      (should (= 2 (hash-table-count (supertag-store-get-collection :tags))))
-      (should-not (supertag-tag-resolve-occurrence "new"))
+      ;; stable + the `new' parent + the `child' leaf
+      (should (= 3 (hash-table-count (supertag-store-get-collection :tags))))
+      (should (equal (list (supertag-tag-resolve-occurrence "new"))
+                     (supertag-tag-parents child)))
       (let ((facts (prin1-to-string supertag--store)))
         (should-not (supertag--create-tag-entities nil))
         (should (equal facts (prin1-to-string supertag--store))))
       ;; The loop is not a transaction: an invalid later item does not undo a prior create.
       (should-error (supertag--create-tag-entities '("partial/child" "")) :type 'error)
-      (should (supertag-tag-resolve-occurrence "partial/child"))
-      (should-not (supertag-tag-resolve-occurrence "partial"))
+      (should (supertag-tag-resolve-occurrence "child"))
+      (should (supertag-tag-resolve-occurrence "partial"))
       (should (equal original (supertag-tag-get "stable")))
       (let ((facts (prin1-to-string supertag--store)))
         (should-error (supertag--create-tag-entities '(" ")) :type 'error)
@@ -2200,11 +2354,10 @@
 (ert-deftest supertag-path-hierarchy-adapters-use-explicit-parents ()
   (supertag-path-test--with-store
     (supertag-tag-create '(:id "parent" :name "root" :aliases ("root-alias")))
-    (dolist (props '((:id "child-a" :name "book" :extends "parent")
-                     (:id "grand" :name "paper" :extends "child-a")
-                     (:id "child-b" :name "article" :extends "parent")
-                     (:id "other" :name "rootx")
-                     (:id "slash" :name "virtual/child")))
+    (dolist (props '((:id "child-a" :name "book" :extends ("parent"))
+                     (:id "grand" :name "paper" :extends ("child-a"))
+                     (:id "child-b" :name "article" :extends ("parent"))
+                     (:id "other" :name "rootx")))
       (supertag-tag-create props))
     (let ((facts (prin1-to-string supertag--store)))
       (dolist (token '("parent" "root" "root-alias"))
@@ -2213,10 +2366,9 @@
       (should (equal '("child-a" "child-b") (supertag-query-tag-children "parent")))
       (should-not (supertag-query-tag-children "root-alias"))
       (should (equal "root › book › paper" (supertag-tag-display-name "grand")))
-      (should-not (supertag-tag-parent "slash"))
-      (should-not (supertag-query-tag-children "virtual"))
-      (should-not (supertag-find-tag-descendants "virtual"))
-      (should-not (supertag-tag-get "virtual"))
+      ;; A path separator cannot be part of a Tag name, so no adapter can
+      ;; mistake a name for hierarchy.
+      (should-error (supertag-tag-create '(:name "virtual/child")) :type 'user-error)
       (dolist (id '("missing" "child-b"))
         (should-not (supertag-find-tag-descendants id))
         (should-not (supertag-query-tag-children id)))
@@ -2226,8 +2378,8 @@
 (defun supertag-path-test--d9-cold (entry)
   (supertag-document-test-with-vault
     (supertag-tag-create '(:id "parent" :name "root" :aliases ("root-alias")))
-    (supertag-tag-create '(:id "child" :name "child" :extends "parent"))
-    (supertag-tag-create '(:id "grand" :name "grand" :extends "child"))
+    (supertag-tag-create '(:id "child" :name "child" :extends ("parent")))
+    (supertag-tag-create '(:id "grand" :name "grand" :extends ("child")))
     (with-temp-file file
       (insert "* Parent #root\n:PROPERTIES:\n:ID: p\n:END:\nP\n* Child #child\n:PROPERTIES:\n:ID: c\n:END:\nC\n* Grand #grand\n:PROPERTIES:\n:ID: g\n:END:\nG\n"))
     (supertag-reindex-org)
@@ -2308,12 +2460,15 @@
                       (should (equal '("parent" "parent") (supertag--create-tag-entities '("root" "root-alias"))))
                       (should (equal facts (prin1-to-string supertag--store)))
                       (let* ((ids (supertag--create-tag-entities '("virtual/child" "virtual/child")))
-                             (created (supertag-tag-resolve-occurrence "virtual/child")))
+                             (created (supertag-tag-resolve-occurrence "child"))
+                             (virtual (supertag-tag-resolve-occurrence "virtual")))
                         (should created)
                         (should (equal (list created created) ids))
-                        (should-not (supertag-query-tag-children "virtual"))
-                        (should-not (supertag-find-tag-descendants "virtual"))
-                        (should-not (supertag-tag-get "virtual")))
+                        ;; the path's parent is real hierarchy, created once
+                        (should virtual)
+                        (should (member virtual (supertag-tag-parents created)))
+                        (should (equal (list created) (supertag-query-tag-children virtual)))
+                        (should (member created (supertag-find-tag-descendants "virtual"))))
                       (should (equal original (supertag-tag-get "parent")))
                       (should (equal nodes (prin1-to-string (supertag-store-get-collection :nodes))))
                       (should (equal disk (with-temp-buffer (insert-file-contents ,file) (buffer-string)))))
@@ -2422,7 +2577,7 @@
 ;;; V2-ORG-A: independent source/compiled loading and shared writer controls.
 (defconst supertag-path-test--orga-root
   (file-name-directory (directory-file-name (file-name-directory (or load-file-name buffer-file-name)))))
-(defconst supertag-path-test--orga-program ";;; -*- lexical-binding: t; -*-\n(require 'ert)\n(require 'cl-lib)\n(require 'subr-x)\n(setq user-emacs-directory (file-name-as-directory (getenv \"OA_TMP\"))\n      default-directory user-emacs-directory after-init-time nil\n      supertag-data-directory (expand-file-name \"data/\" user-emacs-directory)\n      supertag--base-data-directory supertag-data-directory\n      supertag-db-file (expand-file-name \"store.el\" supertag-data-directory)\n      supertag-db-backup-directory (expand-file-name \"backups/\" supertag-data-directory)\n      supertag-sync-state-file (expand-file-name \"sync.el\" user-emacs-directory)\n      supertag-sync--state-source supertag-sync-state-file\n      supertag-sync-directories (list user-emacs-directory)\n      supertag-active-sync-directory user-emacs-directory\n      supertag-file-id-source 'org-roam\n      org-id-locations-file (expand-file-name \"ids\" user-emacs-directory)\n      org-id-track-globally nil make-backup-files nil auto-save-default nil\n      supertag-view-style-auto-enable nil supertag-svg-tag-enable nil)\n(defun oa-before () (equal (getenv \"SUPERTAG_ORGA_STAGE\") \"before\"))\n(defun oa-file () (expand-file-name \"nodes.org\" user-emacs-directory))\n(defun oa-disk (file) (with-temp-buffer (insert-file-contents-literally file) (buffer-string)))\n(defun oa-sync-ready ()\n  (should (featurep 'supertag-services-sync))\n  (should (boundp 'supertag-sync--is-full-rescan-p))\n  (should (equal \"supertag-services-sync\" (file-name-base (symbol-file 'supertag-node-sync-current-buffer)))))\n(defun oa-load-org ()\n  (if (string-prefix-p \"elc-\" (getenv \"OA_CASE\"))\n      (progn\n        (load (expand-file-name \"supertag-service-org.elc\" (getenv \"OA_TREE\")) nil t t)\n        (should (string-suffix-p \".elc\" (symbol-file 'supertag-service-org--update-buffer-and-resync))))\n    (require 'supertag-service-org)))\n(defun oa-prepare ()\n  (require 'supertag-services-sync)\n  (supertag--ensure-store)\n  (supertag-tag-create '(:id \"base\" :name \"base\" :aliases (\"alias-base\")))\n  (with-temp-file (oa-file)\n    (insert \":PROPERTIES:\\n:ID: file-node\\n:END:\\n#+FILETAGS: :base:\\n* Alpha #base\\n:PROPERTIES:\\n:ID: oa-a\\n:AUTHOR: Ada\\n:END:\\nText.\\n* Beta #base\\n:PROPERTIES:\\n:ID: oa-b\\n:END:\\nOther.\\n\"))\n  (with-temp-file (expand-file-name \"plain.org\" user-emacs-directory) (insert \"* Plain\\nBody.\\n\"))\n  (should (eq 'complete (plist-get (supertag-reindex-org) :status)))\n  (dolist (id '(\"file-node\" \"oa-a\" \"oa-b\")) (should (supertag-node-get id)))\n  (with-temp-file (expand-file-name \"seed.el\" user-emacs-directory)\n    (let ((print-circle t) (print-length nil) (print-level nil)) (prin1 supertag--store (current-buffer))))\n  (princ \"ORGA-PREPARE real-reindex-three-nodes\\n\"))\n(defun oa-entry ()\n  (should-not (boundp 'supertag-sync--is-full-rescan-p))\n  (when (getenv \"OA_PRESET_NIL\") (setq supertag-org-id-find-auto-enable nil))\n  (oa-load-org)\n  (princ \"ORGA-ENTRY actual-ServiceOrg\\n\")\n  (should-not (featurep 'supertag))\n  (dolist (feature '(supertag-node supertag-tag supertag-services-sync supertag-query))\n    (should (eq (and (oa-before) (not (getenv \"OA_ENTRY_RED\"))) (not (null (featurep feature))))))\n  (if (oa-before) (should (boundp 'supertag-sync--is-full-rescan-p))\n    (should-not (boundp 'supertag-sync--is-full-rescan-p))\n    (dolist (row '((supertag-node-get \"supertag-node\") (supertag-node-delete \"supertag-node\")\n                   (supertag-service-org-follow-id \"supertag-node\")\n                   (supertag--mark-internal-modification \"supertag-services-sync\")\n                   (supertag--clear-internal-modification \"supertag-services-sync\")\n                   (supertag--render-org-headline \"supertag-services-sync\")\n                   (supertag-node-sync-current-buffer \"supertag-services-sync\")))\n      (let ((cell (symbol-function (car row))))\n        (should (autoloadp cell)) (should (equal (cadr cell) (cadr row))) (should-not (nth 4 cell)))))\n  (princ (format \"ORGA-ORG-ID-host=%S preset=%S\\n\" (fboundp 'org-id-find) supertag-org-id-find-auto-enable))\n  (should (fboundp 'org-id-find))\n  (should (eq (not (null supertag-org-id-find-auto-enable))\n              (not (null (advice-member-p #'supertag-service-org--org-id-find-advice 'org-id-find)))))\n  (supertag-enable-org-id-find-integration)\n  (should supertag-org-id-find-auto-enable)\n  (setq supertag--initialized t)\n  (let ((marker (org-id-find \"oa-a\" 'marker)))\n    (should (markerp marker))\n    (should (equal (buffer-file-name (marker-buffer marker)) (oa-file)))\n    (with-current-buffer (marker-buffer marker)\n      (save-excursion (goto-char marker) (should (equal \"oa-a\" (org-entry-get nil \"ID\"))))))\n  (supertag-disable-org-id-find-integration)\n  (should-not supertag-org-id-find-auto-enable)\n  (should-not (advice-member-p #'supertag-service-org--org-id-find-advice 'org-id-find))\n  ;; Real native advice on an existing service, no fabricated Org host.\n  (let ((calls 0))\n    (let ((watch (lambda (&rest _) (cl-incf calls))))\n      (advice-add 'supertag-service-org--with-node-buffer :before watch)\n      (unwind-protect\n          (let ((cell (symbol-function 'supertag-service-org--with-node-buffer)))\n            (require 'supertag-service-org)\n            (should (eq cell (symbol-function 'supertag-service-org--with-node-buffer)))\n            (supertag-service-org--with-node-buffer \"oa-a\" (lambda () (oa-sync-ready)))\n            (should (= calls 1)))\n        (advice-remove 'supertag-service-org--with-node-buffer watch)))))\n\n(defun oa-wrapper ()\n  (oa-load-org)\n  (let ((sync-before (featurep 'supertag-services-sync))\n        (facts (prin1-to-string supertag--store)) (disk (oa-disk (oa-file))) called)\n    (dolist (row '((\"absent\" nil) (\"no-file\" (:id \"no-file\" :level 1 :file \"/nonexistent/orga-source\"))\n                   (\"bad-location\" (:id \"bad-location\" :level 1))))\n      (when (cadr row)\n        (let ((node (copy-tree (cadr row))))\n          (unless (plist-get node :file) (setq node (plist-put node :file (oa-file))))\n          (puthash (car row) node (gethash :nodes supertag--store)))))\n    (dolist (id '(\"absent\" \"no-file\" \"bad-location\"))\n      (should-error (supertag-service-org--with-node-buffer id (lambda () (setq called t))) :type 'user-error))\n    (should-not called) (should (eq sync-before (featurep 'supertag-services-sync)))\n    (remhash \"no-file\" (gethash :nodes supertag--store)) (remhash \"bad-location\" (gethash :nodes supertag--store))\n    (supertag-service-org--with-node-buffer \"oa-a\"\n      (lambda ()\n        (princ \"ORGA-WRAPPER-CALLBACK no-parser\\n\") (oa-sync-ready)\n        (should-not supertag-sync--is-full-rescan-p)\n        (should (equal \"oa-a\" (org-entry-get nil \"ID\"))) (setq called (point))))\n    (should (integerp called))\n    (let ((value (supertag-service-org--with-node-buffer \"file-node\" (lambda () (point)))))\n      (princ (format \"ORGA-ACTUAL file-position=%s\\n\" value))\n      (should (= value (if (getenv \"OA_OUTPUT_RED\") 999 1))))\n    (should (equal facts (prin1-to-string supertag--store))) (should (equal disk (oa-disk (oa-file))))))\n(defun oa-repair (dirty)\n  (should-not (boundp 'supertag-sync--is-full-rescan-p))\n  ;; Separate preset cases; the four default cases never initialize this flag.\n  (when (string-suffix-p \"preset\" (getenv \"OA_CASE\"))\n    (set 'supertag-sync--is-full-rescan-p 'preset))\n  (oa-load-org)\n  (princ (format \"ORGA-ENTRY repair dirty=%S provider=%s\\n\" dirty (symbol-file 'supertag-service-org--update-buffer-and-resync)))\n  (let ((file (oa-file)) (save-count 0) (project-count 0) (sync-flags nil) (editor-flags nil))\n    (with-current-buffer (find-file-noselect file)\n      (when dirty (goto-char (point-max)) (insert \"Unsaved draft.\\n\")))\n    (let ((watch-save (lambda (&rest _) (when (equal (buffer-file-name) file) (cl-incf save-count))))\n          (watch-project (lambda (&rest _)\n                           (oa-sync-ready) (push supertag-sync--is-full-rescan-p sync-flags)\n                           (cl-incf project-count))))\n      (advice-add 'save-buffer :before watch-save)\n      (advice-add 'supertag-service-org--project-current-node :before watch-project)\n      (unwind-protect\n          (supertag-service-org--update-buffer-and-resync\n           \"oa-a\" (lambda ()\n                     (princ \"ORGA-REPAIR-EDITOR before-let\\n\") (oa-sync-ready)\n                     (push supertag-sync--is-full-rescan-p editor-flags)) t)\n        (advice-remove 'save-buffer watch-save)\n        (advice-remove 'supertag-service-org--project-current-node watch-project)))\n    (should (equal editor-flags\n                   (list (and (string-suffix-p \"preset\" (getenv \"OA_CASE\")) 'preset))))\n    (should (equal sync-flags '(t)))\n    (should (= project-count 1)) (should (= save-count (if dirty 1 0)))\n    (should (boundp 'supertag-sync--is-full-rescan-p))\n    (should (eq supertag-sync--is-full-rescan-p\n                (and (string-suffix-p \"preset\" (getenv \"OA_CASE\")) 'preset)))\n    ;; A subsequent actual parser/reconcile read observes the outer binding.\n    (with-current-buffer (find-file-noselect file)\n      (goto-char (point-min)) (search-forward \":ID: oa-a\") (org-back-to-heading t)\n      (supertag-node-sync-at-point)\n      (should (equal \"Ada\" (plist-get (plist-get (supertag-node-get \"oa-a\") :properties) :AUTHOR)))\n      (should-not (buffer-modified-p)))\n    (should (eq dirty (not (null (string-match-p \"Unsaved draft\" (oa-disk file))))))))\n(defun oa-tags ()\n  (require 'supertag-tag)\n  (unless (oa-before) (should-not (featurep 'supertag-services-sync)))\n  (let ((file (oa-file)))\n    (dolist (id '(\"oa-a\" \"file-node\"))\n      (supertag-service-org-add-tag id \"base\")\n      (oa-sync-ready)\n      (supertag-service-org-remove-tag id \"base\")\n      (supertag-service-org-add-tag id \"base\"))\n    (supertag-tag-create '(:id \"other\" :name \"other\"))\n    (supertag-service-org-replace-tag \"oa-b\" \"base\" \"other\")\n    (should (member \"other\" (plist-get (supertag-node-get \"oa-b\") :tags)))\n    (should (string-match-p \"#other\" (oa-disk file)))\n    (let* ((disk (oa-disk file)) (store (prin1-to-string supertag--store))\n           (rows (supertag-tag-change--collect \"other\")))\n      (should rows) (should (equal disk (oa-disk file))) (should (equal store (prin1-to-string supertag--store))))))\n(defun oa-bulk ()\n  (require 'supertag-tag)\n  (should-not (featurep 'supertag-services-sync))\n  (let ((file (oa-file)) (saves 0) (records 0) (mutations 0) (parses 0) (resolved nil) new-id)\n    (let ((watch-create (lambda (&rest _)\n                          (princ \"ORGA-BULK-MUTATION before-tag-create\\n\")\n                          (oa-sync-ready) (should resolved) (cl-incf mutations)))\n          (watch-save (lambda (&rest _) (when (equal (buffer-file-name) file) (cl-incf saves)))))\n      (advice-add 'supertag-tag-create :before watch-create)\n      (advice-add 'save-buffer :before watch-save)\n      ;; Transparent loader advice observes real completion, not fboundp.\n      (cl-letf* ((original-load (symbol-function 'autoload-do-load))\n                 ((symbol-function 'autoload-do-load)\n                  (lambda (definition &rest rest)\n                    (prog1 (apply original-load definition rest)\n                      (when (and (featurep 'supertag-services-sync) (not resolved))\n                        (setq resolved t)\n                        (should (= parses 0)))))))\n        (let ((watch-record (lambda (&rest _) (cl-incf records)))\n              (watch-parse (lambda (&rest _) (cl-incf parses))))\n          (advice-add 'supertag-service-org-save-and-record-tags-at-point :before watch-record)\n          (advice-add 'supertag-sync--parse-file-header :before watch-parse)\n          (unwind-protect\n              (let ((ids (supertag-capture-add-tags-to-nodes '(\"oa-a\" \"oa-b\") '(\"alias-base\" \"new/path\"))))\n                (should (equal (car ids) \"base\"))\n                (setq new-id (cadr ids))\n                (should (supertag-tag-stable-id-p new-id))\n                (should (equal \"new/path\" (plist-get (supertag-tag-get new-id) :name))))\n            (advice-remove 'supertag-service-org-save-and-record-tags-at-point watch-record)\n            (advice-remove 'supertag-sync--parse-file-header watch-parse)\n            (advice-remove 'supertag-tag-create watch-create)\n            (advice-remove 'save-buffer watch-save)))))\n    (should resolved) (should (= mutations 1)) (should (= saves 2)) (should (= records 2))\n    (dolist (id '(\"oa-a\" \"oa-b\")) (should (member new-id (plist-get (supertag-node-get id) :tags))))\n    (should (string-match-p \"#new/path\" (oa-disk file)))))\n(defun oa-load-failure (bypass)\n  (let ((disk (oa-disk (oa-file))) (facts (prin1-to-string supertag--store)))\n    (if (oa-before)\n        (progn (should (equal '(error \"ORGA injected Sync load failure\")\n                               (should-error (oa-load-org) :type 'error)))\n               (should-not (featurep 'supertag-service-org))\n               (princ \"ORGA-FAILURE before-require\\n\"))\n      (oa-load-org) (princ \"ORGA-ENTRY failure-current\\n\")\n      (if bypass\n          (let ((file (expand-file-name \"plain.org\" user-emacs-directory)))\n            (with-current-buffer (find-file-noselect file)\n              (goto-char (point-min))\n              (should (equal '(error \"ORGA injected Sync load failure\")\n                             (should-error (supertag-service-org-create-node-at-point) :type 'error)))\n              (let ((id (org-entry-get nil \"ID\")))\n                (should (stringp id)) (should-not (supertag-node-get id)))\n              (should (buffer-modified-p))\n              (should-not (string-match-p \":ID:\" (oa-disk file)))\n              (princ \"ORGA-FAILURE bypass-retained-ID-draft\\n\")))\n        (let (called)\n          (should-error (supertag-service-org--with-node-buffer \"missing\" (lambda () (setq called t))) :type 'user-error)\n          (should (equal '(error \"ORGA injected Sync load failure\")\n                         (should-error (supertag-service-org--with-node-buffer \"oa-a\" (lambda () (setq called t))) :type 'error)))\n          (should-not called) (princ \"ORGA-FAILURE current-after-valid-location\\n\"))))\n    (should (equal disk (oa-disk (oa-file)))) (should (equal facts (prin1-to-string supertag--store)))) )\n(defun oa-migrate ()\n  (should-not (featurep 'supertag-tag))\n  (require 'supertag-migrate)\n  (princ \"ORGA-ENTRY migrate\\n\")\n  ;; Direct fixture facts, no Tag creation before the first real status read.\n  (puthash \"bad id\" '(:id \"bad id\" :name \"Unstable\") (gethash :tags supertag--store))\n  (puthash \"tag-00000000000000000000000000000000\"\n           '(:id \"tag-00000000000000000000000000000000\" :name \"Stable\") (gethash :tags supertag--store))\n  (puthash \"conflict-tag\" '(:id \"conflict-tag\" :name \"different\" :aliases (\"new/conflict\")) (gethash :tags supertag--store))\n  (let ((pending (make-hash-table :test 'equal)))\n    (puthash \"base\" '(:path \"new/path\") pending)\n    (puthash :legacy-extends pending supertag--store))\n  (let* ((facts (prin1-to-string supertag--store)) (disk (oa-disk (oa-file)))\n         (status (supertag-migrate-status)) (plan (supertag-migrate--extends-plan)))\n    (princ (format \"ORGA-MIGRATE-ACTUAL unstable=%S plan=%S\\n\" (plist-get status :unstable-tags) plan))\n    (should (member \"bad id\" (plist-get status :unstable-tags)))\n    (should (member \"base\" (plist-get status :unstable-tags)))\n    (should-not (member \"tag-00000000000000000000000000000000\" (plist-get status :unstable-tags)))\n    (should (equal \"new/path\" (plist-get (car plan) :path)))\n    (should-not (plist-get (car plan) :conflict))\n    (supertag-migrate-preview)\n    (with-current-buffer \"*Supertag Field Migration*\"\n      (should (string-match-p \"new/path\" (buffer-string))))\n    (puthash \"base\" '(:path \"new/conflict\") (gethash :legacy-extends supertag--store))\n    (should (equal \"Path resolves to a different canonical name\"\n                   (plist-get (car (supertag-migrate--extends-plan)) :conflict)))\n    (puthash \"base\" '(:path \"new/path\") (gethash :legacy-extends supertag--store))\n    (should (equal facts (prin1-to-string supertag--store)))\n    (should (equal disk (oa-disk (oa-file))))))\n(let ((case (getenv \"OA_CASE\")))\n  (unwind-protect\n      (progn\n        (unless (member case '(\"prepare\" \"compile\"))\n          (setq supertag--store (with-temp-buffer\n                                 (insert-file-contents (expand-file-name \"seed.el\" user-emacs-directory))\n                                 (read (current-buffer)))))\n        (princ (format \"ORGA-CASE %s\\n\" case))\n        (pcase case\n          (\"prepare\" (oa-prepare))\n          (\"compile\" (require 'bytecomp)\n           (should (byte-compile-file (expand-file-name \"supertag-service-org.el\" (getenv \"OA_TREE\"))))\n           (should (file-exists-p (expand-file-name \"supertag-service-org.elc\" (getenv \"OA_TREE\")))))\n          (\"entry\" (oa-entry)) (\"entry-preset\" (setenv \"OA_PRESET_NIL\" \"1\") (oa-entry))\n          (\"wrapper\" (oa-wrapper))\n          ((or \"repair-clean\" \"elc-clean\" \"repair-preset\" \"elc-preset\") (oa-repair nil))\n          ((or \"repair-dirty\" \"elc-dirty\") (oa-repair t))\n          (\"tags\" (oa-tags)) (\"bulk\" (oa-bulk))\n          (\"load-failure\" (oa-load-failure nil)) (\"bypass-failure\" (oa-load-failure t))\n          (\"migrate\" (oa-migrate))\n          (_ (error \"Unknown case %s\" case)))\n        (princ (format \"ORGA-DONE %s\\n\" case)))\n    (setq kill-emacs-hook nil emacs-startup-hook nil after-init-hook nil\n          org-mode-hook nil enable-theme-functions nil disable-theme-functions nil)\n    (dolist (timer (append timer-list timer-idle-list)) (when (timerp timer) (cancel-timer timer)))))\n")
+(defconst supertag-path-test--orga-program ";;; -*- lexical-binding: t; -*-\n(require 'ert)\n(require 'cl-lib)\n(require 'subr-x)\n(setq user-emacs-directory (file-name-as-directory (getenv \"OA_TMP\"))\n      default-directory user-emacs-directory after-init-time nil\n      supertag-data-directory (expand-file-name \"data/\" user-emacs-directory)\n      supertag--base-data-directory supertag-data-directory\n      supertag-db-file (expand-file-name \"store.el\" supertag-data-directory)\n      supertag-db-backup-directory (expand-file-name \"backups/\" supertag-data-directory)\n      supertag-sync-state-file (expand-file-name \"sync.el\" user-emacs-directory)\n      supertag-sync--state-source supertag-sync-state-file\n      supertag-sync-directories (list user-emacs-directory)\n      supertag-active-sync-directory user-emacs-directory\n      supertag-file-id-source 'org-roam\n      org-id-locations-file (expand-file-name \"ids\" user-emacs-directory)\n      org-id-track-globally nil make-backup-files nil auto-save-default nil\n      supertag-view-style-auto-enable nil supertag-svg-tag-enable nil)\n(defun oa-before () (equal (getenv \"SUPERTAG_ORGA_STAGE\") \"before\"))\n(defun oa-file () (expand-file-name \"nodes.org\" user-emacs-directory))\n(defun oa-disk (file) (with-temp-buffer (insert-file-contents-literally file) (buffer-string)))\n(defun oa-sync-ready ()\n  (should (featurep 'supertag-services-sync))\n  (should (boundp 'supertag-sync--is-full-rescan-p))\n  (should (equal \"supertag-services-sync\" (file-name-base (symbol-file 'supertag-node-sync-current-buffer)))))\n(defun oa-load-org ()\n  (if (string-prefix-p \"elc-\" (getenv \"OA_CASE\"))\n      (progn\n        (load (expand-file-name \"supertag-service-org.elc\" (getenv \"OA_TREE\")) nil t t)\n        (should (string-suffix-p \".elc\" (symbol-file 'supertag-service-org--update-buffer-and-resync))))\n    (require 'supertag-service-org)))\n(defun oa-prepare ()\n  (require 'supertag-services-sync)\n  (supertag--ensure-store)\n  (supertag-tag-create '(:id \"base\" :name \"base\" :aliases (\"alias-base\")))\n  (with-temp-file (oa-file)\n    (insert \":PROPERTIES:\\n:ID: file-node\\n:END:\\n#+FILETAGS: :base:\\n* Alpha #base\\n:PROPERTIES:\\n:ID: oa-a\\n:AUTHOR: Ada\\n:END:\\nText.\\n* Beta #base\\n:PROPERTIES:\\n:ID: oa-b\\n:END:\\nOther.\\n\"))\n  (with-temp-file (expand-file-name \"plain.org\" user-emacs-directory) (insert \"* Plain\\nBody.\\n\"))\n  (should (eq 'complete (plist-get (supertag-reindex-org) :status)))\n  (dolist (id '(\"file-node\" \"oa-a\" \"oa-b\")) (should (supertag-node-get id)))\n  (with-temp-file (expand-file-name \"seed.el\" user-emacs-directory)\n    (let ((print-circle t) (print-length nil) (print-level nil)) (prin1 supertag--store (current-buffer))))\n  (princ \"ORGA-PREPARE real-reindex-three-nodes\\n\"))\n(defun oa-entry ()\n  (should-not (boundp 'supertag-sync--is-full-rescan-p))\n  (when (getenv \"OA_PRESET_NIL\") (setq supertag-org-id-find-auto-enable nil))\n  (oa-load-org)\n  (princ \"ORGA-ENTRY actual-ServiceOrg\\n\")\n  (should-not (featurep 'supertag))\n  (dolist (feature '(supertag-node supertag-tag supertag-services-sync supertag-query))\n    (should (eq (and (oa-before) (not (getenv \"OA_ENTRY_RED\"))) (not (null (featurep feature))))))\n  (if (oa-before) (should (boundp 'supertag-sync--is-full-rescan-p))\n    (should-not (boundp 'supertag-sync--is-full-rescan-p))\n    (dolist (row '((supertag-node-get \"supertag-node\") (supertag-node-delete \"supertag-node\")\n                   (supertag-service-org-follow-id \"supertag-node\")\n                   (supertag--mark-internal-modification \"supertag-services-sync\")\n                   (supertag--clear-internal-modification \"supertag-services-sync\")\n                   (supertag--render-org-headline \"supertag-services-sync\")\n                   (supertag-node-sync-current-buffer \"supertag-services-sync\")))\n      (let ((cell (symbol-function (car row))))\n        (should (autoloadp cell)) (should (equal (cadr cell) (cadr row))) (should-not (nth 4 cell)))))\n  (princ (format \"ORGA-ORG-ID-host=%S preset=%S\\n\" (fboundp 'org-id-find) supertag-org-id-find-auto-enable))\n  (should (fboundp 'org-id-find))\n  (should (eq (not (null supertag-org-id-find-auto-enable))\n              (not (null (advice-member-p #'supertag-service-org--org-id-find-advice 'org-id-find)))))\n  (supertag-enable-org-id-find-integration)\n  (should supertag-org-id-find-auto-enable)\n  (setq supertag--initialized t)\n  (let ((marker (org-id-find \"oa-a\" 'marker)))\n    (should (markerp marker))\n    (should (equal (buffer-file-name (marker-buffer marker)) (oa-file)))\n    (with-current-buffer (marker-buffer marker)\n      (save-excursion (goto-char marker) (should (equal \"oa-a\" (org-entry-get nil \"ID\"))))))\n  (supertag-disable-org-id-find-integration)\n  (should-not supertag-org-id-find-auto-enable)\n  (should-not (advice-member-p #'supertag-service-org--org-id-find-advice 'org-id-find))\n  ;; Real native advice on an existing service, no fabricated Org host.\n  (let ((calls 0))\n    (let ((watch (lambda (&rest _) (cl-incf calls))))\n      (advice-add 'supertag-service-org--with-node-buffer :before watch)\n      (unwind-protect\n          (let ((cell (symbol-function 'supertag-service-org--with-node-buffer)))\n            (require 'supertag-service-org)\n            (should (eq cell (symbol-function 'supertag-service-org--with-node-buffer)))\n            (supertag-service-org--with-node-buffer \"oa-a\" (lambda () (oa-sync-ready)))\n            (should (= calls 1)))\n        (advice-remove 'supertag-service-org--with-node-buffer watch)))))\n\n(defun oa-wrapper ()\n  (oa-load-org)\n  (let ((sync-before (featurep 'supertag-services-sync))\n        (facts (prin1-to-string supertag--store)) (disk (oa-disk (oa-file))) called)\n    (dolist (row '((\"absent\" nil) (\"no-file\" (:id \"no-file\" :level 1 :file \"/nonexistent/orga-source\"))\n                   (\"bad-location\" (:id \"bad-location\" :level 1))))\n      (when (cadr row)\n        (let ((node (copy-tree (cadr row))))\n          (unless (plist-get node :file) (setq node (plist-put node :file (oa-file))))\n          (puthash (car row) node (gethash :nodes supertag--store)))))\n    (dolist (id '(\"absent\" \"no-file\" \"bad-location\"))\n      (should-error (supertag-service-org--with-node-buffer id (lambda () (setq called t))) :type 'user-error))\n    (should-not called) (should (eq sync-before (featurep 'supertag-services-sync)))\n    (remhash \"no-file\" (gethash :nodes supertag--store)) (remhash \"bad-location\" (gethash :nodes supertag--store))\n    (supertag-service-org--with-node-buffer \"oa-a\"\n      (lambda ()\n        (princ \"ORGA-WRAPPER-CALLBACK no-parser\\n\") (oa-sync-ready)\n        (should-not supertag-sync--is-full-rescan-p)\n        (should (equal \"oa-a\" (org-entry-get nil \"ID\"))) (setq called (point))))\n    (should (integerp called))\n    (let ((value (supertag-service-org--with-node-buffer \"file-node\" (lambda () (point)))))\n      (princ (format \"ORGA-ACTUAL file-position=%s\\n\" value))\n      (should (= value (if (getenv \"OA_OUTPUT_RED\") 999 1))))\n    (should (equal facts (prin1-to-string supertag--store))) (should (equal disk (oa-disk (oa-file))))))\n(defun oa-repair (dirty)\n  (should-not (boundp 'supertag-sync--is-full-rescan-p))\n  ;; Separate preset cases; the four default cases never initialize this flag.\n  (when (string-suffix-p \"preset\" (getenv \"OA_CASE\"))\n    (set 'supertag-sync--is-full-rescan-p 'preset))\n  (oa-load-org)\n  (princ (format \"ORGA-ENTRY repair dirty=%S provider=%s\\n\" dirty (symbol-file 'supertag-service-org--update-buffer-and-resync)))\n  (let ((file (oa-file)) (save-count 0) (project-count 0) (sync-flags nil) (editor-flags nil))\n    (with-current-buffer (find-file-noselect file)\n      (when dirty (goto-char (point-max)) (insert \"Unsaved draft.\\n\")))\n    (let ((watch-save (lambda (&rest _) (when (equal (buffer-file-name) file) (cl-incf save-count))))\n          (watch-project (lambda (&rest _)\n                           (oa-sync-ready) (push supertag-sync--is-full-rescan-p sync-flags)\n                           (cl-incf project-count))))\n      (advice-add 'save-buffer :before watch-save)\n      (advice-add 'supertag-service-org--project-current-node :before watch-project)\n      (unwind-protect\n          (supertag-service-org--update-buffer-and-resync\n           \"oa-a\" (lambda ()\n                     (princ \"ORGA-REPAIR-EDITOR before-let\\n\") (oa-sync-ready)\n                     (push supertag-sync--is-full-rescan-p editor-flags)) t)\n        (advice-remove 'save-buffer watch-save)\n        (advice-remove 'supertag-service-org--project-current-node watch-project)))\n    (should (equal editor-flags\n                   (list (and (string-suffix-p \"preset\" (getenv \"OA_CASE\")) 'preset))))\n    (should (equal sync-flags '(t)))\n    (should (= project-count 1)) (should (= save-count (if dirty 1 0)))\n    (should (boundp 'supertag-sync--is-full-rescan-p))\n    (should (eq supertag-sync--is-full-rescan-p\n                (and (string-suffix-p \"preset\" (getenv \"OA_CASE\")) 'preset)))\n    ;; A subsequent actual parser/reconcile read observes the outer binding.\n    (with-current-buffer (find-file-noselect file)\n      (goto-char (point-min)) (search-forward \":ID: oa-a\") (org-back-to-heading t)\n      (supertag-node-sync-at-point)\n      (should (equal \"Ada\" (plist-get (plist-get (supertag-node-get \"oa-a\") :properties) :AUTHOR)))\n      (should-not (buffer-modified-p)))\n    (should (eq dirty (not (null (string-match-p \"Unsaved draft\" (oa-disk file))))))))\n(defun oa-tags ()\n  (require 'supertag-tag)\n  (unless (oa-before) (should-not (featurep 'supertag-services-sync)))\n  (let ((file (oa-file)))\n    (dolist (id '(\"oa-a\" \"file-node\"))\n      (supertag-service-org-add-tag id \"base\")\n      (oa-sync-ready)\n      (supertag-service-org-remove-tag id \"base\")\n      (supertag-service-org-add-tag id \"base\"))\n    (supertag-tag-create '(:id \"other\" :name \"other\"))\n    (supertag-service-org-replace-tag \"oa-b\" \"base\" \"other\")\n    (should (member \"other\" (plist-get (supertag-node-get \"oa-b\") :tags)))\n    (should (string-match-p \"#other\" (oa-disk file)))\n    (let* ((disk (oa-disk file)) (store (prin1-to-string supertag--store))\n           (rows (supertag-tag-change--collect \"other\")))\n      (should rows) (should (equal disk (oa-disk file))) (should (equal store (prin1-to-string supertag--store))))))\n(defun oa-bulk ()\n  (require 'supertag-tag)\n  (should-not (featurep 'supertag-services-sync))\n  (let ((file (oa-file)) (saves 0) (records 0) (mutations 0) (parses 0) (resolved nil) new-id)\n    (let ((watch-create (lambda (&rest _)\n                          (princ \"ORGA-BULK-MUTATION before-tag-create\\n\")\n                          (oa-sync-ready) (should resolved) (cl-incf mutations)))\n          (watch-save (lambda (&rest _) (when (equal (buffer-file-name) file) (cl-incf saves)))))\n      (advice-add 'supertag-tag-create :before watch-create)\n      (advice-add 'save-buffer :before watch-save)\n      ;; Transparent loader advice observes real completion, not fboundp.\n      (cl-letf* ((original-load (symbol-function 'autoload-do-load))\n                 ((symbol-function 'autoload-do-load)\n                  (lambda (definition &rest rest)\n                    (prog1 (apply original-load definition rest)\n                      (when (and (featurep 'supertag-services-sync) (not resolved))\n                        (setq resolved t)\n                        (should (= parses 0)))))))\n        (let ((watch-record (lambda (&rest _) (cl-incf records)))\n              (watch-parse (lambda (&rest _) (cl-incf parses))))\n          (advice-add 'supertag-service-org-save-and-record-tags-at-point :before watch-record)\n          (advice-add 'supertag-sync--parse-file-header :before watch-parse)\n          (unwind-protect\n              (let ((ids (supertag-capture-add-tags-to-nodes '(\"oa-a\" \"oa-b\") '(\"alias-base\" \"new/path\"))))\n                (should (equal (car ids) \"base\"))\n                (setq new-id (cadr ids))\n                (should (supertag-tag-stable-id-p new-id))\n                (should (equal \"path\" (plist-get (supertag-tag-get new-id) :name)))\n                (should (equal (list (supertag-tag-resolve-occurrence \"new\"))\n                               (supertag-tag-parents new-id))))\n            (advice-remove 'supertag-service-org-save-and-record-tags-at-point watch-record)\n            (advice-remove 'supertag-sync--parse-file-header watch-parse)\n            (advice-remove 'supertag-tag-create watch-create)\n            (advice-remove 'save-buffer watch-save)))))\n    (should resolved) (should (= mutations 2)) (should (= saves 2)) (should (= records 2))\n    (dolist (id '(\"oa-a\" \"oa-b\")) (should (member new-id (plist-get (supertag-node-get id) :tags))))\n    (should (string-match-p \"#path\" (oa-disk file)))\n    (should-not (string-match-p \"#new/path\" (oa-disk file)))))\n(defun oa-load-failure (bypass)\n  (let ((disk (oa-disk (oa-file))) (facts (prin1-to-string supertag--store)))\n    (if (oa-before)\n        (progn (should (equal '(error \"ORGA injected Sync load failure\")\n                               (should-error (oa-load-org) :type 'error)))\n               (should-not (featurep 'supertag-service-org))\n               (princ \"ORGA-FAILURE before-require\\n\"))\n      (oa-load-org) (princ \"ORGA-ENTRY failure-current\\n\")\n      (if bypass\n          (let ((file (expand-file-name \"plain.org\" user-emacs-directory)))\n            (with-current-buffer (find-file-noselect file)\n              (goto-char (point-min))\n              (should (equal '(error \"ORGA injected Sync load failure\")\n                             (should-error (supertag-service-org-create-node-at-point) :type 'error)))\n              (let ((id (org-entry-get nil \"ID\")))\n                (should (stringp id)) (should-not (supertag-node-get id)))\n              (should (buffer-modified-p))\n              (should-not (string-match-p \":ID:\" (oa-disk file)))\n              (princ \"ORGA-FAILURE bypass-retained-ID-draft\\n\")))\n        (let (called)\n          (should-error (supertag-service-org--with-node-buffer \"missing\" (lambda () (setq called t))) :type 'user-error)\n          (should (equal '(error \"ORGA injected Sync load failure\")\n                         (should-error (supertag-service-org--with-node-buffer \"oa-a\" (lambda () (setq called t))) :type 'error)))\n          (should-not called) (princ \"ORGA-FAILURE current-after-valid-location\\n\"))))\n    (should (equal disk (oa-disk (oa-file)))) (should (equal facts (prin1-to-string supertag--store)))) )\n(defun oa-migrate ()\n  (should-not (featurep 'supertag-tag))\n  (require 'supertag-migrate)\n  (princ \"ORGA-ENTRY migrate\\n\")\n  ;; Direct fixture facts, no Tag creation before the first real status read.\n  (puthash \"bad id\" '(:id \"bad id\" :name \"Unstable\") (gethash :tags supertag--store))\n  (puthash \"tag-00000000000000000000000000000000\"\n           '(:id \"tag-00000000000000000000000000000000\" :name \"Stable\") (gethash :tags supertag--store))\n  (puthash \"conflict-tag\" '(:id \"conflict-tag\" :name \"different\" :aliases (\"new/conflict\")) (gethash :tags supertag--store))\n  (let ((pending (make-hash-table :test 'equal)))\n    (puthash \"base\" '(:path \"new/path\") pending)\n    (puthash :legacy-extends pending supertag--store))\n  (let* ((facts (prin1-to-string supertag--store)) (disk (oa-disk (oa-file)))\n         (status (supertag-migrate-status)) (plan (supertag-migrate--extends-plan)))\n    (princ (format \"ORGA-MIGRATE-ACTUAL unstable=%S plan=%S\\n\" (plist-get status :unstable-tags) plan))\n    (should (member \"bad id\" (plist-get status :unstable-tags)))\n    (should (member \"base\" (plist-get status :unstable-tags)))\n    (should-not (member \"tag-00000000000000000000000000000000\" (plist-get status :unstable-tags)))\n    (should (equal \"new/path\" (plist-get (car plan) :path)))\n    (should-not (plist-get (car plan) :conflict))\n    (supertag-migrate-preview)\n    (with-current-buffer \"*Supertag Field Migration*\"\n      (should (string-match-p \"new/path\" (buffer-string))))\n    (puthash \"base\" '(:path \"new/conflict\") (gethash :legacy-extends supertag--store))\n    (should (equal \"Path resolves to a different canonical name\"\n                   (plist-get (car (supertag-migrate--extends-plan)) :conflict)))\n    (puthash \"base\" '(:path \"new/path\") (gethash :legacy-extends supertag--store))\n    (should (equal facts (prin1-to-string supertag--store)))\n    (should (equal disk (oa-disk (oa-file))))))\n(let ((case (getenv \"OA_CASE\")))\n  (unwind-protect\n      (progn\n        (unless (member case '(\"prepare\" \"compile\"))\n          (setq supertag--store (with-temp-buffer\n                                 (insert-file-contents (expand-file-name \"seed.el\" user-emacs-directory))\n                                 (read (current-buffer)))))\n        (princ (format \"ORGA-CASE %s\\n\" case))\n        (pcase case\n          (\"prepare\" (oa-prepare))\n          (\"compile\" (require 'bytecomp)\n           (should (byte-compile-file (expand-file-name \"supertag-service-org.el\" (getenv \"OA_TREE\"))))\n           (should (file-exists-p (expand-file-name \"supertag-service-org.elc\" (getenv \"OA_TREE\")))))\n          (\"entry\" (oa-entry)) (\"entry-preset\" (setenv \"OA_PRESET_NIL\" \"1\") (oa-entry))\n          (\"wrapper\" (oa-wrapper))\n          ((or \"repair-clean\" \"elc-clean\" \"repair-preset\" \"elc-preset\") (oa-repair nil))\n          ((or \"repair-dirty\" \"elc-dirty\") (oa-repair t))\n          (\"tags\" (oa-tags)) (\"bulk\" (oa-bulk))\n          (\"load-failure\" (oa-load-failure nil)) (\"bypass-failure\" (oa-load-failure t))\n          (\"migrate\" (oa-migrate))\n          (_ (error \"Unknown case %s\" case)))\n        (princ (format \"ORGA-DONE %s\\n\" case)))\n    (setq kill-emacs-hook nil emacs-startup-hook nil after-init-hook nil\n          org-mode-hook nil enable-theme-functions nil disable-theme-functions nil)\n    (dolist (timer (append timer-list timer-idle-list)) (when (timerp timer) (cancel-timer timer)))))\n")
 (defun supertag-path-test--orga-child (case)
   "Execute CASE in a fresh isolated process after separate real projection."
   (let* ((tmp (make-temp-file "supertag-orga-" t))

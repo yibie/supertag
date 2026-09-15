@@ -4,17 +4,18 @@
 
 ;; Tag Manager presents every Semantic Tag as one `:extends' indented tree,
 ;; each row showing its node count and any aliases beyond its own ID/name.
-;; The buffer is a normal View Runtime instance rendered through the
-;; existing Widget DSL, modeled on Stream View.  A Tag whose stored
-;; `:extends' points at a Tag that no longer exists renders as a root and
-;; is marked "[Orphan]"; Tag Manager never rewrites Org text itself, it
-;; only calls the existing Tag commands, which own that responsibility.
+;; A Tag with several parents appears under each of them.  Roots are Tags
+;; without parents, and Tags whose listed parents are all missing, marked
+;; "[Orphan]".  The buffer is a normal View Runtime instance rendered through
+;; the existing Widget DSL, modeled on Stream View.  Tag Manager never
+;; rewrites Org text itself, it only calls the existing Tag commands, which
+;; own that responsibility.
 
 ;; Commands: supertag-view-tags-mode, supertag-view-tags,
 ;; supertag-view-tags-open-stream, supertag-view-tags-set-parent,
 ;; supertag-view-tags-rename, supertag-view-tags-delete,
 ;; supertag-view-tags-edit-aliases, supertag-view-tags-create-child,
-;; supertag-view-tags-quit.
+;; supertag-view-tags-create, supertag-view-tags-quit.
 ;; Dependencies: cl-lib, subr-x, supertag-tag, supertag-query,
 ;; supertag-view-framework, supertag-view-stream.
 ;;; Code:
@@ -47,8 +48,10 @@
 (defun supertag-view-tags--build-rows ()
   "Return Tag Manager display rows: plists with :id, :depth and :orphan.
 Rows are a depth-first walk of the `:extends' tree, every sibling group
-sorted by its Tag `:name'.  A Tag whose `:extends' parent does not exist
-is treated as a root and marked `:orphan'."
+sorted by its Tag `:name'.  A Tag with several existing parents is shown
+under each of them.  Roots are Tags without parents and Tags whose listed
+parents are all missing (marked `:orphan').  A stored cycle is cut at the
+repeated Tag so the walk still terminates."
   (let* ((collection (supertag-store-get-collection :tags))
          (by-id (make-hash-table :test 'equal))
          (children (make-hash-table :test 'equal))
@@ -58,22 +61,31 @@ is treated as a root and marked `:orphan'."
              collection)
     (maphash
      (lambda (id tag)
-       (let ((parent (plist-get tag :extends)))
-         (if (and parent (gethash parent by-id))
-             (puthash parent (cons id (gethash parent children)) children)
-           (push (cons id (and parent t)) roots))))
+       (let* ((parents (supertag-tag--tag-parents tag))
+              (existing (cl-remove-if-not (lambda (parent) (gethash parent by-id))
+                                          parents)))
+         (if existing
+             (dolist (parent existing)
+               (puthash parent (cons id (gethash parent children)) children))
+           ;; Every listed parent is gone: an orphan root, or a real root.
+           (push (cons id (and parents t)) roots))))
      by-id)
     (cl-labels
         ((tag-name (id) (or (plist-get (gethash id by-id) :name) id))
          (sort-ids (ids)
            (sort (copy-sequence ids)
                  (lambda (a b) (string< (tag-name a) (tag-name b)))))
-         (walk (id depth orphan)
+         (walk (id depth orphan seen)
            (cons (list :id id :depth depth :orphan orphan)
-                 (cl-mapcan (lambda (kid) (walk kid (1+ depth) nil))
-                            (sort-ids (gethash id children))))))
+                 (cl-mapcan (lambda (kid)
+                              (unless (member kid seen)
+                                (walk kid (1+ depth) nil (cons id seen))))
+                            (sort-ids
+                             (cl-delete-duplicates
+                              (copy-sequence (gethash id children))
+                              :test #'equal))))))
       (cl-mapcan
-       (lambda (entry) (walk (car entry) 0 (cdr entry)))
+       (lambda (entry) (walk (car entry) 0 (cdr entry) (list (car entry))))
        (sort (copy-sequence roots)
              (lambda (a b) (string< (tag-name (car a)) (tag-name (car b)))))))))
 
@@ -117,16 +129,17 @@ is treated as a root and marked `:orphan'."
                      (plist-get state :rows))))
     (setq supertag-view-tags--marked-ids
           (cl-remove-if-not (lambda (id) (member id ids))
-                            supertag-view-tags--marked-ids)))
-  (supertag-view-widget--render-tree
-   (supertag-view-tags--widgets state) state)
-  (setq header-line-format
-        (format " Tag Manager   %d tags%s "
-                (length (plist-get state :rows))
-                (if supertag-view-tags--marked-ids
-                    (format "   %d marked" (length supertag-view-tags--marked-ids))
-                  "")))
-  (font-lock-flush))
+                            supertag-view-tags--marked-ids))
+    (supertag-view-widget--render-tree
+     (supertag-view-tags--widgets state) state)
+    ;; A Tag with several parents renders once per parent, so count Tags.
+    (setq header-line-format
+          (format " Tag Manager   %d tags%s "
+                  (length (cl-delete-duplicates (copy-sequence ids) :test #'equal))
+                  (if supertag-view-tags--marked-ids
+                      (format "   %d marked" (length supertag-view-tags--marked-ids))
+                    "")))
+    (font-lock-flush)))
 
 ;;; --- Row lookup and navigation ---
 
@@ -268,15 +281,34 @@ is treated as a root and marked `:orphan'."
                   (split-string input "," t "[ \t\n\r]+"))))
     (supertag-tag-update id (lambda (tag) (plist-put tag :aliases new-aliases)))))
 
+(defun supertag-view-tags-create ()
+  "Create a root Semantic Tag, or the hierarchy a `/' path names."
+  (interactive)
+  (let ((input (read-string "New tag (or a/b path): ")))
+    (unless (and input (not (string-empty-p input)))
+      (user-error "Tag name cannot be empty"))
+    (supertag-tag-ensure input)))
+
 (defun supertag-view-tags-create-child ()
-  "Create a new child tag whose `:extends' parent is the row at point."
+  "Create a child Tag of the row at point; a `/' path nests a whole chain."
   (interactive)
   (let* ((parent-id (supertag-view-tags--current-id))
-         (parent-name (plist-get (supertag-tag-get parent-id) :name))
-         (name (read-string (format "New child tag of '%s': " parent-name))))
-    (unless (and name (not (string-empty-p name)))
+         (parent-name (or (plist-get (supertag-tag-get parent-id) :name)
+                          parent-id))
+         (input (read-string (format "New child tag of '%s' (or a/b path): "
+                                    parent-name))))
+    (unless (and input (not (string-empty-p input)))
       (user-error "Tag name cannot be empty"))
-    (supertag-tag-create (list :name name :extends parent-id))))
+    (let* ((path-p (and (string-match-p supertag-tag-path-separator-regexp input)
+                        t))
+           (leaf (supertag-tag-ensure input))
+           ;; A path hangs under this row from its first segment.
+           (child (if path-p
+                      (supertag-tag-resolve-occurrence
+                       (car (supertag-tag--path-segments input)))
+                    leaf)))
+      (supertag-tag-add-parent child parent-id)
+      leaf)))
 
 (defun supertag-view-tags-quit ()
   "Quit the Tag Manager and restore its original window configuration."
@@ -299,6 +331,7 @@ is treated as a root and marked `:orphan'."
     (define-key map (kbd "U") #'supertag-view-tags-unmark-all)
     (define-key map (kbd "a") #'supertag-view-tags-edit-aliases)
     (define-key map (kbd "c") #'supertag-view-tags-create-child)
+    (define-key map (kbd "+") #'supertag-view-tags-create)
     (define-key map (kbd "n") #'next-line)
     (define-key map (kbd "p") #'previous-line)
     (define-key map (kbd "g") #'supertag-view-refresh)
@@ -311,9 +344,10 @@ is treated as a root and marked `:orphan'."
 (define-derived-mode supertag-view-tags-mode special-mode "Supertag-Tags"
   "Major mode for the Supertag Tag Manager.
 
-RET opens the Stream.  m/u/U mark rows, D deletes, r renames, P sets a
-parent, a edits aliases, c creates a child, g refreshes, and q quits.  h and
-? describe this mode.
+RET opens the Stream.  m/u/U mark rows, D deletes, r renames, P sets the
+parents, a edits aliases, c creates a child (a `a/b' path nests a chain),
++ creates a root Tag or path, g refreshes, and q quits.  h and ? describe
+this mode.
 
 \\{supertag-view-tags-mode-map}"
   :keymap supertag-view-tags-mode-map

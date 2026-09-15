@@ -304,10 +304,11 @@ Implements immediate error reporting as preferred by the user."
     (unless (and (proper-list-p aliases) (cl-every #'stringp aliases))
       (error "Tag :aliases must be a list of strings, got: %S" aliases)))
   (when (plist-member data :extends)
-    (unless (or (null (plist-get data :extends))
-                (stringp (plist-get data :extends)))
-      (error "Tag :extends must be a string or nil, got: %S"
-             (plist-get data :extends))))
+    (let ((extends (plist-get data :extends)))
+      (unless (or (null extends)
+                  (and (proper-list-p extends) (cl-every #'stringp extends)))
+        (error "Tag :extends must be a list of strings or nil, got: %S"
+               extends))))
   ;; Validate time format compliance (Emacs native format)
   (when-let ((created-at (plist-get data :created-at)))
     (unless (condition-case nil
@@ -402,9 +403,8 @@ This ensures that modifications to the copy do not affect the original."
                    (puthash token
                             (cons tag-id (gethash token supertag-tag--token-index))
                             supertag-tag--token-index))
-                 (let ((parent (plist-get tag :extends)))
-                   (when (and (stringp parent)
-                              (not (equal parent tag-id))
+                 (dolist (parent (supertag-tag--tag-parents tag))
+                   (when (and (not (equal parent tag-id))
                               (gethash parent tags))
                      (puthash parent (cons tag-id (gethash parent children))
                               children)))))
@@ -498,9 +498,19 @@ This ensures that modifications to the copy do not affect the original."
 
 ;; 3.1 Basic Operations
 
+(defun supertag-tag--assert-single-name (name)
+  "Signal `user-error' when NAME is not a single Tag token.
+`/' and `／' separate path segments; use `supertag-tag-ensure-path' to
+create the hierarchy they describe."
+  (when (string-match-p "[/／]" (format "%s" name))
+    (user-error
+     "Tag name '%s' contains a path separator; '%s' creates a nested tag"
+     name name)))
+
 (defun supertag-tag-create (props)
   "Create a new tag using the unified commit system.
-PROPS is a plist of tag properties.
+PROPS is a plist of tag properties.  `:extends' is nil or a list of parent
+Tag IDs; use `supertag-tag-ensure-path' for `a/b' path creation.
 Returns the created tag data."
   (when (plist-get props :fields)
     (user-error
@@ -520,6 +530,7 @@ Returns the created tag data."
           existing-tag)
       (unless (and (stringp name) (not (string-empty-p name)))
         (user-error "Tag name cannot be empty"))
+      (supertag-tag--assert-single-name name)
       (supertag-tag--validate-extends id extends)
       (let* ((aliases
               (supertag-tag--normalize-aliases
@@ -549,25 +560,48 @@ ID is the unique identifier of the tag.
 Returns tag data, or nil if it does not exist."
   (supertag-store-get-entity :tags id))
 
-(defun supertag-tag--validate-extends (tag-id parent-id)
-  "Signal `user-error' when TAG-ID cannot extend PARENT-ID."
-  (unless (or (null parent-id) (stringp parent-id))
-    (user-error "Tag :extends must be a string or nil"))
-  (when parent-id
-    (unless (supertag-tag-get parent-id)
-      (user-error "Parent tag '%s' does not exist" parent-id))
-    (when (equal tag-id parent-id)
+(defun supertag-tag--name (tag-id)
+  "Return TAG-ID's Tag `:name', falling back to TAG-ID itself."
+  (or (plist-get (supertag--ensure-plist (supertag-tag-get tag-id)) :name)
+      tag-id))
+
+(defun supertag-tag--tag-parents (tag)
+  "Return TAG's stored `:extends' parent ID list.
+TAG is a Tag plist, not an ID.  A legacy string value -- a store the 7.2.0
+migration has not rewritten yet, or one whose migration was refused -- reads
+as its one parent, so no caller has to handle a string.  Writers go through
+`supertag--validate-tag-data', which accepts a list of strings or nil only."
+  (let ((extends (plist-get tag :extends)))
+    (cond ((null extends) nil)
+          ((stringp extends) (list extends))
+          ((and (proper-list-p extends) (cl-every #'stringp extends)) extends)
+          (t nil))))
+
+(defun supertag-tag--validate-extends (tag-id parents)
+  "Signal `user-error' when TAG-ID cannot carry PARENTS as `:extends'.
+PARENTS is nil or a list of parent Tag IDs.  Every parent must exist, none
+may be TAG-ID itself, and no parent path may lead back to TAG-ID."
+  (unless (or (null parents)
+              (and (proper-list-p parents) (cl-every #'stringp parents)))
+    (user-error "Tag :extends must be a list of parent Tag IDs, got: %S"
+                parents))
+  (dolist (parent (delete-dups parents))
+    (unless (supertag-tag-get parent)
+      (user-error "Parent tag '%s' does not exist" parent))
+    (when (equal tag-id parent)
       (user-error "Tag '%s' cannot extend itself" tag-id))
-    (let ((current parent-id)
+    (let ((stack (list parent))
           (seen (make-hash-table :test 'equal)))
-      (puthash tag-id t seen)
-      (while current
-        (when (gethash current seen)
-          (user-error "Tag :extends would create a cycle involving '%s'" tag-id))
-        (puthash current t seen)
-        (setq current
-              (plist-get (supertag--ensure-plist (supertag-tag-get current))
-                         :extends))))))
+      (while stack
+        (let ((current (pop stack)))
+          (unless (gethash current seen)
+            (puthash current t seen)
+            (when (equal current tag-id)
+              (user-error "Tag :extends would create a cycle involving '%s'"
+                          tag-id))
+            (let ((tag (supertag--ensure-plist (supertag-tag-get current))))
+              (when tag
+                (setq stack (append (supertag-tag--tag-parents tag) stack))))))))))
 
 (defun supertag-tag-find-ghosts ()
   "Return Tag IDs whose stored value is nil (ghost entries)."
@@ -579,32 +613,42 @@ Returns tag data, or nil if it does not exist."
      (supertag-store-get-collection :tags))
     ghosts))
 
-(defun supertag-tag-parent (tag-id)
-  "Return TAG-ID's direct `:extends' parent ID, or nil."
+(defun supertag-tag-parents (tag-id)
+  "Return TAG-ID's direct `:extends' parent IDs in stored order.
+Return nil for a root Tag or an unknown ID."
   (when-let* ((tag (supertag--ensure-plist (supertag-tag-get tag-id))))
-    (plist-get tag :extends)))
+    (supertag-tag--tag-parents tag)))
 
 (defun supertag-tag-ancestors (tag-id)
   "Return TAG-ID's ancestors from nearest to farthest.
-Stop when a malformed stored parent cycle is encountered."
-  (let ((parent (supertag-tag-parent tag-id))
+The union over every parent path, breadth-first and deduplicated.  A stored
+parent cycle is tolerated: every Tag is visited at most once."
+  (let ((queue (copy-sequence (supertag-tag-parents tag-id)))
         (seen (make-hash-table :test 'equal))
         ancestors)
     (puthash tag-id t seen)
-    (while (and parent (not (gethash parent seen)))
-      (puthash parent t seen)
-      (push parent ancestors)
-      (setq parent (supertag-tag-parent parent)))
+    (while queue
+      (let ((current (pop queue)))
+        (unless (gethash current seen)
+          (puthash current t seen)
+          (push current ancestors)
+          (setq queue (append queue (supertag-tag-parents current))))))
     (nreverse ancestors)))
 
 (defun supertag-tag-display-name (tag-id)
-  "Return TAG-ID's ancestor-name chain joined with ` › '."
-  (let (names)
-    (dolist (id (append (nreverse (supertag-tag-ancestors tag-id))
-                        (list tag-id)))
-      (let ((tag (supertag--ensure-plist (supertag-tag-get id))))
-        (push (or (plist-get tag :name) id) names)))
-    (string-join (nreverse names) " › ")))
+  "Return TAG-ID's hierarchy path for display.
+One direct parent shows the complete ancestor chain joined with ` › '.  With
+several direct parents, only their names are joined with ` · ' and the leaf
+follows after ` › ' (deeper chains stay unexpanded)."
+  (let ((parents (supertag-tag-parents tag-id)))
+    (if (cdr parents)
+        (concat (string-join (mapcar #'supertag-tag--name parents) " · ")
+                " › " (supertag-tag--name tag-id))
+      (let (names)
+        (dolist (id (append (nreverse (supertag-tag-ancestors tag-id))
+                            (list tag-id)))
+          (push (supertag-tag--name id) names))
+        (string-join (nreverse names) " › ")))))
 
 (defun supertag-tag-descendants (tag-id)
   "Return cached transitive descendants of Semantic TAG-ID."
@@ -634,7 +678,11 @@ modifies Tag entities."
             (id (or new-name
                     (get-text-property 0 'supertag-tag-id candidate)
                     (substring-no-properties candidate)))
-            (display (supertag-tag-display-name id))
+            (display (if (and new-name
+                              (string-match-p supertag-tag-path-separator-regexp
+                                              new-name))
+                         (supertag-tag--path-display new-name)
+                       (supertag-tag-display-name id)))
             (suffix
              (cond
               ((get-text-property 0 'supertag-tag-conflict candidate)
@@ -808,9 +856,7 @@ Returns t if the membership was added or already exists, nil otherwise."
              (existing (and resolved-id (supertag-tag-get resolved-id))))
         ;; 1. Ensure tag definition exists.
         (when (and create-if-needed (not existing))
-          (setq existing
-                (supertag-tag-create
-                 `(:name ,tag-id)))
+          (setq existing (supertag-tag-get (supertag-tag-ensure tag-id)))
           (setq resolved-id (plist-get existing :id)))
 
         ;; 2. If the tag exists, update node membership.
@@ -825,7 +871,9 @@ Returns t if the membership was added or already exists, nil otherwise."
 (defun supertag-sanitize-tag-name (name)
   "Sanitize a string into a valid tag name.
 Removes leading/trailing whitespace, a leading '#', and converts
-internal whitespace to single underscores."
+internal whitespace to single underscores.  `/' and `／' are path
+separators, not name characters: creating a Tag whose name contains one is
+rejected, and `supertag-tag-ensure-path' creates the hierarchy instead."
   (if (or (null name) (string-empty-p name))
       (error "Tag name cannot be empty")
     (let* ((clean-name (substring-no-properties name))
@@ -1494,8 +1542,9 @@ are restored from snapshots if any later step fails."
                 mapping)))
          (setq tag
                (plist-put tag :extends
-                          (supertag-tag-rename--mapped
-                           (plist-get tag :extends) mapping)))
+                          (mapcar (lambda (parent)
+                                    (supertag-tag-rename--mapped parent mapping))
+                                  (supertag-tag--tag-parents tag))))
          (when (assoc tag-id mapping)
            (setq tag (plist-put tag :id new-id))
            (setq tag (plist-put tag :name new-id)))
@@ -2160,9 +2209,12 @@ before returning an error.  POSITION has the meaning accepted by
            (lambda (input)
              (let ((tag (car input))
                    (token (cdr input)))
-               (or (and (supertag-tag-get tag) tag)
-                   (supertag-tag-resolve-occurrence tag)
-                   (supertag-tag-resolve-occurrence token))))
+               ;; A path token is always completed by `supertag-tag-ensure-path',
+               ;; which adds the missing parent edge as well as resolving the leaf.
+               (unless (string-match-p supertag-tag-path-separator-regexp token)
+                 (or (and (supertag-tag-get tag) tag)
+                     (supertag-tag-resolve-occurrence tag)
+                     (supertag-tag-resolve-occurrence token)))))
            tag-inputs))
          (tag-label (string-join tokens ", ")))
     (dolist (node-id node-ids)
@@ -2199,10 +2251,7 @@ before returning an error.  POSITION has the meaning accepted by
                                 (cl-mapcar
                                  (lambda (token existing-id)
                                    (or existing-id
-                                       (plist-get
-                                        (supertag-tag-create
-                                         `(:name ,token))
-                                        :id)))
+                                       (supertag-tag-ensure token)))
                                  tokens tag-ids))
                                (save-and-record-tags
                                 (symbol-function
@@ -2296,7 +2345,7 @@ edit until membership is verified, and compensate a saved edit on failure."
                      (or (and (supertag-tag-get new-tag) new-tag)
                          (supertag-tag-resolve-occurrence new-tag)
                          (supertag-tag-resolve-occurrence token)
-                         (plist-get (supertag-tag-create (list :name token)) :id))))
+                         (supertag-tag-ensure token))))
                 (supertag-service-org-replace-tag node-id old-id new-id)
                 (unless (and (supertag-capture--tag-membership-present-p node-id new-id)
                              (not (supertag-capture--tag-membership-present-p node-id old-id)))
@@ -2927,11 +2976,32 @@ Handles edge cases: cursor right after # (empty prefix), mid-word, etc."
             (cons (car existing) (cons new (cdr existing)))
           (list new))))))
 
+(defun supertag-completion--path-would-change-p (path)
+  "Return non-nil when completing PATH would create a Tag or a parent edge.
+PATH carries a path separator; a single-segment name is `[New]' only when no
+Tag claims its token.  A segment that does not resolve, or an adjacent pair
+whose child does not yet list the parent, means the path still has work to do."
+  (let ((segments (condition-case nil
+                      (supertag-tag--path-segments path)
+                    (error nil))))
+    (when (and segments (cdr segments))
+      (let (previous (change nil))
+        (dolist (segment segments)
+          (let ((id (supertag-tag-resolve-occurrence segment)))
+            (unless id (setq change t))
+            (when (and previous id
+                       (not (member previous (supertag-tag-parents id))))
+              (setq change t))
+            (setq previous id)))
+        change))))
+
 (defun supertag-completion--get-completion-table (prefix)
   "Return real Tag candidates and an explicit new-Tag action for PREFIX.
-Slashes are ordinary tag-name characters and create no parent entity.
-Selecting an existing candidate preserves its stable Tag ID.  New actions
-carry a hidden final marker so unfinished input is not an exact match."
+A `/' prefix is a Tag path: its segments are matched against existing Tags,
+and `[New]' is offered while the path would create a Tag or add a missing
+parent edge.  Selecting an existing candidate preserves its stable Tag ID.
+New actions carry a hidden final marker so unfinished input is not an exact
+match."
   (let* ((safe-prefix (or prefix ""))
          (node-id (org-id-get))
          (current-tags (when node-id (supertag-completion--get-node-tags node-id)))
@@ -2958,7 +3028,9 @@ carry a hidden final marker so unfinished input is not an exact match."
          (should-add-new
           (and (not (string-empty-p safe-prefix))
                (supertag-transform-inline-tag-name-p new-name)
-               (not (supertag-tag-resolve-occurrence new-name semantic-tags)))))
+               (if (string-match-p supertag-tag-path-separator-regexp new-name)
+                   (supertag-completion--path-would-change-p new-name)
+                 (not (supertag-tag-resolve-occurrence new-name semantic-tags))))))
     (if should-add-new
         (let ((candidate (concat safe-prefix "\u200b")))
           (add-text-properties
@@ -2995,10 +3067,7 @@ Display aliases are replaced with their canonical Org token before writing."
           (let* ((tag-id
                  (or selected-id
                      (and is-new
-                          (plist-get
-                           (supertag-tag-create
-                            `(:name ,new-name))
-                           :id))))
+                          (supertag-tag-ensure-path new-name))))
                  (tag (supertag--ensure-plist (supertag-tag-get tag-id)))
                  (occurrence-token
                   (supertag-sanitize-tag-name (plist-get tag :name))))
@@ -3449,8 +3518,7 @@ Preview is always shown before confirmation, whatever the caller."
                        (or (null target-id)
                            (equal actual (supertag-service-org--tag-token target-id))))
             (user-error "Tag resolution changed; preview again"))
-          (let ((new-id (or target-id
-                            (plist-get (supertag-tag-create (list :name token)) :id))))
+          (let ((new-id (or target-id (supertag-tag-ensure token))))
             (dolist (group groups)
               (dolist (entry (cadr group))
                 (supertag-service-org-replace-tag
@@ -3461,12 +3529,14 @@ Preview is always shown before confirmation, whatever the caller."
             new-id))))))
 
 (cl-defun supertag-tag-set-parent
-    (&optional (tag-id nil tag-id-supplied-p) (parent-id nil parent-id-supplied-p))
-  "Set TAG-ID's `:extends' parent to PARENT-ID, or clear it.
-Interactively, TAG-ID defaults to the inline tag at point, falling back to
-`supertag-ui-read-tag'.  PARENT-ID is then read the same way, with an extra
-\"(none)\" candidate that clears the parent.  Cycle and existence validation
-come from `supertag-tag-update'; a bad request signals `user-error'."
+    (&optional (tag-id nil tag-id-supplied-p) (parent-ids nil parent-ids-supplied-p))
+  "Replace TAG-ID's `:extends' parents with PARENT-IDS.
+PARENT-IDS is nil (no parent) or a list of parent Tag IDs.  Interactively,
+TAG-ID defaults to the inline tag at point, falling back to
+`supertag-ui-read-tag'.  The parents are then read with
+`completing-read-multiple', pre-filled with the current ones; empty input
+clears them.  Cycle and existence validation come from `supertag-tag-update';
+a bad request signals `user-error'."
   (interactive)
   (let* ((tag-id
           (if tag-id-supplied-p
@@ -3475,22 +3545,113 @@ come from `supertag-tag-update'; a bad request signals `user-error'."
                   (and at-point (supertag-service-org--semantic-tag-id at-point)))
                 (supertag-ui-read-tag
                  "Tag: " (supertag-view-api-list-tag-ids) nil nil))))
-         (none-label "(none)")
-         (parent-id
-          (if parent-id-supplied-p
-              parent-id
-            (let ((answer
-                   (supertag-ui-read-tag
-                    (format "Parent for '%s': " tag-id)
-                    (cons none-label
-                          (remove tag-id (supertag-view-api-list-tag-ids)))
-                    nil nil)))
-              (unless (equal answer none-label) answer)))))
-    (supertag-tag-update tag-id (lambda (tag) (plist-put tag :extends parent-id)))
-    (message (if parent-id
-                 (format "Tag '%s' now extends '%s'." tag-id parent-id)
+         (parent-ids
+          (if parent-ids-supplied-p
+              parent-ids
+            (supertag-tag--read-parents tag-id))))
+    (supertag-tag-update tag-id (lambda (tag) (plist-put tag :extends parent-ids)))
+    (message (if parent-ids
+                 (format "Tag '%s' now extends %s."
+                         tag-id
+                         (string-join (mapcar #'supertag-tag--name parent-ids)
+                                      ", "))
                (format "Tag '%s' has no parent." tag-id)))
-    parent-id))
+    parent-ids))
+
+(defun supertag-tag--read-parents (tag-id)
+  "Read TAG-ID's complete parent list interactively and return Tag IDs.
+Candidates are parent Tag names; an empty answer clears the parents."
+  (let* ((current (supertag-tag-parents tag-id))
+         (candidates (cl-remove-if (lambda (id) (equal id tag-id))
+                                   (supertag-view-api-list-tag-ids)))
+         (names (cl-remove-duplicates
+                 (mapcar #'supertag-tag--name candidates) :test #'string=))
+         (answer (completing-read-multiple
+                  (format "Parents for '%s' (comma-separated, empty clears): "
+                          (supertag-tag--name tag-id))
+                  names nil nil
+                  (string-join (mapcar #'supertag-tag--name current) ", "))))
+    (mapcar (lambda (entry)
+              (or (supertag-tag-resolve-occurrence entry)
+                  (user-error "Unknown parent tag '%s'" entry)))
+            (cl-remove-if #'string-empty-p (or answer '())))))
+
+(defconst supertag-tag-path-separator-regexp "[/／]"
+  "Characters separating Tag path segments, half- and full-width.")
+
+(defun supertag-tag--path-segments (path)
+  "Return PATH's sanitized segment tokens, or signal `user-error'.
+Empty TEXT, an empty segment, or a single separator is a user error."
+  (let* ((text (string-trim (format "%s" (or path ""))))
+         (parts (split-string text supertag-tag-path-separator-regexp)))
+    (when (string-empty-p text)
+      (user-error "Tag path cannot be empty"))
+    (dolist (part parts)
+      (when (string-empty-p part)
+        (user-error "Tag path '%s' has an empty segment" path)))
+    (mapcar (lambda (part)
+              (let ((token (supertag-sanitize-tag-name part)))
+                (supertag-tag--assert-single-name token)
+                token))
+            parts)))
+
+(defun supertag-tag--path-display (path)
+  "Return PATH rendered as a ` › '-joined hierarchy.
+Segments that already have a Tag show that Tag's `:name'; the rest show the
+typed segment.  A malformed path falls back to its raw text."
+  (condition-case nil
+      (string-join
+       (mapcar (lambda (segment)
+                 (let ((id (supertag-tag-resolve-occurrence segment)))
+                   (if id (supertag-tag--name id) segment)))
+               (supertag-tag--path-segments path))
+       " › ")
+    (error (format "%s" path))))
+
+(defun supertag-tag-ensure (name)
+  "Return the Tag ID NAME names, creating what is missing.
+NAME is a single occurrence token, a Tag ID, or a `/' path: a path runs
+through `supertag-tag-ensure-path', so it also adds any missing parent edge."
+  (let ((text (format "%s" (or name ""))))
+    (cond
+     ((string-empty-p text) (user-error "Tag name cannot be empty"))
+     ((string-match-p supertag-tag-path-separator-regexp text)
+      (supertag-tag-ensure-path text))
+     (t (or (supertag-tag-resolve-occurrence text)
+            (plist-get (supertag-tag-create (list :name text)) :id))))))
+
+(defun supertag-tag-ensure-path (path)
+  "Create the Tag hierarchy PATH describes and return the leaf Tag ID.
+PATH is `/' or `／' separated.  Every segment is resolved as an occurrence
+token, or created when missing.  Each segment after the first gains the
+previous segment's Tag as one more `:extends' parent; existing parents are
+kept, so this never reparents.  The whole path runs in one transaction: a
+missing segment, or an edge that would create a cycle, signals `user-error'
+and writes nothing."
+  (let ((segments (supertag-tag--path-segments path)))
+    (supertag-with-transaction
+      (let (previous)
+        (dolist (segment segments)
+          (let ((id (or (supertag-tag-resolve-occurrence segment)
+                        (plist-get (supertag-tag-create (list :name segment))
+                                   :id))))
+            (when previous
+              (supertag-tag-add-parent id previous))
+            (setq previous id)))
+        previous))))
+
+(defun supertag-tag-add-parent (tag-id parent-id)
+  "Add PARENT-ID to TAG-ID's `:extends' list and return the parent list.
+Idempotent: a Tag that already extends PARENT-ID is left untouched.  Cycle
+and existence validation come from `supertag-tag-update'."
+  (if (member parent-id (supertag-tag-parents tag-id))
+      (supertag-tag-parents tag-id)
+    (supertag-tag-update
+     tag-id
+     (lambda (tag)
+       (plist-put tag :extends (append (supertag-tag--tag-parents tag)
+                                       (list parent-id)))))
+    (supertag-tag-parents tag-id)))
 
 (defun supertag-delete-tag-everywhere (&optional tag-name skip-confirm)
   "Preview and confirm removing TAG-NAME from Org and its projection.
@@ -3614,22 +3775,36 @@ new tag name, bypassing fuzzy completion matching."
       (let* ((tag-name (if literal-tag
                           (substring raw-name 1) ; Remove the '=' prefix
                         raw-name))
+             (path-p (and (string-match-p supertag-tag-path-separator-regexp
+                                          tag-name)
+                          t))
              (token (supertag-sanitize-tag-name tag-name))
-             (tag-id (or (and (supertag-tag-get token) token)
-                         (supertag-tag-resolve-occurrence token))))
+             (tag-id (and (not path-p)
+                          (or (and (supertag-tag-get token) token)
+                              (supertag-tag-resolve-occurrence token)))))
         (when (or tag-id
                   (yes-or-no-p
-                   (if literal-tag
-                       (format "Create new tag '%s' and add to %d node(s)? "
-                               token (length node-ids))
+                   (cond
+                    (path-p
+                     (format "Create Tag path '%s' and add to %d node(s)? "
+                             tag-name (length node-ids)))
+                    (literal-tag
+                     (format "Create new tag '%s' and add to %d node(s)? "
+                             token (length node-ids)))
+                    (t
                      (format "Tag '%s' does not exist. Create and add it to %d node(s)? "
-                             token (length node-ids)))))
+                             token (length node-ids))))))
           (dolist (node-id node-ids)
             (unless (supertag-node-get node-id)
               (when-let* ((marker (supertag-ui--find-node-marker node-id)))
                 (with-current-buffer (marker-buffer marker)
                   (goto-char marker)
                   (supertag-node-sync-at-point)))))
+          ;; A path creates or completes the hierarchy; the node only ever
+          ;; carries the leaf token.
+          (when path-p
+            (setq tag-id (supertag-tag-ensure-path tag-name))
+            (setq token (supertag-sanitize-tag-name (supertag-tag--name tag-id))))
           (setq tag-id
                 (supertag-capture-add-tag-to-nodes
                  node-ids token
@@ -3747,8 +3922,7 @@ IMPORTANT: This function NEVER modifies existing tags - it only creates new ones
         ;; CRITICAL: Only create if tag doesn't exist
         ;; Never modify existing tags to preserve their field definitions
         (unless existing-tag
-          (setq tag-id
-                (plist-get (supertag-tag-create (list :name sanitized-name)) :id)))
+          (setq tag-id (supertag-tag-ensure sanitized-name)))
         (push tag-id tag-ids)))
     (nreverse tag-ids)))
 
@@ -3760,12 +3934,12 @@ IMPORTANT: This function NEVER modifies existing tags - it only creates new ones
     (supertag-tag-descendants tag-id)))
 
 (defun supertag-query-tag-children (tag-id)
-  "Return Tag IDs whose `:extends' parent is TAG-ID."
+  "Return Tag IDs that list TAG-ID as one `:extends' parent."
   (let (result)
     (maphash
      (lambda (id raw-tag)
-       (when (equal (plist-get (supertag--ensure-plist raw-tag) :extends)
-                    tag-id)
+       (when (member tag-id
+                     (supertag-tag--tag-parents (supertag--ensure-plist raw-tag)))
          (push id result)))
      (supertag-store-get-collection :tags))
     (sort result #'string<)))

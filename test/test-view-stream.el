@@ -34,7 +34,7 @@
 (defun supertag-view-stream-test--put-tag (id &optional parent)
   "Put a Stream fixture Tag ID with an optional `:extends' PARENT."
   (supertag-store-put-entity
-   :tags id (list :id id :name id :type :tag :extends parent)))
+   :tags id (list :id id :name id :type :tag :extends (list parent))))
 
 (defun supertag-view-stream-test--kill-buffers ()
   "Kill Stream test buffers without prompting."

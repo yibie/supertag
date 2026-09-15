@@ -43,16 +43,15 @@
   :group 'supertag)
 
 (defface supertag-view-entry
-  '((((background dark)) :foreground "#f2f2f2")
-    (t :foreground "#111111"))
+  '((t :inherit widget-button :foreground unspecified :weight bold))
   "Node View entry title."
   :group 'supertag)
 
 (defface supertag-view-chip1 '((t :weight bold)) "Primary Node View chip." :group 'supertag)
 (defface supertag-view-chip2 '((t :weight bold)) "Secondary Node View chip." :group 'supertag)
 (defface supertag-view-chip3 '((t :weight bold)) "Tertiary Node View chip." :group 'supertag)
-(defface supertag-view-accent '((t)) "Node View accent foreground." :group 'supertag)
-(defface supertag-view-score '((t :weight bold)) "Node View similarity score." :group 'supertag)
+(defface supertag-view-accent '((t :inherit default :weight bold)) "Neutral Node View emphasis." :group 'supertag)
+(defface supertag-view-score '((t :inherit default :weight bold)) "Node View similarity score." :group 'supertag)
 (defface supertag-view-rule '((t)) "Node View footer rule." :group 'supertag)
 
 ;; Each palette maps a role face to (LIGHT-PLIST . DARK-PLIST).
@@ -62,32 +61,32 @@
      (supertag-view-chip1  (:foreground "#1f3d00" :background "#e4ff9a") . (:foreground "#0b0b14" :background "#d7ff64"))
      (supertag-view-chip2  (:foreground "#2a1c7a" :background "#d9d2ff") . (:foreground "#0b0b14" :background "#a99bff"))
      (supertag-view-chip3  (:foreground "#0c4a5a" :background "#d6f4fb") . (:foreground "#0b0b14" :background "#bfeefb"))
-     (supertag-view-accent (:foreground "#4b3bb0") . (:foreground "#a99bff"))
-     (supertag-view-score  (:foreground "#4f7a00") . (:foreground "#d7ff64"))
+     (supertag-view-accent (:inherit default :foreground unspecified :weight bold) . (:inherit default :foreground unspecified :weight bold))
+     (supertag-view-score  (:inherit default :foreground unspecified :weight bold) . (:inherit default :foreground unspecified :weight bold))
      (supertag-view-rule   (:foreground "#c8c8d8") . (:foreground "#3a3a55")))
     (paper
      (supertag-view-panel  (:background "#f3ede1") . (:background "#2a2420"))
      (supertag-view-chip1  (:foreground "#5a1f0a" :background "#f2c7b0") . (:foreground "#1a0f0a" :background "#e08a63"))
      (supertag-view-chip2  (:foreground "#4a3a00" :background "#f2dd9a") . (:foreground "#1a1400" :background "#e3c05a"))
      (supertag-view-chip3  (:foreground "#1f3d2a" :background "#cfe3cf") . (:foreground "#0d1a10" :background "#9cc7a2"))
-     (supertag-view-accent (:foreground "#9a3f1f") . (:foreground "#e08a63"))
-     (supertag-view-score  (:foreground "#7a5a00") . (:foreground "#e3c05a"))
+     (supertag-view-accent (:inherit default :foreground unspecified :weight bold) . (:inherit default :foreground unspecified :weight bold))
+     (supertag-view-score  (:inherit default :foreground unspecified :weight bold) . (:inherit default :foreground unspecified :weight bold))
      (supertag-view-rule   (:foreground "#d8cdb8") . (:foreground "#4a3f36")))
     (ink
      (supertag-view-panel  (:background "#f2f2f2") . (:background "#1c1c1c"))
      (supertag-view-chip1  (:foreground "#ffffff" :background "#111111") . (:foreground "#111111" :background "#f2f2f2"))
      (supertag-view-chip2  (:foreground "#ffffff" :background "#6b6b6b") . (:foreground "#111111" :background "#a8a8a8"))
      (supertag-view-chip3  (:foreground "#111111" :background "#dcdcdc") . (:foreground "#f2f2f2" :background "#3a3a3a"))
-     (supertag-view-accent (:foreground "#555555") . (:foreground "#b0b0b0"))
-     (supertag-view-score  (:foreground "#111111") . (:foreground "#f2f2f2"))
+     (supertag-view-accent (:inherit default :foreground unspecified :weight bold) . (:inherit default :foreground unspecified :weight bold))
+     (supertag-view-score  (:inherit default :foreground unspecified :weight bold) . (:inherit default :foreground unspecified :weight bold))
      (supertag-view-rule   (:foreground "#cfcfcf") . (:foreground "#3a3a3a")))
     (ocean
      (supertag-view-panel  (:background "#e9f0f7") . (:background "#101a26"))
      (supertag-view-chip1  (:foreground "#ffffff" :background "#1e3a8a") . (:foreground "#0b0f1a" :background "#93b4ff"))
      (supertag-view-chip2  (:foreground "#063b3b" :background "#b7ecec") . (:foreground "#0b0f1a" :background "#5fd3d3"))
      (supertag-view-chip3  (:foreground "#0b3a5c" :background "#cfe6fa") . (:foreground "#0b0f1a" :background "#9fd0f5"))
-     (supertag-view-accent (:foreground "#1e3a8a") . (:foreground "#93b4ff"))
-     (supertag-view-score  (:foreground "#0f766e") . (:foreground "#5fd3d3"))
+     (supertag-view-accent (:inherit default :foreground unspecified :weight bold) . (:inherit default :foreground unspecified :weight bold))
+     (supertag-view-score  (:inherit default :foreground unspecified :weight bold) . (:inherit default :foreground unspecified :weight bold))
      (supertag-view-rule   (:foreground "#c5d3e3") . (:foreground "#2a3a4d"))))
   "Named role-face palettes for Supertag views.")
 
@@ -111,13 +110,37 @@
                               (t ,@base ,@light))
                        'face-defface-spec)))))
 
+(defvar-local supertag-view--local-palette nil
+  "Palette applied buffer-locally by `supertag-view-apply-palette-locally'.")
+
+(defun supertag-view-apply-palette-locally (name)
+  "Remap the shared role faces in the current buffer to palette NAME.
+The remapping is buffer-local, so two views can show different palettes
+at the same time.  Return NAME."
+  (let ((palette (assq name supertag-view-palettes)))
+    (unless palette
+      (user-error "Unknown Supertag view palette: %s" name))
+    (let ((dark-p (eq (frame-parameter nil 'background-mode) 'dark)))
+      ;; Drop this buffer's previous remapping of the role faces only.
+      (setq-local face-remapping-alist
+                  (cl-remove-if (lambda (entry)
+                                  (assq (car entry) (cdr palette)))
+                                face-remapping-alist))
+      (dolist (entry (cdr palette))
+        (let* ((face (car entry))
+               (light (cadr entry))
+               (dark (cddr entry)))
+          (face-remap-add-relative face (if dark-p dark light)))))
+    (setq-local supertag-view--local-palette name)
+    name))
+
 (defun supertag-view--set-palette (symbol value)
   "Set SYMBOL to VALUE and apply its role-face palette."
   (set-default symbol value)
   (supertag-view-apply-palette value))
 
 (defcustom supertag-view-palette 'paper
-  "Palette used by Supertag views."
+  "Palette used by Supertag views unless a view applies its own."
   :type '(choice (const paper) (const neon) (const ink) (const ocean))
   :set #'supertag-view--set-palette
   :group 'supertag)
@@ -168,25 +191,143 @@
   (with-eval-after-load 'meow
     (supertag-view--apply-modal-state mode)))
 
+(defvar-local supertag-view-helper-width-override nil
+  "Column width used by `supertag-view-helper-width' without a live window.
+Node View sets this while rendering into a buffer its side window has not
+shown yet; tests and render scripts may bind it to pin a pane width.")
+
+(defun supertag-view-helper-window ()
+  "Return the live window showing the current buffer, if any."
+  (let ((window (get-buffer-window (current-buffer) t)))
+    (and (window-live-p window) window)))
+
+(defun supertag-view-helper-width ()
+  "Return the current pane's usable width, or `fill-column' offscreen."
+  (max 12 (or (when-let* ((window (supertag-view-helper-window)))
+                (window-body-width window))
+              supertag-view-helper-width-override
+              fill-column)))
+
+(defun supertag-view-helper-display-capacity ()
+  "Return the pane's usable width in the units of `...-display-cost'.
+Pixels when a graphical window shows the buffer, display columns
+otherwise."
+  (let ((window (supertag-view-helper-window)))
+    (if (and window (fboundp 'string-pixel-width)
+             (display-graphic-p (window-frame window)))
+        (window-body-width window t)
+      (supertag-view-helper-width))))
+
+(defun supertag-view-helper-display-cost (string)
+  "Return STRING's rendered width in the units of the display capacity."
+  (let ((window (supertag-view-helper-window)))
+    (if (and window (fboundp 'string-pixel-width)
+             (display-graphic-p (window-frame window)))
+        (string-pixel-width string)
+      (string-width string))))
+
+(defun supertag-view-helper-clip (string &optional limit ellipsis)
+  "Return STRING clipped to LIMIT display units, keeping text properties.
+LIMIT defaults to one unit inside the pane capacity.  ELLIPSIS marks the
+cut only when nonblank text was dropped, so padding trims silently."
+  (let ((limit (or limit (max 1 (1- (supertag-view-helper-display-capacity)))))
+        (ellipsis (or ellipsis "…")))
+    (if (or (null string)
+            (<= (supertag-view-helper-display-cost string) limit))
+        string
+      (let ((cut (length string)))
+        (while (and (> cut 0)
+                    (> (supertag-view-helper-display-cost (substring string 0 cut))
+                       limit))
+          (setq cut (1- cut)))
+        (let* ((base (substring string 0 cut))
+               (suffix (if (string-empty-p (string-trim (substring string cut)))
+                           ""
+                         ellipsis)))
+          (while (and (> (length base) 0)
+                      (> (supertag-view-helper-display-cost (concat base suffix))
+                         limit))
+            (setq base (substring base 0 (1- (length base)))))
+          (concat base suffix))))))
+
+(defun supertag-view-helper-file-display-name (file)
+  "Return FILE's display name for a view metadata line.
+Denote names lose their `YYYYMMDDTHHMMSS--' prefix, their `__tags'
+suffix and the extension; other files keep the base name without
+extension.  Return nil when FILE has no usable base name."
+  (when-let* ((base (and (stringp file)
+                         (not (string-empty-p file))
+                         (file-name-nondirectory file))))
+    (let ((stem (file-name-sans-extension base)))
+      (if (string-match "\\`[0-9]\\{8\\}T[0-9]\\{6\\}--" stem)
+          (replace-regexp-in-string
+           "\\`[0-9]\\{8\\}T[0-9]\\{6\\}--\\|__.*\\'" "" stem)
+        stem))))
+
+(defun supertag-view-helper-wrap (text width limit)
+  "Normalize TEXT and wrap to WIDTH columns and at most LIMIT lines.
+Keep text properties, and mark omitted text with an ellipsis."
+  (let ((rest (string-trim
+               (replace-regexp-in-string "[[:space:]\n]+" " " text)))
+        lines)
+    (while (and (not (string-empty-p rest)) (< (length lines) limit))
+      (let* ((last (= (1+ (length lines)) limit))
+             (part (truncate-string-to-width rest width nil nil
+                                             (and last "…")))
+             (cut (length part)))
+        (unless (or last (= cut (length rest)))
+          (when (string-match " +[^ ]*\\'" part)
+            (when (> (match-beginning 0) (/ cut 2))
+              (setq cut (match-beginning 0)
+                    part (substring part 0 cut)))))
+        (push part lines)
+        (setq rest (if last "" (string-trim-left (substring rest cut))))))
+    (nreverse lines)))
+
 (defun supertag-view-helper-insert-section-chip (label count face)
-  "Insert a foldable section chip for LABEL, COUNT, and FACE."
-  (let ((start (point)))
-    (insert (propertize (format " %s / %02d " (upcase label) count) 'face face) "\n")
-    (put-text-property start (point) 'supertag-view-section t)))
+  "Insert a nonempty, foldable LABEL and COUNT band using FACE."
+  (when (> count 0)
+    ;; Callers historically inserted their own blank line; normalize rather
+    ;; than doubling it when using the new shared spacing contract.
+    (let ((end (point)))
+      (skip-chars-backward "\n")
+      (delete-region (point) end))
+    (insert "\n\n")
+    (let* ((start (point))
+           (width (supertag-view-helper-width))
+           (capacity (max 12 (1- (supertag-view-helper-display-capacity))))
+           (count-text (format "%02d " count))
+           (label-room (- capacity
+                           (supertag-view-helper-display-cost count-text)
+                           (supertag-view-helper-display-cost " / ")
+                           (supertag-view-helper-display-cost " ")))
+           (name (upcase label))
+           (shown (if (> (supertag-view-helper-display-cost name)
+                         (max 1 label-room))
+                      (supertag-view-helper-clip name (max 1 label-room))
+                    name))
+           (label-text (concat " " shown " / "))
+           (band (concat label-text count-text
+                         (make-string (max 0 (- (1- width)
+                                                (string-width label-text)
+                                                (length count-text)))
+                                      ?\s)))
+           (role (cond ((equal label "Property Candidates") 'supertag-view-chip3)
+                       ((equal label "Unlinked Mentions") 'supertag-view-chip2)
+                       (t face))))
+      (insert (propertize (supertag-view-helper-clip band capacity)
+                          'face role 'supertag-view-section t)
+              "\n")
+      (put-text-property start (point) 'supertag-view-section t))))
 
 (defun supertag-view-helper-insert-excerpt (text)
-  "Insert TEXT as a normalized, six-space indented entry excerpt.
-
-Blank TEXT inserts nothing.  Nonblank text is collapsed, limited to 200
-display columns with an ellipsis, and receives the shared excerpt face."
+  "Insert nonblank TEXT muted, six spaces in, on at most two lines."
   (when (and (stringp text) (not (string-empty-p (string-trim text))))
-    (let ((excerpt (truncate-string-to-width
-                    (replace-regexp-in-string "[[:space:]\n]+" " " (string-trim text))
-                    200 nil nil "…"))
-          (start (point)))
-      (insert "      " excerpt "\n")
-      (add-text-properties start (point)
-                           '(face supertag-view-excerpt wrap-prefix "      ")))))
+    (dolist (line (supertag-view-helper-wrap
+                   (org-link-display-format text) (- (supertag-view-helper-width) 7) 2))
+      (insert (propertize (supertag-view-helper-clip (concat "      " line))
+                          'face 'supertag-view-excerpt)
+              "\n"))))
 
 ;;; --- Value Formatting ---
 

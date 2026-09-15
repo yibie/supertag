@@ -803,9 +803,13 @@
    "components" '(progn
      (require (if before 'supertag-view-helper 'supertag-view-framework))
      (with-temp-buffer
+       (setq-local fill-column 72)
        (supertag-view-helper-insert-section-chip "References" 2 'supertag-view-chip1)
-       (should (equal (buffer-string) " REFERENCES / 02 \n"))
-       (should (get-text-property (point-min) 'supertag-view-section)))
+       (should (equal (buffer-string)
+                      (concat "\n\n REFERENCES / 02 " (make-string 54 ?\s) "\n")))
+       (goto-char (point-min))
+       (forward-line 2)
+       (should (get-text-property (point) 'supertag-view-section)))
      (with-temp-buffer
        (supertag-view-helper-insert-excerpt nil)
        (supertag-view-helper-insert-excerpt "  \n\t ")
@@ -815,7 +819,10 @@
        (should (string-prefix-p "      first second " (buffer-string)))
        (should (string-suffix-p "…\n" (buffer-string)))
        (should (eq (get-text-property (point-min) 'face) 'supertag-view-excerpt))
-       (should (equal (get-text-property (point-min) 'wrap-prefix) "      ")))
+       (should (= (count-lines (point-min) (point-max)) 2))
+       (dolist (line (split-string (buffer-string) "\n" t))
+         (should (string-prefix-p "      " line))
+         (should (<= (string-width line) fill-column))))
      (with-temp-buffer
        (insert "one\ntwo\n") (goto-char (point-min))
        (supertag-view-helper-highlight-current-line)
@@ -939,7 +946,9 @@
              (should-not (plist-get (gethash "document-node" supertag-ai--candidates) :candidates)))
            (with-temp-buffer
              (supertag-semantic-insert-section "document-node")
-             (should (string-match-p " SIMILAR / " (buffer-string)))
+             (should-not (text-property-not-all
+                          (point-min) (point-max) 'supertag-view-section nil))
+             (should-not (string-match-p " SIMILAR / " (buffer-string)))
              (should (string-match-p "Unavailable: Fixture pause" (buffer-string)))
              (goto-char (point-min)) (search-forward "[Retry]")
              (should (equal (button-get (button-at (1- (point))) 'supertag-semantic) "document-node")))
@@ -1181,3 +1190,21 @@
   (should (eq :node (supertag-ui--sanitize-type-input "node")))
   (should (eq (intern "::node") (supertag-ui--sanitize-type-input "::node")))
   (should-error (supertag-ui--sanitize-type-input 7) :type 'wrong-type-argument))
+
+(ert-deftest supertag-view-framework-file-display-name ()
+  "Denote file names lose their timestamp, tags and extension."
+  (require 'supertag-view-framework)
+  (should (equal "diary-2025"
+                 (supertag-view-helper-file-display-name
+                  "/notes/20260629T105208--diary-2025__diary.org")))
+  (should (equal "org-supertag"
+                 (supertag-view-helper-file-display-name
+                  "20260620T131132--org-supertag__emacs_project.org")))
+  (should (equal "note"
+                 (supertag-view-helper-file-display-name
+                  "/notes/20260101T010101--note.org")))
+  (should (equal "hangji__project"
+                 (supertag-view-helper-file-display-name "/notes/hangji__project.org")))
+  (should (equal "plain" (supertag-view-helper-file-display-name "plain.org")))
+  (should-not (supertag-view-helper-file-display-name nil))
+  (should-not (supertag-view-helper-file-display-name "")))

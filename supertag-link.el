@@ -820,16 +820,26 @@ When LINK-TYPE is nil, preserve the node's ordinary id or denote format."
      (path path)
      (t "Store node"))))
 
+(defun supertag-reference-service--node-date (node)
+  "Return NODE's stored date as YYYY-MM-DD, or nil."
+  (let ((stamp (or (supertag-reference-service--node-prop node :created-at)
+                   (supertag-reference-service--node-prop node :modified-at))))
+    (when stamp
+      (ignore-errors (format-time-string "%Y-%m-%d" stamp)))))
+
 (defun supertag-reference-service--clean-content (content)
-  "Return CONTENT normalized for compact contextual display."
-  (let ((text (or content "")))
-    ;; Keep user-facing descriptions and remove physical Org link syntax.
-    (setq text
-          (replace-regexp-in-string
-           "\\[\\[[^]]+\\]\\[\\([^]]+\\)\\]\\]" "\\1" text t))
-    (setq text
-          (replace-regexp-in-string
-           "\\[\\[\\([^]]+\\)\\]\\]" "\\1" text t))
+  "Return CONTENT as compact prose, without physical Org link syntax."
+  (let ((text (replace-regexp-in-string
+               org-link-bracket-re
+               (lambda (link)
+                 (let ((path (match-string 1 link))
+                       (description (match-string 2 link)))
+                   (or description
+                       (unless (string-prefix-p "id:" path t) path)
+                       "")))
+               (or content "") t t)))
+    ;; Malformed source text must not leak partial link delimiters either.
+    (setq text (replace-regexp-in-string "\\[\\[\\|\\]\\]" "" text t t))
     (string-trim (replace-regexp-in-string "[ \t\n\r]+" " " text))))
 
 (defun supertag-reference-service--linked-description (content target-node)
@@ -842,45 +852,69 @@ When LINK-TYPE is nil, preserve the node's ordinary id or denote format."
       (when (string-match regexp (or content ""))
         (match-string 1 content)))))
 
+(defun supertag-reference-service--snippet-adds-information-p
+    (text source-node target-node &optional description)
+  "Return non-nil when TEXT says more than a title or DESCRIPTION.
+TEXT that is blank, equals the source or target node title, or is nothing
+but the matched link's own DESCRIPTION adds nothing to an entry."
+  (let ((text (and (stringp text) (string-trim text)))
+        (description (and (stringp description) (string-trim description))))
+    (and (not (string-empty-p text))
+         (not (and description
+                   (not (string-empty-p description))
+                   (string-equal text description)))
+         (not (cl-some
+               (lambda (node)
+                 (let ((title (string-trim
+                               (or (supertag-reference-service-node-title node) ""))))
+                   (and (not (string-empty-p title))
+                        (string-equal text title))))
+               (list source-node target-node))))))
+
 (defun supertag-reference-service-context-snippet (source-node target-node)
-  "Return a compact excerpt from SOURCE-NODE centered on TARGET-NODE."
+  "Return cleaned prose from SOURCE-NODE's line linking to TARGET-NODE.
+Select the physical link's line before normalization, so neighbouring
+headlines never enter the excerpt; the link description stays in place
+inside the sentence.  Semantic references fall back to a line containing
+a target term.  An excerpt that only repeats an endpoint title or the
+matched link's own description adds nothing and is omitted.  Strip link
+syntax before length clipping."
   (let* ((case-fold-search t)
-         (raw-content
-          (supertag-reference-service--node-prop source-node :content))
-         (text (supertag-reference-service--clean-content raw-content))
-         (link-description
-          (supertag-reference-service--linked-description
-           raw-content target-node))
-         (terms (sort (if link-description
-                          (cl-adjoin
-                           link-description
-                           (supertag-reference-service-node-terms target-node)
-                           :test #'equal)
-                        (supertag-reference-service-node-terms target-node))
+         (raw (or (supertag-reference-service--node-prop source-node :content) ""))
+         (target-id (supertag-reference-service--node-prop target-node :id))
+         (terms (sort (supertag-reference-service-node-terms target-node)
                       (lambda (left right) (> (length left) (length right)))))
-         (case-fold-search t)
-         match)
+         (position 0)
+         match description)
+    ;; Prefer the actual destination over an earlier mention of its title.
+    (while (and (not match) (string-match org-link-bracket-re raw position))
+      (let ((begin (match-beginning 0)) (end (match-end 0))
+            (path (match-string 1 raw)))
+        (when (and target-id
+                   (member (downcase path)
+                           (list (downcase (format "id:%s" target-id))
+                                 (downcase (format "denote:%s" target-id)))))
+          (setq match (cons begin end)
+                description (match-string 2 raw)))
+        (setq position end)))
     (dolist (term terms)
-      (when (and (not match)
-                 (not (string-empty-p term))
-                 (string-match (regexp-quote term) text))
+      (when (and (not match) (not (string-empty-p term))
+                 (string-match (regexp-quote term) raw))
         (setq match (cons (match-beginning 0) (match-end 0)))))
-    (unless (string-empty-p text)
-      (let* ((limit (max 40 supertag-reference-context-length))
-             (match-start (or (car-safe match) 0))
-             (match-end (or (cdr-safe match) (min (length text) limit)))
-             (start (if match
-                        (max 0 (- match-start supertag-reference-context-before))
-                      0))
-             (end (min (length text) (+ start limit))))
-        ;; Ensure a late match remains visible when the initial right edge was
-        ;; clipped by the fixed excerpt length.
-        (when (> match-end end)
-          (setq end (min (length text) match-end)
-                start (max 0 (- end limit))))
-        (concat (if (> start 0) "…" "")
-                (string-trim (substring text start end))
-                (if (< end (length text)) "…" ""))))))
+    (unless match
+      (when (string-match "[^ \t\r\n]" raw)
+        (setq match (cons (match-beginning 0) (match-end 0)))))
+    (when match
+      (let* ((begin (or (cl-position ?\n raw :end (car match) :from-end t) -1))
+             (end (or (cl-position ?\n raw :start (cdr match)) (length raw)))
+             (text (supertag-reference-service--clean-content
+                    (substring raw (1+ begin) end)))
+             (limit (max 40 supertag-reference-context-length)))
+        (when (supertag-reference-service--snippet-adds-information-p
+               text source-node target-node description)
+          (if (> (length text) limit)
+              (concat (string-trim-right (substring text 0 (1- limit))) "…")
+            text))))))
 
 (defun supertag-reference-service-kind-label (kind)
   "Return a user-facing label for reference KIND."
@@ -922,6 +956,7 @@ DIRECTION is `:out' for referenced targets or `:in' for Backlink sources."
                         :title title
                         :location location
                         :file file
+                        :date (supertag-reference-service--node-date endpoint)
                         :position position
                         :snippet
                         (supertag-reference-service-context-snippet source target)
@@ -1748,7 +1783,10 @@ Returns the ID of the selected node to unlink."
              ", "))
 
 (defun supertag-view-reference--insert-card (item)
-  "Insert one magazine-style contextual reference ITEM."
+  "Insert one magazine-style contextual reference ITEM.
+An entry is the `→ title' line, one muted excerpt line when the excerpt
+service kept one that adds information, and one muted file/date line.
+Entries are separated by one blank line."
   (require 'supertag-view-framework)
   (let* ((node-id (or (plist-get item :node-id) (plist-get item :source-id)
                       (plist-get item :target-id)))
@@ -1760,6 +1798,16 @@ Returns the ID of the selected node to unlink."
          (details (string-join (delq nil (list location
                                                (unless (string-empty-p kind-summary) kind-summary)))
                                " | "))
+         (file (plist-get item :file))
+         (date (plist-get item :date))
+         (metadata (string-join
+                    (delq nil (list (supertag-view-helper-file-display-name file)
+                                    (and (stringp date) (not (string-empty-p date)) date)))
+                    " · "))
+         (snippet (plist-get item :snippet))
+         (excerpt (and snippet
+                       (car (supertag-view-helper-wrap
+                             snippet (- (supertag-view-helper-width) 7) 1))))
          (start (point)))
     (insert "  ")
     (insert-text-button title 'face 'supertag-view-entry 'follow-link t
@@ -1771,7 +1819,12 @@ Returns the ID of the selected node to unlink."
                                        (format "Jump to %s" title)
                                      (format "%s — %s" details title)))
     (insert "\n")
-    (supertag-view-helper-insert-excerpt (plist-get item :snippet))
+    (supertag-view-helper-insert-excerpt excerpt)
+    (unless (string-empty-p metadata)
+      (insert (propertize (supertag-view-helper-clip (concat "      " metadata))
+                          'face 'supertag-view-mute)
+              "\n"))
+    (insert "\n")
     (add-text-properties start (point)
                          `(line-spacing 0.15 supertag-reference-node-id ,node-id
                            supertag-reference-relation-ids ,(plist-get item :relation-ids)))))

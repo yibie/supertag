@@ -17,7 +17,9 @@
 (defmacro supertag-ai-test-with-request (&rest body)
   "Run BODY with captured REQUEST, isolated candidates and a stub transport."
   (declare (indent 0))
-  `(let ((supertag-ai--candidates (make-hash-table :test 'equal)) request)
+  `(let ((supertag-ai--candidates (make-hash-table :test 'equal)) request
+         ;; Keep Node View renders wide enough that section text is readable.
+         (supertag-view-node-side-size 0.8))
      (cl-letf (((symbol-function 'superchat-runtime-submit) #'ignore)
                ((symbol-function 'supertag-ai--submit)
                 (lambda (value) (setq request value) (list :run-id "run" :turn-id "turn"))))
@@ -347,7 +349,7 @@
         (should (string-match-p "      Invented quote" (buffer-string)))
         (should (string-match-p "      Beyond sent body" (buffer-string)))
         (should-not (string-match-p "⚠ Not found in the body\\|unverified:" (buffer-string)))
-        (should-not (string-match-p "      [[:space:]]*\n" (buffer-string)))))))
+        (should-not (string-match-p "^      [[:space:]]*\n" (buffer-string)))))))
 
 (ert-deftest supertag-ai-late-response-cannot-replace-a-new-request ()
   (supertag-document-test-with-vault

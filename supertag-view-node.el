@@ -41,8 +41,20 @@
 (defvar-local supertag-view-node--current-node-id nil
   "The ID of the node currently displayed in the view buffer.")
 
+(defvar-local supertag-view-node--current-file nil
+  "Source filename of the currently rendered state.")
+
 (defvar-local supertag-view-node--current-title nil
   "The title currently displayed in the Node View.")
+
+(defvar-local supertag-view-node--rendered-width nil
+  "Pane width the current Node View text was laid out for.")
+
+(defvar supertag-view-node--resize-timer nil
+  "Debounce timer for re-rendering Node View after a pane resize.")
+
+(defconst supertag-view-node--section-entry-limit 8
+  "Entries shown before a section collapses the rest behind `+ N more'.")
 
 ;; Side-window presenter + follow support
 (defconst supertag-view-node--buffer-name "*Supertag Node*")
@@ -139,6 +151,10 @@ Returned keys (current contract):
 
 (defun supertag-view-node--render-view (state)
   "Render Node view STATE in the current buffer."
+  (setq-local supertag-view-helper-width-override
+              (or (when-let* ((window (supertag-view-node--live-window)))
+                    (window-body-width window))
+                  (supertag-view-node--estimated-width)))
   (if (plist-get state :node)
       (supertag-view-node--render-from-state state)
     (let ((inhibit-read-only t)
@@ -281,6 +297,11 @@ You can customize this list to match your org-mode TODO keywords."
   :type '(repeat string)
   :group 'supertag)
 
+(defcustom supertag-view-node-palette 'paper
+  "Palette applied buffer-locally in the Node View."
+  :type '(choice (const paper) (const neon) (const ink) (const ocean))
+  :group 'supertag)
+
 ;;; --- Mode Definition ---
 
 (defvar supertag-view-node-mode-map
@@ -295,7 +316,8 @@ You can customize this list to match your org-mode TODO keywords."
     (define-key map (kbd "C-v") #'scroll-up-command)
     (define-key map (kbd "M-<") #'beginning-of-buffer)
     (define-key map (kbd "M->") #'end-of-buffer)
-    (define-key map (kbd "TAB") #'supertag-view-node-toggle-section)
+    (define-key map (kbd "TAB") #'supertag-view-node-next-button-or-fold)
+    (define-key map (kbd "<backtab>") #'backward-button)
     (define-key map (kbd "g") #'supertag-view-node-refresh)
     (define-key map (kbd "q") #'supertag-view-node--hide-side)
     (define-key map (kbd "h") #'describe-mode)
@@ -307,16 +329,22 @@ You can customize this list to match your org-mode TODO keywords."
 
 \{supertag-view-node-mode-map}
 
-TAB folds the section at point.  g refreshes, h describes this mode, and q
-closes the Node View.  RET and mouse-1 visit entry targets."
+TAB folds a chip or advances to a button; S-TAB goes back.
+g refreshes, h describes this mode, and q closes the Node View.
+RET and mouse-1 visit entry targets."
   :group 'supertag
   :keymap supertag-view-node-mode-map
   (setq-local buffer-read-only t)
+  (setq-local truncate-lines t)
+  (setq-local word-wrap nil)
+  (supertag-view-apply-palette-locally supertag-view-node-palette)
+  (when (fboundp 'meow-mode) (meow-mode -1))
+  (when (fboundp 'evil-local-mode) (evil-local-mode -1))
   (setq-local cursor-type 'box)
   (setq-local line-spacing 0.1)
   (setq-local mode-line-format
               '(" " (:eval (or supertag-view-node--current-title "Node"))
-                "   palette: " (:eval (symbol-name supertag-view-palette)))))
+                "   palette: " (:eval (symbol-name supertag-view-node-palette)))))
 
 (supertag-view-register-modal-state 'supertag-view-node-mode)
 
@@ -363,32 +391,85 @@ closes the Node View.  RET and mouse-1 visit entry targets."
       (error nil))))
 
 (defun supertag-view-node--insert-masthead (state)
-  "Insert the masthead from Node view STATE."
+  "Insert the classic masthead: tag chips, file name and date."
   (let* ((node (plist-get state :node))
          (tags (sort (copy-sequence (or (plist-get state :tags) '())) #'string<))
          (file (plist-get node :file))
-         (date (supertag-view-node--stored-date node)))
-    (insert "\n")
-    (dolist (tag-id tags)
-      (insert (propertize (format " %s " (upcase (supertag-view-node--tag-display-name tag-id)))
-                          'face 'supertag-view-chip1
-                          'supertag-context t 'type :tag 'tag-id tag-id 'id tag-id)
-              " "))
-    (when tags (insert " "))
-    (when file
-      (insert (propertize (file-name-nondirectory file) 'face 'supertag-view-accent)))
-    (when date
-      (insert (propertize (format "  /  %s" date) 'face 'supertag-view-mute)))
-    (insert "\n\n")))
+         (date (supertag-view-node--stored-date node))
+         (chips (mapconcat
+                 (lambda (tag-id)
+                   (concat (propertize
+                            (format " %s "
+                                    (upcase (replace-regexp-in-string
+                                             " *[›/] *" " / "
+                                             (supertag-view-node--tag-display-name tag-id))))
+                            'face 'supertag-view-chip1
+                            'supertag-context t 'type :tag 'tag-id tag-id 'id tag-id)
+                           " "))
+                 tags
+                 ""))
+         (prefix (concat chips (if tags " " "")))
+         (display-name (supertag-view-helper-file-display-name file))
+         (file-part (and display-name (propertize display-name
+                                                  'face 'supertag-view-accent)))
+         (date-part (and date (propertize (format "  /  %s" date)
+                                          'face 'supertag-view-mute)))
+         (limit (max 8 (1- (supertag-view-helper-display-capacity))))
+         (room (- limit
+                  (supertag-view-helper-display-cost prefix)
+                  (supertag-view-helper-display-cost (or date-part ""))))
+         (line (concat prefix
+                       (when file-part
+                         (if (> (supertag-view-helper-display-cost file-part) room)
+                             (supertag-view-helper-clip file-part (max 1 room))
+                           file-part))
+                       date-part)))
+    ;; Keep the classic line inside the pane; the date survives longest.
+    (when (> (supertag-view-helper-display-cost line) limit)
+      (setq line (supertag-view-helper-clip line limit)))
+    (insert "\n" line "\n\n")))
+
+(defun supertag-view-node--wrap-title (title capacity)
+  "Return TITLE split into lines that fit CAPACITY display units.
+At least one line is returned and no text is ever dropped."
+  (let ((words (split-string (string-trim title) "[[:space:]\n]+"))
+        (lines nil)
+        (current ""))
+    (dolist (word words)
+      (let ((candidate (if (string-empty-p current) word (concat current " " word))))
+        (if (<= (supertag-view-helper-display-cost candidate) capacity)
+            (setq current candidate)
+          (unless (string-empty-p current)
+            (push current lines))
+          (setq current "")
+          ;; A single word wider than the pane is split, never truncated.
+          (dolist (char (string-to-list word))
+            (let ((piece (concat current (char-to-string char))))
+              (if (or (string-empty-p current)
+                      (<= (supertag-view-helper-display-cost piece) capacity))
+                  (setq current piece)
+                (push current lines)
+                (setq current (char-to-string char))))))))
+    (unless (string-empty-p current)
+      (push current lines))
+    (nreverse (or lines (list "")))))
 
 (defun supertag-view-node--insert-panel (state)
-  "Insert STATE's title in a panel."
+  "Insert STATE's full title on the panel, wrapped but never truncated."
   (let* ((node (plist-get state :node))
          (title (supertag-view-node--strip-todo-keyword
                  (or (plist-get node :title) "Untitled Node")))
+         (capacity (max 8 (- (supertag-view-helper-display-capacity)
+                             (supertag-view-helper-display-cost "  ")
+                             1)))
          (start (point)))
     (setq supertag-view-node--current-title title)
-    (insert "\n  " (propertize title 'face 'supertag-view-title) "\n\n")
+    (insert "\n")
+    (dolist (line (if (<= (supertag-view-helper-display-cost title) capacity)
+                      (list title)
+                    (supertag-view-node--wrap-title title capacity)))
+      (insert "  " (propertize line 'face 'supertag-view-title) "\n"))
+    (insert "\n")
     (add-face-text-property start (point) 'supertag-view-panel t)))
 
 (defun supertag-view-node--action-open (button)
@@ -407,7 +488,6 @@ closes the Node View.  RET and mouse-1 visit entry targets."
 (defun supertag-view-node--insert-actions (state)
   "Insert the action row for STATE."
   (let ((node-id (plist-get state :id)) (tags (plist-get state :tags)))
-    (insert "\n")
     (insert-text-button "[OPEN]" 'face 'widget-button 'follow-link t
                         'action #'supertag-view-node--action-open
                         'supertag-node-id node-id)
@@ -418,7 +498,7 @@ closes the Node View.  RET and mouse-1 visit entry targets."
     (insert "  ")
     (insert-text-button "[TAG MANAGER]" 'face 'widget-button 'follow-link t
                         'action #'supertag-view-node--action-tags)
-    (insert "\n")))
+    (insert "\n\n")))
 
 (defun supertag-view-node--insert-node-link-line (node-id &optional relation)
   "Insert a clickable relation entry for NODE-ID and optional RELATION."
@@ -453,15 +533,149 @@ closes the Node View.  RET and mouse-1 visit entry targets."
         (supertag-view-node--insert-node-link-line
          (plist-get relation :from) (format "← %s" (plist-get relation :relation-name)))))))
 
+(defun supertag-view-node--visible-char-before (position)
+  "Return the last visible character before POSITION, or nil."
+  (let ((index (1- position))
+        result)
+    (while (and (>= index (point-min)) (not result))
+      (if (invisible-p index)
+          (setq index (1- index))
+        (setq result (char-after index))))
+    result))
+
 (defun supertag-view-node--insert-footer (node-id)
-  "Insert NODE-ID's magazine footer."
-  (insert "\n"
-          (propertize (string-join (make-list 11 "+ .") " ") 'face 'supertag-view-rule)
-          "\n"
-          (propertize (format "SUPERTAG / NODE  /  %s"
-                              (upcase (substring (or node-id "") 0 (min 8 (length (or node-id ""))))))
-                      'face 'supertag-view-mute)
-          "\n"))
+  "Insert NODE-ID's bounded magazine colophon."
+  (let* ((file (file-name-nondirectory (or supertag-view-node--current-file "")))
+         (width (supertag-view-helper-width))
+         (prefix (upcase (substring (or node-id "") 0 (min 8 (length (or node-id "")))))))
+    (let* ((end (point)))
+      (skip-chars-backward "\n")
+      (delete-region (point) end))
+    (insert (if (eq (supertag-view-node--visible-char-before (point)) ?\n)
+                "\n"
+              "\n\n")
+            (propertize "+ . + . + ." 'face 'supertag-view-rule
+                        'supertag-view-colophon t) "\n"
+            (propertize
+             (supertag-view-helper-clip
+              (concat "01 / NODE  "
+                      (truncate-string-to-width file (max 1 (- width 17 (length prefix)))
+                                                nil nil "…")
+                      "  ·  " prefix))
+             'face 'supertag-view-mute)
+            "\n" (propertize "SUPERTAG / NODE" 'face 'supertag-view-mute) "\n")))
+
+(defun supertag-view-node--insert-field-section (renderer node-id)
+  "Insert RENDERER's output for NODE-ID, bounding entry rows.
+Adapt feature-owned renderers locally without changing their interfaces."
+  (let ((start (point)))
+    (funcall renderer node-id)
+    (if (string-empty-p (string-trim (buffer-substring-no-properties start (point))))
+        (delete-region start (point))
+      (save-excursion
+        (goto-char start)
+        (while (< (point) (point-max))
+          (let* ((begin (line-beginning-position))
+                 (end (line-end-position))
+                 (entry (text-property-any begin end 'face 'supertag-view-entry)))
+            (when entry
+              ;; Feature renderers own the buttons; retain their action and
+              ;; context properties while displaying Org link descriptions.
+              (let* ((button (button-at entry))
+                     (finish (if button (button-end button) end))
+                     (properties (text-properties-at entry))
+                     (title (org-link-display-format
+                             (buffer-substring-no-properties entry finish))))
+                (goto-char entry)
+                (delete-region entry finish)
+                (insert (apply #'propertize title properties)))
+              (goto-char begin)
+              (when (looking-at "  ")
+                (delete-char 2)
+                (insert "→ ")))
+            (goto-char begin)
+            (let ((line (buffer-substring begin (line-end-position))))
+              (unless (<= (supertag-view-helper-display-cost line)
+                          (1- (supertag-view-helper-display-capacity)))
+                (delete-region begin (line-end-position))
+                (insert (supertag-view-helper-clip line))))
+            (forward-line 1)))))))
+
+(defun supertag-view-node--space-sections ()
+  "Put one blank line between each section band and its first entry."
+  (save-excursion
+    (goto-char (point-min))
+    (while (< (point) (point-max))
+      (when (get-text-property (point) 'supertag-view-section)
+        (let ((next (save-excursion (forward-line 1) (point))))
+          (when (and (< next (point-max))
+                     (not (eq (char-after next) ?\n)))
+            (goto-char next)
+            (insert "\n"))))
+      (forward-line 1))))
+
+(defun supertag-view-node--section-spans ()
+  "Return one (CONTENT-START . CONTENT-END) span per section band."
+  (let (bands)
+    (save-excursion
+      (goto-char (point-min))
+      (while (< (point) (point-max))
+        (when (get-text-property (point) 'supertag-view-section)
+          (push (line-beginning-position) bands))
+        (forward-line 1)))
+    (let ((bands (nreverse bands)))
+      (cl-loop for band in bands
+               for next in (append (cdr bands) (list (point-max)))
+               collect (cons (save-excursion
+                               (goto-char band)
+                               (forward-line 1)
+                               (point))
+                             next)))))
+
+(defun supertag-view-node--cap-section (start end)
+  "Hide entries past the limit in [START,END) behind a `+ N more' button."
+  (let (entries)
+    (save-excursion
+      (goto-char start)
+      (while (< (point) end)
+        (when (text-property-any (line-beginning-position)
+                                 (min (line-end-position) end)
+                                 'face 'supertag-view-entry)
+          (push (line-beginning-position) entries))
+        (forward-line 1)))
+    (setq entries (nreverse entries))
+    (let ((hidden-count (- (length entries) supertag-view-node--section-entry-limit)))
+      (when (> hidden-count 0)
+        (goto-char (nth supertag-view-node--section-entry-limit entries))
+        (let* (;; Keep the blank line in front of the next section band, so a
+               ;; capped section still shows one empty line after `+ N more'.
+               (end-marker (copy-marker
+                            (if (and (> end (point-min))
+                                     (eq (char-before end) ?\n))
+                                (1- end)
+                              end)))
+               (from (copy-marker (point)))
+               (button (insert-text-button
+                        (format "+ %d more" hidden-count)
+                        'face 'supertag-view-mute
+                        'follow-link t
+                        'help-echo (format "Expand %d more entries" hidden-count)))
+               (to (progn (insert "\n") (copy-marker (point))))
+               (overlay (make-overlay to end-marker)))
+          (overlay-put overlay 'supertag-view-node-overflow t)
+          (overlay-put overlay 'invisible t)
+          (overlay-put overlay 'evaporate t)
+          (button-put button 'action
+                      (lambda (_button)
+                        (let ((inhibit-read-only t))
+                          (delete-overlay overlay)
+                          (delete-region from to)))))))))
+
+(defun supertag-view-node--cap-sections ()
+  "Cap every section at the entry limit with an expandable `+ N more' line."
+  (save-excursion
+    (dolist (span (reverse (supertag-view-node--section-spans)))
+      (supertag-view-node--cap-section (car span) (cdr span)))))
 
 (defun supertag-view-node--next-section-start (from)
   "Return the next section-chip position after FROM, or `point-max'."
@@ -471,7 +685,16 @@ closes the Node View.  RET and mouse-1 visit entry targets."
       (when (and (< position (point-max))
                  (get-text-property position 'supertag-view-section))
         (setq next position)))
-    (or next (point-max))))
+    (or next
+        (text-property-any from (point-max) 'supertag-view-colophon t)
+        (point-max))))
+
+(defun supertag-view-node-next-button-or-fold ()
+  "Fold on a section chip; otherwise move to the next button."
+  (interactive)
+  (if (get-text-property (line-beginning-position) 'supertag-view-section)
+      (supertag-view-node-toggle-section)
+    (forward-button 1 t t)))
 
 (defun supertag-view-node-toggle-section ()
   "Fold or unfold the section whose chip is at point."
@@ -501,20 +724,24 @@ closes the Node View.  RET and mouse-1 visit entry targets."
          (node-data (plist-get state :node))
          (inhibit-read-only t))
     (erase-buffer)
-    (setq supertag-view-node--current-node-id node-id)
+    (setq supertag-view-node--current-node-id node-id
+          supertag-view-node--current-file (plist-get node-data :file))
     (setq-local line-spacing 0.1)
     (when node-data
       (supertag-view-node--insert-masthead state)
       (supertag-view-node--insert-panel state)
       (supertag-view-node--insert-actions state)
-      (supertag-view-reference-insert-sections node-id)
-      (supertag-ai-insert-section node-id)
+      (supertag-view-node--insert-field-section #'supertag-view-reference-insert-sections node-id)
+      (supertag-view-node--insert-field-section #'supertag-ai-insert-section node-id)
       (when (supertag-concept-node-p node-data)
-        (supertag-view-mention-insert-section node-id))
-      (supertag-semantic-insert-section node-id)
-      (supertag-view-node--insert-named-links-section node-id)
+        (supertag-view-node--insert-field-section #'supertag-view-mention-insert-section node-id))
+      (supertag-view-node--insert-field-section #'supertag-semantic-insert-section node-id)
+      (supertag-view-node--insert-field-section #'supertag-view-node--insert-named-links-section node-id)
+      (supertag-view-node--space-sections)
+      (supertag-view-node--cap-sections)
       (supertag-view-node--insert-footer node-id)
       (supertag-view-node--activate-links-in-buffer))
+    (setq-local supertag-view-node--rendered-width (supertag-view-helper-width))
     (goto-char (point-min))))
 
 ;;; --- Link Activation ---
@@ -533,7 +760,7 @@ closes the Node View.  RET and mouse-1 visit entry targets."
 
         (add-text-properties (match-beginning 0) (match-end 0)
                              `(display ,desc
-                               face org-link
+                               face supertag-view-entry
                                keymap ,map
                                help-echo ,(format "Jump to node ID: %s" id)))))))
 
@@ -632,5 +859,51 @@ closes the Node View.  RET and mouse-1 visit entry targets."
 ;; Register the hook if available (Emacs 27+)
 (when (boundp 'window-selection-change-functions)
   (add-hook 'window-selection-change-functions #'supertag-view-node--on-window-selection-change))
+
+;;; --- Pane Resize ---
+
+(defun supertag-view-node--estimated-width ()
+  "Return the pane width the configured Node View side window requests."
+  (let ((frame-width (max 1 (frame-width))))
+    (if (memq supertag-view-node-side '(left right))
+        (let ((fraction (if (floatp supertag-view-node-side-size)
+                            supertag-view-node-side-size
+                          (/ (float (or supertag-view-node-side-size 0))
+                             frame-width))))
+          (max 12 (round (* frame-width (min 0.9 (max 0.1 fraction))))))
+      (max 12 frame-width))))
+
+(defun supertag-view-node--live-window ()
+  "Return a live window showing the current buffer, if any."
+  (let ((window (get-buffer-window (current-buffer) t)))
+    (and (window-live-p window) window)))
+
+(defun supertag-view-node--rerender-on-resize (buffer)
+  "Refresh Node View BUFFER when its pane still exists."
+  (when (buffer-live-p buffer)
+    (with-current-buffer buffer
+      (when (and (derived-mode-p 'supertag-view-node-mode)
+                 supertag-view--instance
+                 (supertag-view-node--live-window))
+        (supertag-view-refresh buffer)))))
+
+(defun supertag-view-node--schedule-rerender (buffer)
+  "Debounce a resize refresh of Node View BUFFER."
+  (when (timerp supertag-view-node--resize-timer)
+    (cancel-timer supertag-view-node--resize-timer))
+  (setq supertag-view-node--resize-timer
+        (run-with-timer 0.1 nil #'supertag-view-node--rerender-on-resize buffer)))
+
+(defun supertag-view-node--on-window-resize (&rest _)
+  "Re-render Node View when its pane width no longer matches the render."
+  (when-let* ((buffer (supertag-view-node--buffer)))
+    (with-current-buffer buffer
+      (when-let* ((window (supertag-view-node--live-window)))
+        (unless (equal (window-body-width window)
+                       supertag-view-node--rendered-width)
+          (supertag-view-node--schedule-rerender buffer))))))
+
+(add-hook 'window-size-change-functions #'supertag-view-node--on-window-resize)
+(add-hook 'window-configuration-change-hook #'supertag-view-node--on-window-resize)
 
 ;;; supertag-view-node.el ends here

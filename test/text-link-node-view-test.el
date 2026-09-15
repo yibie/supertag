@@ -150,15 +150,15 @@
       (supertag-view-node-mode)
       (supertag-view-node--render-from-state
        (supertag-view-build-node-state "source-id"))
-      (should (string-match-p "  Target\n      supports →" (buffer-string)))
-      (should (string-match-p "  Target\n      opposes →" (buffer-string)))
+      (should (string-match-p "→ Target\n      supports →" (buffer-string)))
+      (should (string-match-p "→ Target\n      opposes →" (buffer-string)))
       (should-not (string-match-p "Typed Links" (buffer-string))))
     (with-temp-buffer
       (supertag-view-node-mode)
       (supertag-view-node--render-from-state
        (supertag-view-build-node-state "target-id"))
-      (should (string-match-p "  Source\n      ← supports" (buffer-string)))
-      (should (string-match-p "  Source\n      ← opposes" (buffer-string))))))
+      (should (string-match-p "→ Source\n      ← supports" (buffer-string)))
+      (should (string-match-p "→ Source\n      ← opposes" (buffer-string))))))
 
 (ert-deftest supertag-text-link-ordinary-create-count-ignores-named-existing ()
   "An existing named edge does not hide creation of an ordinary reference."

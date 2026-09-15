@@ -9,6 +9,8 @@
   (declare (indent 0))
   `(supertag-document-test-with-vault
     (let ((supertag-semantic-enabled t)
+          ;; Keep Node View renders wide enough that section text is readable.
+          (supertag-view-node-side-size 0.8)
           (supertag-semantic--vectors (make-hash-table :test 'equal))
           (supertag-semantic--dirty (make-hash-table :test 'equal))
           (supertag-semantic--context nil) (supertag-semantic--dim nil)
@@ -275,8 +277,10 @@
                (lambda (_) (insert "MENTION-SECTION\n"))))
       (let ((view (with-current-buffer (find-file-noselect file) (supertag-view-node-open "document-node"))))
         (with-current-buffer view
+          ;; The zero-count status band is omitted by design; the live status
+          ;; line still follows the mention section.
           (should (< (string-match "MENTION-SECTION" (buffer-string))
-                     (string-match "SIMILAR" (buffer-string))))))))))
+                     (string-match "Computing" (buffer-string))))))))))
 
 (ert-deftest supertag-semantic-cold-endpoint-failure-writes-no-data ()
   (supertag-semantic-test-with-index
@@ -773,7 +777,9 @@ This exercises the context seam with real Store events, not vault activation."
               (setq button (button-at (1- (point))))
               (should (equal "candidate" (get-text-property (1- (point)) 'supertag-node-id)))
               (should (search-forward "      Orange orchard harvest." nil t))
-              (should (search-forward "Second preview line Third preview line" nil t))
+              (should (search-forward-regexp
+                       "Second[[:space:]]+preview[[:space:]]+line[[:space:]]+Third[[:space:]]+preview[[:space:]]+line"
+                       nil t))
               (should (search-forward "Fourth hidden line" nil t))
               (goto-char (point-min))
               (should (search-forward "Fallback" nil t))

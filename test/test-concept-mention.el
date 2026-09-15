@@ -18,6 +18,7 @@
 (require 'supertag-services-sync)
 (require 'supertag-concept)
 (require 'supertag-link)
+(require 'supertag-mention)
 
 (defmacro concept-test--with-env (&rest body)
   "Run BODY with an isolated store and temp directory."
@@ -274,6 +275,117 @@
           (should (equal (buffer-string) before))
           (goto-char (point-min))
           (should-not (org-entry-get nil "ID")))))))
+
+
+;;; Unlinked mentions: one card per source, capped per source, links excluded.
+
+(defun concept-test--mention-node (tmp name id title body)
+  "Write and project one identified source node to NAME under TMP."
+  (let ((file (expand-file-name name tmp)))
+    (with-temp-file file
+      (insert (format "* %s\n:PROPERTIES:\n:ID: %s\n:END:\n%s\n" title id body)))
+    (with-current-buffer (find-file-noselect file)
+      (org-mode) (goto-char (point-min)) (supertag-node-sync-at-point))
+    file))
+
+(defun concept-test--mention-target (tmp)
+  "Write the mention target node for the current test under TMP."
+  (concept-test--mention-node tmp "target.org" "pi" "Pi" "Target body"))
+
+(defun concept-test--mention-text (target-id &optional width)
+  "Render the unlinked mention section for TARGET-ID as text."
+  (let ((supertag-view-helper-width-override (or width 120)))
+    (with-temp-buffer
+      (supertag-view-mention-insert-section target-id)
+      (buffer-string))))
+
+(defun concept-test--count (needle text)
+  "Return how often NEEDLE appears in TEXT."
+  (let ((start 0) (count 0))
+    (while (string-match (regexp-quote needle) text start)
+      (setq count (1+ count) start (match-end 0)))
+    count))
+
+(defun concept-test--mention-sources (target-id)
+  "Return distinct mention source ids for TARGET-ID."
+  (delete-dups
+   (mapcar (lambda (candidate) (plist-get candidate :source-id))
+           (supertag-mention-service-find target-id))))
+
+(ert-deftest mention-section-groups-one-card-per-source ()
+  "Several occurrences of one source render one card with a `+N more' note."
+  (concept-test--with-env
+    (concept-test--mention-target tmp)
+    (concept-test--mention-node
+     tmp "a-many.org" "many-src" "Many Src"
+     "第一处 Pi 出现。然后是第二处 Pi，还有第三处 Pi 在这里。")
+    (concept-test--mention-node tmp "b-one.org" "one-src" "One Src" "只有一处 Pi 提及。")
+    (supertag-mention-service-clear-cache)
+    (let ((text (concept-test--mention-text "pi")))
+      ;; The chip counts sources, not occurrences.
+      (should (string-match-p " UNLINKED MENTIONS / 02 " text))
+      (should (= 2 (concept-test--count "[Link]" text)))
+      (should (= 1 (concept-test--count "Many Src" text)))
+      (should (= 1 (concept-test--count "+2 more" text)))
+      (should (= 0 (concept-test--count "+1 more" text)))
+      (should (eq 'supertag-view-mute
+                  (get-text-property (string-match "+2 more" text) 'face text)))
+      ;; First-appearance order, both sources present.
+      (should (< (string-match "Many Src" text) (string-match "One Src" text))))))
+
+(ert-deftest mention-grouped-card-links-the-first-occurrence-only ()
+  "[Link] on a grouped card links one occurrence; the rest stay plain text."
+  (concept-test--with-env
+    (concept-test--mention-target tmp)
+    (let ((file (concept-test--mention-node
+                 tmp "a-many.org" "many-src" "Many Src"
+                 "第一处 Pi 出现。然后是第二处 Pi，还有第三处 Pi 在这里。")))
+      (supertag-mention-service-clear-cache)
+      (let ((supertag-view-helper-width-override 120))
+        (with-temp-buffer
+          (supertag-view-mention-insert-section "pi")
+          (goto-char (point-min))
+          (search-forward "[Link]")
+          (button-activate (button-at (1- (point))))))
+      (let ((disk (with-temp-buffer
+                    (insert-file-contents file)
+                    (buffer-string))))
+        (should (string-match-p "第一处 \\[\\[id:pi\\]\\[Pi\\]\\] 出现" disk))
+        (should (string-match-p "第二处 Pi" disk))
+        (should (string-match-p "第三处 Pi" disk))))))
+
+(ert-deftest mention-cap-counts-distinct-sources ()
+  "The cap admits whole sources instead of hiding later ones."
+  (concept-test--with-env
+    (concept-test--mention-target tmp)
+    (concept-test--mention-node
+     tmp "a-many.org" "many-src" "Many Src"
+     "第一处 Pi 出现。然后是第二处 Pi，还有第三处 Pi 在这里。")
+    (concept-test--mention-node tmp "b-one.org" "one-src" "One Src" "只有一处 Pi 提及。")
+    (supertag-mention-service-clear-cache)
+    (let ((supertag-mention-max-results 1))
+      (should (equal '("many-src") (concept-test--mention-sources "pi")))
+      ;; All occurrences of the admitted source are kept.
+      (should (= 3 (length (supertag-mention-service-find "pi")))))
+    (let ((supertag-mention-max-results 2))
+      (should (equal '("many-src" "one-src") (concept-test--mention-sources "pi")))
+      (should (= 4 (length (supertag-mention-service-find "pi")))))))
+
+(ert-deftest mention-excludes-sources-that-already-link-the-target ()
+  "A body or heading Org link means the source is not an unlinked mention."
+  (concept-test--with-env
+    (concept-test--mention-target tmp)
+    (concept-test--mention-node
+     tmp "b-body.org" "body-src" "Body Src" "正文 [[id:pi][Pi]] 与后面的 Pi 提及。")
+    (concept-test--mention-node
+     tmp "c-heading.org" "heading-src" "标题 [[id:pi][Pi]] 链接" "正文提到 Pi。")
+    (concept-test--mention-node tmp "d-plain.org" "plain-src" "Plain Src" "只有一处 Pi 提及。")
+    (supertag-mention-service-clear-cache)
+    (should (equal '("plain-src") (concept-test--mention-sources "pi")))
+    (let ((text (concept-test--mention-text "pi")))
+      (should (string-match-p " UNLINKED MENTIONS / 01 " text))
+      (should-not (string-match-p "Body Src" text))
+      (should-not (string-match-p "标题" text)))))
 
 (provide 'test-concept-mention)
 ;;; test-concept-mention.el ends here

@@ -5,12 +5,20 @@ possible reference into a stored fact prematurely.
 
 For the current Node View target, Supertag scans direct source-node content for
 the target title and aliases.  It excludes existing Org links, source/example
-blocks, fixed-width text, inline code, and verbatim regions.  Chinese terms do
-not use inappropriate ASCII word-boundary rules; ASCII identifiers do.
+blocks, fixed-width text, inline code, and verbatim regions.  It also skips a
+source node that already links the target anywhere, including a link written in
+that node's heading.  Chinese terms do not use inappropriate ASCII word-boundary
+rules; ASCII identifiers do.
+
+Node View shows one card per source node: the source title, the excerpt of the
+first occurrence, and a muted `+N more` note when the source mentions the target
+again.  The section count is the number of source nodes, and
+`supertag-mention-max-results` caps that number, so one noisy source can no
+longer hide other sources.
 
 Each candidate provides:
 
-- **Link** — replace one exact occurrence with a canonical Org ID link;
+- **Link** — replace the card's first occurrence with a canonical Org ID link;
 - **Link all in node** — replace all live occurrences in that source node;
 - **Ignore in node** — store a source-owned `SUPERTAG_IGNORE_MENTIONS` Org
   property on the source heading.

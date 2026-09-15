@@ -33,7 +33,8 @@
   :group 'supertag-mention)
 
 (defcustom supertag-mention-max-results 300
-  "Maximum unlinked mention candidates returned for one target node."
+  "Maximum distinct source nodes listed for one target node.
+Once a source is admitted, all of its occurrences are kept."
   :type 'integer
   :group 'supertag-mention)
 
@@ -356,17 +357,39 @@ terms win.  Existing Org links and literal/code regions are excluded."
            (< left-position right-position))
           (t (string< (car left) (car right)))))))))
 
+(defun supertag-mention-service--links-target-p (source-id target-id source)
+  "Return non-nil when SOURCE-ID already links TARGET-ID through Org.
+
+Body links are projected as `:ref-to' and Document Link relations.  A link
+written in the heading belongs to the stored title instead of the node
+content, so the `[[id:TARGET]' form is matched there as a fallback."
+  (or (member target-id
+              (supertag-mention-service--node-prop source :ref-to))
+      (cl-some #'supertag-relation-document-link-p
+               (supertag-relation-find-between
+                source-id target-id :reference :document-link))
+      (let ((title (or (supertag-mention-service--node-prop source :raw-value)
+                       (supertag-mention-service--node-prop source :title))))
+        (and (stringp title)
+             (string-match-p
+              (concat "\\[\\[id:" (regexp-quote target-id) "[]\\[]")
+              title)))))
+
 (defun supertag-mention-service--find-uncached (target-id target terms)
-  "Compute mention candidates for TARGET-ID, TARGET, and normalized TERMS."
+  "Compute mention candidates for TARGET-ID, TARGET, and normalized TERMS.
+The result cap counts distinct sources; every occurrence of an admitted
+source is returned so callers can still link or ignore exact occurrences."
   (let (results
-        (count 0))
+        (sources 0))
     (catch 'limit-reached
       (dolist (pair (supertag-mention-service--source-nodes))
         (let ((source-id (car pair))
               (source (cdr pair)))
           (when (and (not (equal source-id target-id))
                      (not (supertag-mention-service-ignored-p
-                           source target-id)))
+                           source target-id))
+                     (not (supertag-mention-service--links-target-p
+                           source-id target-id source)))
             (let ((content
                    (or (supertag-mention-service--node-prop
                         source :content)
@@ -374,27 +397,28 @@ terms win.  Existing Org links and literal/code regions are excluded."
               (when (supertag-mention-service--content-maybe-matches-p
                      content terms)
                 (let ((content-hash (secure-hash 'sha256 content))
-                      (ordinal 0))
-                  (dolist (match
-                           (supertag-mention-service-scan-content
-                            content terms))
-                    (push
-                     (supertag-mention-service--source-item
-                      source-id source target-id target match
-                      content-hash ordinal)
-                     results)
-                    (setq ordinal (1+ ordinal)
-                          count (1+ count))
-                    (when (>= count supertag-mention-max-results)
+                      (ordinal 0)
+                      (matches
+                       (supertag-mention-service-scan-content content terms)))
+                  (when matches
+                    (setq sources (1+ sources))
+                    (dolist (match matches)
+                      (push
+                       (supertag-mention-service--source-item
+                        source-id source target-id target match
+                        content-hash ordinal)
+                       results)
+                      (setq ordinal (1+ ordinal)))
+                    (when (>= sources supertag-mention-max-results)
                       (throw 'limit-reached t))))))))))
     (nreverse results)))
 
 (defun supertag-mention-service-find (target-id)
   "Return disposable unlinked mention candidates for TARGET-ID.
 
-Results are cached only while the exact Store identity and `:nodes' revision
-remain current.  Returned records are copied so callers cannot mutate the
-cached read model."
+Results are cached only while the exact Store identity plus `:nodes' and
+`:relations' revisions remain current (link exclusions read both).  Returned
+records are copied so callers cannot mutate the cached read model."
   (let* ((target (supertag-store-get-entity :nodes target-id))
          (terms
           (and target
@@ -410,11 +434,12 @@ cached read model."
                 supertag-mention-max-results
                 supertag-mention-context-before
                 supertag-mention-context-after))
-         (token (supertag-index-source-token '(:nodes)))
+         (token (supertag-index-source-token '(:nodes :relations)))
          (entry (gethash cache-key supertag-mention-service--result-cache)))
     (when (and target terms)
       (if (and entry
-               (supertag-index-source-current-p (car entry) '(:nodes)))
+               (supertag-index-source-current-p
+                (car entry) '(:nodes :relations)))
           (copy-tree (cdr entry))
         (let ((results
                (supertag-mention-service--find-uncached
@@ -605,8 +630,10 @@ provided explicitly.  This preserves aliases and sentence wording."
           (or (plist-get candidate :match) "")
           (or (plist-get candidate :after) "")))
 
-(defun supertag-view-mention--insert-card (candidate)
-  "Insert one magazine-style unlinked mention CANDIDATE."
+(defun supertag-view-mention--insert-card (candidate &optional occurrences)
+  "Insert one magazine-style unlinked mention CANDIDATE.
+OCCURRENCES is how many times its source mentions the target; the card
+links the first occurrence only."
   (let ((source-id (plist-get candidate :source-id))
         (source-title (or (plist-get candidate :source-title)
                           (plist-get candidate :source-id)))
@@ -619,6 +646,9 @@ provided explicitly.  This preserves aliases and sentence wording."
     (insert "\n")
     (supertag-view-helper-insert-excerpt
      (supertag-view-mention--context-text candidate))
+    (when (> (or occurrences 1) 1)
+      (insert (propertize (format "      +%d more\n" (1- occurrences))
+                          'face 'supertag-view-mute)))
     (insert "    ")
     (supertag-view-helper-insert-action-button
      "[Link]" #'supertag-view-mention--link candidate
@@ -630,15 +660,33 @@ provided explicitly.  This preserves aliases and sentence wording."
     (insert "\n")
     (add-text-properties start (point) '(line-spacing 0.15))))
 
+(defun supertag-view-mention--source-groups (mentions)
+  "Return MENTIONS grouped per source, in first-appearance order.
+Each element is a cons of the source's first candidate and its occurrence
+count, so the view renders one card per source."
+  (let ((table (make-hash-table :test #'equal)) order)
+    (dolist (candidate mentions)
+      (let* ((source-id (plist-get candidate :source-id))
+             (cell (gethash source-id table)))
+        (if cell
+            (setcdr cell (1+ (cdr cell)))
+          (setq cell (cons candidate 1))
+          (puthash source-id cell table)
+          (push cell order))))
+    (nreverse order)))
+
 (defun supertag-view-mention-insert-section (target-id)
-  "Insert nonempty unlinked mention candidates for TARGET-ID."
+  "Insert nonempty unlinked mention candidates for TARGET-ID.
+One card per source; the section count is the number of sources."
   (let ((mentions (supertag-mention-service-find target-id)))
     (when mentions
-      (insert "\n")
-      (supertag-view-helper-insert-section-chip "Unlinked Mentions" (length mentions)
+      (let ((groups (supertag-view-mention--source-groups mentions)))
+        (insert "\n")
+        (supertag-view-helper-insert-section-chip "Unlinked Mentions"
+                                                   (length groups)
                                                    'supertag-view-chip3)
-      (dolist (candidate mentions)
-        (supertag-view-mention--insert-card candidate)))))
+        (dolist (group groups)
+          (supertag-view-mention--insert-card (car group) (cdr group)))))))
 
 (provide 'supertag-mention)
 ;;; supertag-mention.el ends here

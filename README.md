@@ -54,7 +54,7 @@ Supertag helps you **write notes, connect ideas, and find them again** in Org. W
 Batch and cancel: `supertag-ai-extract-tag-properties` (menu `w` → `E`) picks a tag and extracts its nodes one at a time, one request owned by this batch at a time (independent pending requests may coexist and are skipped); when the batch finishes, `*Supertag AI Plan*` lists every candidate grouped by file (`k` skips a line, `a` applies, `q` quits). Applying writes exactly the plan you saw: a candidate that changed meanwhile, or a node whose file has unsaved edits, is left unwritten and counted in the summary. `supertag-ai-cancel-extraction` (menu `w` → `C`) and the section’s [Cancel] button stop one node; `supertag-ai-cancel-batch` (menu `w` → `B`) stops the batch. A response that could not be parsed keeps a [Show raw] button so you can tune your model’s JSON output in superchat.
 
 
-**Optional capability: similar notes.** Install and start Ollama (or an Ollama-compatible `/api/embed` service), then make the model available with `ollama pull bge-m3`. First run `M-x supertag-semantic-rebuild`: it offers to enable Similar notes for this session, probes the configured Ollama endpoint and model, then indexes the vault with visible progress. It shows **Similar notes (candidates)** automatically in Node View, after unlinked mentions. It sends projected titles, outline paths and up to 1,500 own-body characters per node to `supertag-semantic-endpoint` (default `http://localhost:11434`) asynchronously through `curl`. It never writes Org or creates links. Cards show node-level similarity and original-body previews, not exact passage matches or claims of concept identity. Use `M-x supertag-semantic-stop` to stop an index and `M-x supertag-semantic-resume` to continue its remaining notes without discarding completed vectors.
+**Optional capability: similar notes.** Install and start Ollama (or an Ollama-compatible `/api/embed` service), then make the model available with `ollama pull bge-m3`. First run `M-x supertag-semantic-rebuild`: it offers to enable Similar notes (the choice is saved for future sessions), probes the configured Ollama endpoint and model, then indexes the vault with visible progress. It shows **Similar notes (candidates)** automatically in Node View, after unlinked mentions. It sends projected titles, outline paths and up to 1,500 own-body characters per node to `supertag-semantic-endpoint` (default `http://localhost:11434`) asynchronously through `curl`. It never writes Org or creates links. Cards show node-level similarity and original-body previews, not exact passage matches or claims of concept identity. Use `M-x supertag-semantic-stop` to stop an index and `M-x supertag-semantic-resume` to continue its remaining notes without discarding completed vectors.
 
 The default model is `bge-m3`. In the synthetic Chinese rewrite/cross-language probe, `dengcao/Qwen3-Embedding-0.6B:Q8_0` performed better; for a primarily Chinese vault, pull that model and set `supertag-semantic-model` accordingly. This is synthetic evidence, not a quality guarantee for your notes. Model changes rebuild the disposable int8 side-car `supertag-semantic.el` in Supertag’s data directory. Tune `supertag-semantic-min-similarity` (default 0.4) and `supertag-semantic-max-results` (default 5) for your notes. **Maintain → More maintenance → Data & setup** also offers status, stop, and continue commands. An endpoint failure pauses the round; use [Retry] in the section or rebuild to try again. The feature is off by default and adds no package dependency.
 
@@ -289,10 +289,14 @@ disposable projections over the existing Store; they are not a second index.
 ### Unlinked mentions
 
 Node View also discovers plain-text occurrences of the current node's title and
-aliases in other source nodes. An unlinked mention is only a candidate: it is
+aliases in other source nodes. One card is shown per source node, with the
+first occurrence's excerpt and a muted `+N more` note for the rest. An unlinked
+mention is only a candidate: it is
 not persisted and does not become a Backlink until you choose **Link** or
-**Link all in node**. Existing Org links and literal/code regions are excluded;
-Chinese text is matched without imposing incorrect ASCII word boundaries.
+**Link all in node**. Existing Org links and literal/code regions are excluded,
+and a source node that already links the target (in its body or its heading) is
+not listed at all. Chinese text is matched without imposing incorrect ASCII
+word boundaries.
 
 **Ignore in node** writes `SUPERTAG_IGNORE_MENTIONS` on the source heading, so
 the decision remains inspectable, syncable Org data rather than a hidden cache.
@@ -644,7 +648,7 @@ The following table is generated from the loaded source; purposes use each docst
 |---|---|---|
 | `supertag-mention-context-after` | `120` | Maximum source characters shown after an unlinked mention. |
 | `supertag-mention-context-before` | `64` | Maximum source characters shown before an unlinked mention. |
-| `supertag-mention-max-results` | `300` | Maximum unlinked mention candidates returned for one target node. |
+| `supertag-mention-max-results` | `300` | Maximum distinct source nodes listed for one target node; all occurrences of a listed source are kept. |
 | `supertag-mention-min-term-length` | `2` | Minimum title or alias length considered for unlinked mentions. |
 | `supertag-mention-protected-range-cache-size` | `128` | Maximum ephemeral Org parse results retained by the mention scanner. |
 | `supertag-mention-result-cache-size` | `64` | Maximum target queries retained by the disposable mention result cache. |

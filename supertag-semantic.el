@@ -493,11 +493,14 @@ at ten seconds, even when normal embedding requests are allowed more time."
 
 ;;;###autoload
 (defun supertag-semantic-rebuild ()
-  "Rebuild all node embeddings asynchronously with visible progress."
+  "Rebuild all node embeddings asynchronously with visible progress.
+
+Enabling Similar notes here is a persistent choice: it is saved only after
+the endpoint answered, so a broken endpoint never stores an enabled flag."
   (interactive)
   (unless supertag-semantic-enabled
-    (if (yes-or-no-p "Similar notes are off. Enable for this session and index the vault? ")
-        (setq supertag-semantic-enabled t)
+    (unless (yes-or-no-p
+             "Similar notes are off. Enable them for future sessions and index the vault? ")
       (user-error "Enable Similar notes to index the vault")))
   (condition-case err
       (supertag-semantic--probe)
@@ -505,6 +508,9 @@ at ten seconds, even when normal embedding requests are allowed more time."
      (user-error "Embedding endpoint %s / model %s unavailable: %s"
                  supertag-semantic-endpoint supertag-semantic-model
                  (error-message-string err))))
+  (unless supertag-semantic-enabled
+    ;; The probe answered; only now persist the choice for future sessions.
+    (customize-save-variable 'supertag-semantic-enabled t))
   (supertag-semantic--ensure)
   (supertag-semantic-stop)
   (clrhash supertag-semantic--vectors) (clrhash supertag-semantic--dirty)

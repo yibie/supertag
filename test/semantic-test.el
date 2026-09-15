@@ -171,27 +171,95 @@
     (should-not (equal (car (gethash "document-node" supertag-semantic--vectors))
                        (supertag-semantic--hash (supertag-semantic--node "document-node")))))))
 
-(ert-deftest supertag-semantic-rebuild-offers-session-enable ()
+(ert-deftest supertag-semantic-rebuild-persists-enable-for-future-sessions ()
   (supertag-semantic-test-with-index
-    (let ((supertag-semantic-enabled nil))
-      (cl-letf (((symbol-function 'yes-or-no-p) (lambda (&rest _) t)))
-        (supertag-semantic-rebuild))
-      (should supertag-semantic-enabled)
-      (should supertag-semantic--rebuild))
-    (let ((supertag-semantic-enabled nil))
+    ;; Stubbing a subr must not require a native trampoline compiler, and
+    ;; Custom only saves when the session has an init-file context.
+    (let ((native-comp-enable-subr-trampolines nil)
+          (user-init-file (expand-file-name "init.el" tmp))
+          (custom-file (expand-file-name "enable-custom.el" tmp))
+          (supertag-semantic-enabled nil)
+          (original (default-value 'supertag-semantic-enabled)))
+      (unwind-protect
+          (progn
+            (set-default 'supertag-semantic-enabled nil)
+            (cl-letf (((symbol-function 'yes-or-no-p) (lambda (&rest _) t)))
+              (supertag-semantic-rebuild))
+            (should (default-value 'supertag-semantic-enabled))
+            (should supertag-semantic--rebuild)
+            (should (file-exists-p custom-file))
+            (should (string-match-p
+                     "'(supertag-semantic-enabled t)"
+                     (with-temp-buffer
+                       (insert-file-contents custom-file)
+                       (buffer-string)))))
+        (set-default 'supertag-semantic-enabled original)))
+    ;; Declining is not persisted and does not enable anything.
+    (let ((native-comp-enable-subr-trampolines nil)
+          (user-init-file (expand-file-name "init.el" tmp))
+          (custom-file (expand-file-name "declined-custom.el" tmp))
+          (supertag-semantic-enabled nil))
       (cl-letf (((symbol-function 'yes-or-no-p) (lambda (&rest _) nil)))
         (should-error (supertag-semantic-rebuild) :type 'user-error))
-      (should-not supertag-semantic-enabled))))
+      (should-not supertag-semantic-enabled)
+      (should-not (file-exists-p custom-file)))))
+
+(ert-deftest supertag-semantic-saved-choice-applies-in-a-fresh-process ()
+  "The file written by the rebuild prompt enables Similar notes next time."
+  (supertag-semantic-test-with-index
+    (let ((native-comp-enable-subr-trampolines nil)
+          (user-init-file (expand-file-name "init.el" tmp))
+          (custom-file (expand-file-name "fresh-custom.el" tmp))
+          (supertag-semantic-enabled nil)
+          (original (default-value 'supertag-semantic-enabled)))
+      (unwind-protect
+          (progn
+            (set-default 'supertag-semantic-enabled nil)
+            (cl-letf (((symbol-function 'yes-or-no-p) (lambda (&rest _) t)))
+              (supertag-semantic-rebuild))
+            (should (file-exists-p custom-file))
+            ;; A fresh Emacs that loads the saved file, as an init does.
+            (with-temp-buffer
+              (should (equal 0
+                             (call-process
+                              (or (getenv "EMACS_BIN")
+                                  (expand-file-name invocation-name
+                                                    invocation-directory))
+                              nil t nil "-Q" "--batch" "--eval"
+                              (format
+                               (concat "(progn (defvar supertag-semantic-enabled nil)"
+                                       " (load %S nil t)"
+                                       " (princ (format \"FRESH=%%S\\n\""
+                                       " supertag-semantic-enabled)))")
+                               custom-file))))
+              (should (string-match-p "FRESH=t" (buffer-string)))))
+        (set-default 'supertag-semantic-enabled original)))))
+
+(ert-deftest supertag-semantic-rebuild-probe-failure-does-not-persist ()
+  (supertag-semantic-test-with-index
+    (let ((native-comp-enable-subr-trampolines nil)
+          (user-init-file (expand-file-name "init.el" tmp))
+          (custom-file (expand-file-name "probe-failure-custom.el" tmp))
+          (supertag-semantic-enabled nil))
+      (cl-letf (((symbol-function 'yes-or-no-p) (lambda (&rest _) t))
+                ((symbol-function 'supertag-semantic--probe)
+                 (lambda () (error "Connection refused"))))
+        (should-error (supertag-semantic-rebuild) :type 'user-error))
+      (should-not supertag-semantic-enabled)
+      (should-not (file-exists-p custom-file)))))
 
 (ert-deftest supertag-semantic-rebuild-probe-failure-preserves-index ()
   (supertag-semantic-test-with-index
-    (let ((entry (cons "persisted" (supertag-semantic--quantize [1.0 0.0]))))
+    (let ((entry (cons "persisted" (supertag-semantic--quantize [1.0 0.0])))
+          (user-init-file (expand-file-name "init.el" tmp))
+          (custom-file (expand-file-name "enabled-probe-failure.el" tmp)))
       (puthash "document-node" entry supertag-semantic--vectors)
       (cl-letf (((symbol-function 'supertag-semantic--probe)
                  (lambda () (error "Connection refused"))))
         (should-error (supertag-semantic-rebuild) :type 'user-error))
       (should (eq entry (gethash "document-node" supertag-semantic--vectors)))
-      (should supertag-semantic-enabled))))
+      (should supertag-semantic-enabled)
+      (should-not (file-exists-p custom-file)))))
 
 (ert-deftest supertag-semantic-rebuild-reports-batch-progress-and-completion ()
   (supertag-semantic-test-with-index

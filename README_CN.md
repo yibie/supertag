@@ -51,7 +51,7 @@ Supertag 帮你在 Org 中**写笔记、连接想法、找回旧内容**。用�
 批量与取消：`supertag-ai-extract-tag-properties`（菜单 `w` → `E`）选一个标签后逐个提取其节点，本批次同一时刻只发一个请求（独立的既有 pending 请求可以共存并会被跳过）；批次结束打开 `*Supertag AI Plan*`，按文件列出全部候选（`k` 跳过一行，`a` 应用，`q` 退出）。应用只写你看到的那份计划：期间候选变了、或目标文件有未保存修改的节点，一律不写并计入汇总。`supertag-ai-cancel-extraction`（菜单 `w` → `C`）与节里的 [Cancel] 按钮取消单个节点；`supertag-ai-cancel-batch`（菜单 `w` → `B`）停止批次。无法解析的回复保留 [Show raw] 按钮，便于你在 superchat 里调整模型的 JSON 输出。
 
 
-**可选能力：相似笔记。** 安装并启动 Ollama（或兼容 `/api/embed` 的服务），用 `ollama pull bge-m3` 准备模型后，第一步运行 `M-x supertag-semantic-rebuild`：它会询问是否仅为本次 Emacs 会话开启相似笔记，探测配置的 Ollama 端点和模型，然后带进度地索引整个 vault。Node View 会在未链接提及之后自动显示 **Similar notes (candidates)**。它通过 `curl` 异步向 `supertag-semantic-endpoint`（默认 `http://localhost:11434`）发送 Store 投影中的标题、大纲路径和每节点最多 1500 字自有正文；不写 Org、不自动建链。卡片显示节点级相似度和原文预览，不声称精确命中某段，也不代表概念同一。`M-x supertag-semantic-stop` 可停止索引，`M-x supertag-semantic-resume` 会在不丢弃已完成向量的前提下继续剩余笔记。
+**可选能力：相似笔记。** 安装并启动 Ollama（或兼容 `/api/embed` 的服务），用 `ollama pull bge-m3` 准备模型后，第一步运行 `M-x supertag-semantic-rebuild`：它会询问是否开启相似笔记（选择会保存下来，后续会话继续生效），探测配置的 Ollama 端点和模型，然后带进度地索引整个 vault。Node View 会在未链接提及之后自动显示 **Similar notes (candidates)**。它通过 `curl` 异步向 `supertag-semantic-endpoint`（默认 `http://localhost:11434`）发送 Store 投影中的标题、大纲路径和每节点最多 1500 字自有正文；不写 Org、不自动建链。卡片显示节点级相似度和原文预览，不声称精确命中某段，也不代表概念同一。`M-x supertag-semantic-stop` 可停止索引，`M-x supertag-semantic-resume` 会在不丢弃已完成向量的前提下继续剩余笔记。
 
 默认模型为 `bge-m3`。合成中文改写与中英互检探针中，`dengcao/Qwen3-Embedding-0.6B:Q8_0` 表现更好，中文为主的库推荐拉取该模型并修改 `supertag-semantic-model`；这只是合成数据证据，不保证真实库质量。模型改变会重建数据目录中的可丢弃 int8 side-car `supertag-semantic.el`。可按笔记调整 `supertag-semantic-min-similarity`（默认 0.4）和 `supertag-semantic-max-results`（默认 5）。维护菜单 **More maintenance → Data & setup** 还提供状态、停止和继续命令；端点失败后本轮暂停，点击节内 [Retry] 或 rebuild 才再试。默认关闭，不增加包依赖。
 
@@ -256,8 +256,8 @@ Node View 现在分别显示当前节点的 **References** 与 **Backlinks**。�
 
 ### 未链接提及（Unlinked Mentions）
 
-Node View 还会在其他来源节点的普通正文中查找当前节点的 title 与 alias。未链接提及只是候选，不会落库；只有用户执行 **Link** 或 **Link all in node** 后，才会写成规范 Org ID Link，并沿既有投影流程成为 Backlink。已有 Org Link 与 literal/code
-区域不会重复匹配；中文匹配也不会套用错误的 ASCII 词边界。
+Node View 还会在其他来源节点的普通正文中查找当前节点的 title 与 alias。每个来源节点只显示一张卡片：首处出现的片段，以及其余出现次数的灰色 `+N more`。未链接提及只是候选，不会落库；只有用户执行 **Link** 或 **Link all in node** 后，才会写成规范 Org ID Link，并沿既有投影流程成为 Backlink。已有 Org Link 与 literal/code
+区域不会重复匹配，已经链接该目标（无论链接在正文还是标题）的来源节点根本不列出；中文匹配也不会套用错误的 ASCII 词边界。
 
 **Ignore in node** 会把 `SUPERTAG_IGNORE_MENTIONS` 写到来源 heading，因此忽略决定是可检查、可同步的 Org 数据，而不是隐藏缓存。发现过程只使用小型、不可持久化的解析缓存。完整边界见 `UNLINKED-MENTIONS.md`。
 
@@ -579,7 +579,7 @@ Supertag 以 GPLv3 自由软件协议开发。欢迎在 GitHub 上贡献代码�
 |---|---|---|
 | `supertag-mention-context-after` | `120` | Maximum source characters shown after an unlinked mention. |
 | `supertag-mention-context-before` | `64` | Maximum source characters shown before an unlinked mention. |
-| `supertag-mention-max-results` | `300` | Maximum unlinked mention candidates returned for one target node. |
+| `supertag-mention-max-results` | `300` | Maximum distinct source nodes listed for one target node; all occurrences of a listed source are kept. |
 | `supertag-mention-min-term-length` | `2` | Minimum title or alias length considered for unlinked mentions. |
 | `supertag-mention-protected-range-cache-size` | `128` | Maximum ephemeral Org parse results retained by the mention scanner. |
 | `supertag-mention-result-cache-size` | `64` | Maximum target queries retained by the disposable mention result cache. |

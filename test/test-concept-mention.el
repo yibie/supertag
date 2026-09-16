@@ -151,6 +151,68 @@
     (should-not (assoc "Shared" (supertag-concept-entries)))
     (should-not (fboundp 'supertag-concept--find-concept-id-by-term))))
 
+(ert-deftest concept-refresh-all-buffers-scans-entries-once ()
+  "One entry scan serves every enabled buffer, and they share its keywords."
+  (concept-test--with-env
+    (concept-test--create-node "concept-id" "注意力机制")
+    (let ((scans 0)
+          (real (symbol-function 'supertag-concept-entries))
+          buffers)
+      (unwind-protect
+          (progn
+            (dotimes (_ 3)
+              (let ((buffer (generate-new-buffer " *concept-refresh*")))
+                (push buffer buffers)
+                (with-current-buffer buffer
+                  (org-mode)
+                  (insert "注意力机制 plain prose\n")
+                  (supertag-concept-link-mode 1))))
+            ;; The three activations above each scanned; the all-buffers
+            ;; refresh must reuse one scan for all three buffers.
+            (setq scans 0)
+            (cl-letf (((symbol-function 'supertag-concept-entries)
+                       (lambda (&rest arguments)
+                         (cl-incf scans)
+                         (apply real arguments))))
+              (supertag-concept--refresh-all-buffers))
+            (should (= 1 scans))
+            (let ((keywords (mapcar (lambda (buffer)
+                                      (with-current-buffer buffer
+                                        supertag-concept--font-lock-keywords))
+                                    buffers))
+                  (entries (mapcar (lambda (buffer)
+                                     (with-current-buffer buffer
+                                       supertag-concept--entries))
+                                   buffers)))
+              (should (cl-every #'identity keywords))
+              (should (cl-every (lambda (value) (equal value (car keywords)))
+                                keywords))
+              (should (cl-every (lambda (value) (equal value (car entries)))
+                                entries))
+              (should (equal (cdr (assoc "注意力机制" (car entries))) "concept-id"))))
+        (dolist (buffer buffers)
+          (when (buffer-live-p buffer) (kill-buffer buffer)))))))
+
+(ert-deftest concept-entry-scan-resolves-template-targets-once ()
+  "A whole-store scan resolves the template target list once, not per node."
+  (concept-test--with-env
+    (concept-test--create-node "concept-id" "注意力机制")
+    (dotimes (index 5)
+      (supertag-node-create
+       (list :id (format "ordinary-%d" index)
+             :title (format "普通 %d" index)
+             :level 1 :position (1+ index)
+             :file (expand-file-name "ordinary.org" tmp))))
+    (let ((calls 0)
+          (real (symbol-function 'supertag-template-target-files)))
+      (cl-letf (((symbol-function 'supertag-template-target-files)
+                 (lambda (&rest arguments)
+                   (cl-incf calls)
+                   (apply real arguments))))
+        (should (assoc "注意力机制" (supertag-concept-entries)))
+        ;; One call for the scan, no matter how many nodes it visits.
+        (should (= 1 calls))))))
+
 (ert-deftest concept-old-marker-does-not-grant-position-membership ()
   "Historical marker data is preserved but no longer determines membership."
   (concept-test--with-env

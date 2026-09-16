@@ -123,13 +123,17 @@ Each entry is (TERM . NODE-ID).")
      ((listp props) props)
      (t nil))))
 
-(defun supertag-concept-node-p (node)
-  "Return non-nil when heading NODE belongs to a current template target."
+(defun supertag-concept-node-p (node &optional target-files)
+  "Return non-nil when heading NODE belongs to a current template target.
+TARGET-FILES, when non-nil, is an already-computed
+`supertag-template-target-files' result; callers that test many nodes pass
+it once instead of letting every node recompute the truenames."
   (let ((file (supertag-concept--node-prop node :file)))
     (and (let ((id (supertag-concept--node-prop node :id)))
            (and (stringp id) (not (string-empty-p id))))
          (stringp file) (> (or (supertag-concept--node-prop node :level) 0) 0)
-         (member (file-truename file) (supertag-template-target-files)))))
+         (member (file-truename file)
+                 (or target-files (supertag-template-target-files))))))
 
 (defun supertag-concept--split-aliases (value)
   "Split alias VALUE into a clean alias list."
@@ -156,11 +160,14 @@ Each entry is (TERM . NODE-ID).")
        (not (string-empty-p (string-trim term)))
        (>= (length (string-trim term)) supertag-concept-min-term-length)))
 
-(defun supertag-concept--term-index ()
-  "Return current template-file terms mapped only to projected Org IDs."
-  (let ((index (make-hash-table :test 'equal)))
+(defun supertag-concept--term-index (&optional target-files)
+  "Return current template-file terms mapped only to projected Org IDs.
+TARGET-FILES is computed once here unless the caller already has the list,
+so a whole-store scan resolves the template targets only once."
+  (let ((targets (or target-files (supertag-template-target-files)))
+        (index (make-hash-table :test 'equal)))
     (dolist (pair (supertag-query-nodes
-                  (lambda (_ node) (supertag-concept-node-p node))))
+                  (lambda (_ node) (supertag-concept-node-p node targets))))
       (let* ((node (cdr pair))
              (id (supertag-concept--node-prop node :id)))
         (dolist (term (cons (supertag-concept--node-prop node :title)
@@ -230,11 +237,16 @@ Each entry is (TERM . NODE-ID).")
              keymap ,supertag-concept-mention-map))
           'supertag-concept-mention-face)))))
 
-(defun supertag-concept--refresh-font-lock-keywords ()
-  "Rebuild concept font-lock keywords in the current buffer."
+(cl-defun supertag-concept--refresh-font-lock-keywords
+    (&optional (entries nil entries-supplied-p))
+  "Rebuild concept font-lock keywords in the current buffer.
+ENTRIES, when supplied, is a ready `supertag-concept-entries' result -- the
+all-buffers refresh computes that whole-store scan once and shares it.  An
+unsupplied ENTRIES computes it here, exactly as before."
   (when supertag-concept--font-lock-keywords
     (font-lock-remove-keywords nil supertag-concept--font-lock-keywords))
-  (setq supertag-concept--entries (supertag-concept-entries))
+  (setq supertag-concept--entries
+        (if entries-supplied-p entries (supertag-concept-entries)))
   (let ((regexp (supertag-concept--regexp supertag-concept--entries)))
     (setq supertag-concept--font-lock-keywords
           (when regexp
@@ -260,18 +272,32 @@ Each entry is (TERM . NODE-ID).")
           supertag-concept--entries nil)
     (supertag-view-helper--refresh-fontification)))
 
-(defun supertag-concept-refresh ()
-  "Refresh concept mentions in the current buffer."
+(cl-defun supertag-concept-refresh (&optional (entries nil entries-supplied-p))
+  "Refresh concept mentions in the current buffer.
+ENTRIES, when supplied, is a ready `supertag-concept-entries' result; the
+all-buffers refresh passes it so the store is scanned only once."
   (when supertag-concept-link-mode
-    (supertag-concept--refresh-font-lock-keywords)
+    ;; Forward the supplied-ness as well: an explicit nil means "no concepts",
+    ;; while omitting the argument means "compute the entries here".
+    (if entries-supplied-p
+        (supertag-concept--refresh-font-lock-keywords entries)
+      (supertag-concept--refresh-font-lock-keywords))
     (supertag-view-helper--refresh-fontification)))
 
 (defun supertag-concept--refresh-all-buffers ()
-  "Refresh concept mention highlighting in all enabled buffers."
-  (dolist (buffer (buffer-list))
-    (with-current-buffer buffer
-      (when supertag-concept-link-mode
-        (supertag-concept-refresh)))))
+  "Refresh concept mention highlighting in all enabled buffers.
+The entries are identical for every buffer, so they are computed once, on
+the first enabled buffer, and shared; a session with no enabled buffer does
+not scan at all."
+  (let ((computed nil)
+        entries)
+    (dolist (buffer (buffer-list))
+      (with-current-buffer buffer
+        (when supertag-concept-link-mode
+          (unless computed
+            (setq entries (supertag-concept-entries)
+                  computed t))
+          (supertag-concept-refresh entries))))))
 
 (defun supertag-concept--node-id-at-point ()
   "Return concept node id at point, checking point and previous char."

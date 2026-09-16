@@ -98,6 +98,13 @@ Each entry is (TERM . NODE-ID).")
 (defvar-local supertag-concept--font-lock-keywords nil
   "Buffer-local font-lock keywords for concept mentions.")
 
+(defvar-local supertag-concept--protected-ranges-cache nil
+  "Buffer-local (TICK . RANGES) memo of `supertag-concept--protected-ranges'.
+TICK is `buffer-chars-modified-tick', so any text edit invalidates the memo;
+RANGES are offsets from the real buffer start, so a narrowed buffer reuses
+them unchanged.  Buffer-local by construction: the memo never moves between
+buffers.")
+
 (defvar supertag-concept-mention-map
   (let ((map (make-sparse-keymap)))
     (define-key map (kbd "RET") #'supertag-concept-open-at-point)
@@ -194,6 +201,25 @@ so a whole-store scan resolves the template targets only once."
   (when entries
     (regexp-opt (mapcar #'car entries))))
 
+(defun supertag-concept--protected-ranges ()
+  "Return this buffer's mention-protected ranges for the current tick.
+The ranges come from `supertag-mention-service--protected-ranges' on the
+widened buffer, so one fontification pass pays the whole-buffer copy and
+SHA-256 at most once instead of once per candidate match.  Offsets are
+relative to the real buffer start, which is the origin
+`supertag-concept--ignored-org-context-p' already uses under widening."
+  (let ((tick (buffer-chars-modified-tick)))
+    (if (and supertag-concept--protected-ranges-cache
+             (= (car supertag-concept--protected-ranges-cache) tick))
+        (cdr supertag-concept--protected-ranges-cache)
+      (let ((ranges
+             (save-restriction
+               (widen)
+               (supertag-mention-service--protected-ranges
+                (buffer-substring-no-properties (point-min) (point-max))))))
+        (setq supertag-concept--protected-ranges-cache (cons tick ranges))
+        ranges))))
+
 (defun supertag-concept--ignored-org-context-p (pos)
   "Return non-nil when POS is not prose suitable for a concept mention."
   (save-excursion
@@ -208,8 +234,7 @@ so a whole-store scan resolves the template targets only once."
             (widen)
             (supertag-mention-service--inside-range-p
              (- pos (point-min)) (1+ (- pos (point-min)))
-             (supertag-mention-service--protected-ranges
-              (buffer-substring-no-properties (point-min) (point-max)))))))))
+             (supertag-concept--protected-ranges)))))))
 
 (defun supertag-concept--valid-match-p ()
   "Return non-nil when the current concept match should be rendered."

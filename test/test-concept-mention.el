@@ -213,6 +213,93 @@
         ;; One call for the scan, no matter how many nodes it visits.
         (should (= 1 calls))))))
 
+(ert-deftest concept-protected-ranges-memoize-per-modification-tick ()
+  "One tick hashes the buffer at most once; edits and other buffers drop it."
+  (concept-test--with-env
+    (concept-test--create-node "concept-id" "注意力机制")
+    (with-temp-buffer
+      (org-mode)
+      (insert "注意力机制 one\n注意力机制 two\n注意力机制 three\n"
+              "#+begin_embed:\n注意力机制 four\n#+end_embed\n")
+      (supertag-concept-link-mode 1)
+      (let ((calls 0)
+            (real (symbol-function 'supertag-mention-service--protected-ranges))
+            other)
+        (unwind-protect
+            (cl-letf (((symbol-function 'supertag-mention-service--protected-ranges)
+                       (lambda (&rest arguments)
+                         (cl-incf calls)
+                         (apply real arguments))))
+              ;; Cold memo: one hashing pass, however many matches fontify.
+              (setq supertag-concept--protected-ranges-cache nil)
+              (font-lock-flush)
+              (font-lock-ensure)
+              (should (= 1 calls))
+              ;; ... and the mentions really were fontified, so that pass ran.
+              (goto-char (point-min))
+              (search-forward "注意力机制")
+              (should (eq (get-text-property (match-beginning 0) 'face)
+                          'supertag-concept-mention-face))
+              ;; Every later match in the same tick reuses the memo.
+              (dotimes (_ 3)
+                (supertag-concept--ignored-org-context-p (point-min)))
+              (should (= 1 calls))
+              (should (equal (car supertag-concept--protected-ranges-cache)
+                             (buffer-chars-modified-tick)))
+              ;; Any text edit invalidates it.
+              (goto-char (point-max))
+              (insert "注意力机制 five\n")
+              (supertag-concept--ignored-org-context-p (point-min))
+              (should (= 2 calls))
+              ;; The memo is buffer-local: another buffer hashes on its own and
+              ;; leaves this buffer's entry alone.
+              (let ((own-tick (car supertag-concept--protected-ranges-cache)))
+                (setq other (generate-new-buffer " *concept-memo-other*"))
+                (with-current-buffer other
+                  (org-mode)
+                  (insert "注意力机制 elsewhere\n")
+                  (supertag-concept--ignored-org-context-p (point-min))
+                  (should (= 3 calls))
+                  (should (equal (car supertag-concept--protected-ranges-cache)
+                                 (buffer-chars-modified-tick))))
+                (should (equal (car supertag-concept--protected-ranges-cache)
+                               own-tick))))
+          (when (buffer-live-p other) (kill-buffer other)))))))
+
+(ert-deftest concept-mention-mode-skips-src-blocks-drawers-and-embeds ()
+  "Protected contexts stay plain, including a narrowed Embed line."
+  (concept-test--with-env
+    (concept-test--create-node "concept-id" "注意力机制")
+    (with-temp-buffer
+      (org-mode)
+      (insert "注意力机制 prose\n"
+              ":PROPERTIES:\n:ID: anchor\n:NOTE: 注意力机制\n:END:\n"
+              "#+begin_src emacs-lisp\n注意力机制\n#+end_src\n"
+              "#+begin_embed:\n注意力机制\n#+end_embed\n")
+      (supertag-concept-link-mode 1)
+      (font-lock-ensure)
+      (goto-char (point-min))
+      (search-forward "注意力机制 prose")
+      (should (equal (get-text-property (match-beginning 0)
+                                        'supertag-concept-node-id)
+                     "concept-id"))
+      ;; property drawer, src block, and Embed body stay unhighlighted
+      (dotimes (_ 3)
+        (search-forward "注意力机制")
+        (should-not (get-text-property (match-beginning 0)
+                                       'supertag-concept-node-id)))
+      ;; A line narrowed inside the Embed: the widened protected ranges must
+      ;; still see the enclosing Embed even though the markers are hidden.
+      (goto-char (point-min))
+      (search-forward "#+begin_embed:")
+      (save-restriction
+        (narrow-to-region (line-beginning-position 2) (line-end-position 2))
+        (font-lock-flush)
+        (font-lock-ensure)
+        (goto-char (point-min))
+        (should (looking-at-p "注意力机制"))
+        (should-not (get-text-property (point) 'supertag-concept-node-id))))))
+
 (ert-deftest concept-old-marker-does-not-grant-position-membership ()
   "Historical marker data is preserved but no longer determines membership."
   (concept-test--with-env

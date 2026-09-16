@@ -163,6 +163,12 @@ default Concept preset targets `concepts.org' under the effective vault."
 (autoload 'supertag-sync--resolve-node-tag-occurrences "supertag-services-sync")
 (declare-function supertag-sync--resolve-node-tag-occurrences "supertag-services-sync"
                   (props))
+(autoload 'supertag--project-nodes-from-org-text "supertag-services-sync")
+(declare-function supertag--project-nodes-from-org-text "supertag-services-sync"
+                  (current-file source-text))
+(autoload 'supertag-sync--reconcile-node "supertag-services-sync")
+(declare-function supertag-sync--reconcile-node "supertag-services-sync"
+                  (new-props &optional counters))
 
 ;; Sync owns the default; repair callbacks dynamically bind this flag.
 (defvar supertag-sync--is-full-rescan-p)
@@ -539,17 +545,32 @@ are reported to the caller, which retains SNAPSHOT in the error data."
 
 (defun supertag-service-org--retry-move-projection (source-file target-file &rest other-files)
   "Reproject identified headings in saved SOURCE-FILE and TARGET-FILE.
-One Store transaction covers all files, including OTHER-FILES and child IDs."
+One Store transaction covers all files, including OTHER-FILES and child IDs.
+
+Each file is parsed once and every heading node it contains is reconciled,
+so a file with many IDs costs one parse instead of one whole-file parse per
+heading.  Only headings present in the file are reprojected: the file node is
+not upserted here, and no node is ever marked deleted.  The parse runs on a
+copy of the text, so destructive embed-block stripping never touches the
+visited buffer.  Single-node retries stay on
+`supertag-service-org-retry-node-projection'."
   (supertag-with-transaction
     (dolist (file (delete-dups (append (list target-file source-file) other-files)))
       (with-current-buffer (find-file-noselect file)
         (save-excursion
           (save-restriction
             (widen)
-            (org-map-entries
-             (lambda ()
-               (when-let* ((id (org-entry-get nil "ID")))
-                 (supertag-service-org-retry-node-projection id file))))))))))
+            (let* ((source-file-name
+                    (or (buffer-local-value 'buffer-file-name
+                                            (or (buffer-base-buffer) (current-buffer)))
+                        file))
+                   (current-file (file-truename (expand-file-name source-file-name)))
+                   (source-text (buffer-substring-no-properties
+                                 (point-min) (point-max))))
+              (dolist (props
+                       (supertag--project-nodes-from-org-text
+                        current-file source-text))
+                (supertag-sync--reconcile-node props)))))))))
 
 (defun supertag-service-org--move-notify-git (source target &rest other-buffers)
   "Notify existing Git integration after SOURCE and TARGET are durable.

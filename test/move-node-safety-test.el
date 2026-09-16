@@ -212,12 +212,15 @@
 
 (ert-deftest supertag-move-projection-rollback-is-whole-subtree ()
   (supertag-move-test--fixture
-    (let ((project-node (symbol-function 'supertag-service-org-retry-node-projection)))
+    ;; Inject the failure where every projection path writes to the Store, so
+    ;; the rollback contract does not depend on which caller parses a node.
+    (let ((reconcile-node (symbol-function 'supertag-sync--reconcile-node)))
       (cl-letf (((symbol-function 'supertag-service-org--retry-move-projection) projector)
-                ((symbol-function 'supertag-service-org-retry-node-projection)
-                 (lambda (id file)
-                   (if (equal id "child") (error "child failed")
-                     (funcall project-node id file)))))
+                ((symbol-function 'supertag-sync--reconcile-node)
+                 (lambda (props &optional counters)
+                   (if (equal "child" (plist-get props :id))
+                       (error "child failed")
+                     (funcall reconcile-node props counters)))))
         (should-error (supertag-service-org-move-node-to-file "parent" target)
                       :type 'supertag-projection-error)))
     (should-not (supertag-node-get "parent"))

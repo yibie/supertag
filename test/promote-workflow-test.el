@@ -1410,3 +1410,57 @@
                (princ (format "CB-NATIVE-GUARD-PRE-POST=%S/%S output=%S\n"
                               (gethash 'before-reload counts) (gethash 'after-reload counts) second)))
            (advice-remove 'supertag-service-org-promote-check-source-stage advice)))))))
+
+
+(defun supertag-promote-test--many-heading-text (title-prefix id-prefix count)
+  "Return Org text with COUNT ID-bearing headings.
+Titles start with TITLE-PREFIX, IDs with ID-PREFIX (kept lowercase)."
+  (mapconcat (lambda (index)
+               (format "* %s %d\n:PROPERTIES:\n:ID: %s-%d\n:END:\nBody %d\n"
+                       title-prefix index id-prefix index index))
+             (number-sequence 1 count) ""))
+
+(ert-deftest supertag-promote-retry-move-projection-parses-each-file-once ()
+  "Reprojecting many headings costs one whole-file parse per file.
+
+The Promote/Move projection step used to reproject each ID-bearing heading
+through `supertag--parse-node-at-point', which parses the whole file per
+heading -- quadratic in file size.  Count whole-file parses instead of
+wall-clock time, so the regression trips no matter how fast the machine is."
+  (supertag-promote-test--isolated
+    (let* ((many (expand-file-name "many.org" tmp))
+           (few (expand-file-name "few.org" tmp))
+           (many-text (supertag-promote-test--many-heading-text "Many" "many" 60))
+           (few-text (concat (supertag-promote-test--many-heading-text "Few" "few" 1)
+                             "* Few two\n:PROPERTIES:\n:ID: few-2\n:END:\nBody\n"))
+           (real-parse (symbol-function 'supertag--parse-org-nodes-from-current-buffer))
+           (parses 0))
+      (with-temp-file many (insert many-text))
+      (with-temp-file few (insert few-text))
+      ;; Seed the same 62 heading identities without paying one parse each.
+      (dolist (spec (list (list many "many" 60) (list few "few" 1)))
+        (dotimes (index (nth 2 spec))
+          (let ((id (format "%s-%d" (nth 1 spec) (1+ index))))
+            (supertag-store-put-entity
+             :nodes id
+             (list :id id :level 1 :file (file-truename (nth 0 spec))
+                   :title "seed" :content "")
+             t))))
+      (with-current-buffer (find-file-noselect many)
+        (goto-char (point-min))
+        (search-forward "* Many 1")
+        (replace-match "* Many One"))
+      (cl-letf (((symbol-function 'supertag--parse-org-nodes-from-current-buffer)
+                 (lambda (file &optional migration-mode)
+                   (setq parses (1+ parses))
+                   (funcall real-parse file migration-mode))))
+        (supertag-service-org--retry-move-projection few many)
+        ;; Two files, sixty-two headings: two parses.
+        (should (= 2 parses))
+        ;; The heading edit really was reprojected, not skipped for speed.
+        (should (equal "Many One"
+                       (or (plist-get (supertag-node-get "many-1") :raw-value)
+                           (plist-get (supertag-node-get "many-1") :title))))
+        (should (equal "Few two"
+                       (or (plist-get (supertag-node-get "few-2") :raw-value)
+                           (plist-get (supertag-node-get "few-2") :title))))))))

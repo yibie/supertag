@@ -2434,13 +2434,17 @@ external modifications (by user/other tools) to avoid unnecessary re-parsing."
   "Add hooks for real-time node synchronization."
   (add-hook 'after-save-hook #'supertag-sync--run-on-save nil t))
 
-(defun supertag--project-node-from-org-text (node-id current-file source-text)
-  "Return NODE-ID's projection from SOURCE-TEXT, Org source for CURRENT-FILE.
+(defun supertag--project-nodes-from-org-text (current-file source-text)
+  "Return every heading node projection in SOURCE-TEXT for CURRENT-FILE.
+
 SOURCE-TEXT is projected in a scratch buffer, so the destructive embed-block
 stripping `supertag--parse-org-nodes-from-current-buffer' performs never
 reaches the caller's buffer.  Org syntax that the source buffer configures
 per-buffer -- TODO keywords and the regexps derived from them -- is carried
-over so the projection reads the text the same way its own buffer does."
+over so the projection reads the text the same way its own buffer does.
+
+Only heading nodes are returned; the file node belongs to
+`supertag-sync--upsert-file-node' and is not part of this projection."
   (let ((source-todo-keywords-1 org-todo-keywords-1)
         (source-todo-regexp org-todo-regexp)
         (source-not-done-regexp org-not-done-regexp)
@@ -2460,10 +2464,24 @@ over so the projection reads the text the same way its own buffer does."
         (setq-local org-complex-heading-regexp source-complex-heading-regexp)
         (setq-local org-todo-line-regexp source-todo-line-regexp)
         (setq-local tab-width 8)
-        (cl-find node-id
-                 (supertag--parse-org-nodes-from-current-buffer current-file)
-                 :key (lambda (node) (plist-get node :id))
-                 :test #'equal)))))
+        (supertag--parse-org-nodes-from-current-buffer current-file)))))
+
+(defun supertag--project-node-from-org-text (node-id current-file source-text)
+  "Return NODE-ID's projection from SOURCE-TEXT, Org source for CURRENT-FILE.
+
+SOURCE-TEXT is projected in a scratch buffer, so the destructive embed-block
+stripping `supertag--parse-org-nodes-from-current-buffer' performs never
+reaches the caller's buffer.  Org syntax that the source buffer configures
+per-buffer -- TODO keywords and the regexps derived from them -- is carried
+over so the projection reads the text the same way its own buffer does.
+
+Callers that reproject several nodes of one file want
+`supertag--project-nodes-from-org-text' instead: this function parses the
+whole file for one node."
+  (cl-find node-id
+           (supertag--project-nodes-from-org-text current-file source-text)
+           :key (lambda (node) (plist-get node :id))
+           :test #'equal))
 
 (defun supertag--parse-node-at-point ()
   "Parse the Org heading at point and return its property list.

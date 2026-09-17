@@ -39,6 +39,7 @@
      ("test/storage-save-boundary-test.el" . "^supertag-storage-")
      ("test/document-query-contract-test.el" . "^supertag-document-query-")
      ("test/node-view-test.el" . "^supertag-node-view-")
+     ("test/sync-scope-symlink-test.el" . "^supertag-sync-scope-")
      ("test/node-feature-test.el" . "^supertag-node-feature-")
      ("test/menu-lazy-test.el" . "^supertag-menu-"))
     ("compat" ("test/document-query-compat-test.el" . "^supertag-document-query-compat-"))

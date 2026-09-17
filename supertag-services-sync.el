@@ -470,28 +470,55 @@ If it's a hash table, wrap it in a plist so metadata can be stored."
 
 ;; Core Functions - File State Tracking
 
+(defvar supertag-sync--truename-directory-cache nil
+  "Memoized canonical directory list for `supertag-sync--in-scope-path-p'.
+A cons of (CONFIGURED-DIRS . TRUENAME-DIRS), reused while CONFIGURED-DIRS
+stays `equal'.  The scope predicate runs once per file during full scans, so
+`file-truename' on every configured directory must not repeat per file.
+Re-pointing a symlinked directory mid-session keeps the cached target until
+CONFIGURED-DIRS changes; restart or reconfigure to refresh.")
+
+(defun supertag-sync--truename-directories (dirs)
+  "Return DIRS canonicalised to trailing-slash truenames.
+Mirrors `supertag-git--truename-dir': `file-truename' (not just
+`expand-file-name') is what makes a configured directory reached through a
+symlink match, e.g. `~/org' -> `/mnt/data/org' or macOS's `/var' ->
+`/private/var'.  Missing directory entries are fine, since `file-truename'
+resolves only the ancestors that exist.  Result is cached; see
+`supertag-sync--truename-directory-cache'."
+  (if (and supertag-sync--truename-directory-cache
+           (equal (car supertag-sync--truename-directory-cache) dirs))
+      (cdr supertag-sync--truename-directory-cache)
+    (let ((resolved (mapcar (lambda (dir)
+                              (file-name-as-directory
+                               (file-truename (expand-file-name dir))))
+                            dirs)))
+      (setq supertag-sync--truename-directory-cache
+            (cons (copy-sequence dirs) resolved))
+      resolved)))
+
 (defun supertag-sync--in-scope-path-p (file)
   "Check if FILE path is within synchronization scope.
-Does not require the file to exist."
+Does not require the file to exist: `file-truename' still resolves the
+existing ancestors of a missing path.
+FILE and both configured directory lists are compared as truenames, so a
+`supertag-sync-directories' entry that goes through a symlink still matches.
+The same reasoning is spelled out above `supertag-git--truename-dir'."
   (when file
-    (let* ((expanded-file (expand-file-name file))
-           (file-dir (file-name-directory expanded-file))
+    (let* ((file-dir (file-name-directory
+                      (file-truename (expand-file-name file))))
            (excluded (and supertag-sync-exclude-directories
-                          (cl-some (lambda (dir)
-                                     (let ((expanded-exclude-dir (expand-file-name dir)))
-                                       (string-prefix-p expanded-exclude-dir file-dir)))
-                                   supertag-sync-exclude-directories)))
+                          (cl-some (lambda (dir) (string-prefix-p dir file-dir))
+                                   (supertag-sync--truename-directories
+                                    supertag-sync-exclude-directories))))
            (sync-dirs (supertag-sync--effective-directories))
            (included (if sync-dirs
-                         (cl-some (lambda (dir)
-                                    (let ((expanded-dir (expand-file-name dir)))
-                                      (string-prefix-p expanded-dir file-dir)))
-                                  sync-dirs)
+                         (cl-some (lambda (dir) (string-prefix-p dir file-dir))
+                                  (supertag-sync--truename-directories sync-dirs))
                        t)))
-      (let ((result (and included
-                         (not excluded)
-                         (string-match-p supertag-sync-file-pattern file))))
-        result))))
+      (and included
+           (not excluded)
+           (string-match-p supertag-sync-file-pattern file)))))
 
 (defun supertag-sync--in-sync-scope-p (file)
   "Check if FILE is within synchronization scope.

@@ -245,19 +245,47 @@ repeated Tag so the walk still terminates."
   (supertag-view-refresh))
 
 (defun supertag-view-tags-delete ()
-  "Delete marked Tag Manager rows, or the row at point, everywhere."
+  "Delete marked Tag Manager rows, or the row at point, everywhere.
+Marked rows get one combined text preview before their single confirmation:
+`skip-confirm' never stands in for showing what Org text will change."
   (interactive)
   (let ((buffer (current-buffer)))
     (if supertag-view-tags--marked-ids
       (let* ((ids (copy-sequence supertag-view-tags--marked-ids))
              (names (mapcar (lambda (id)
                               (or (plist-get (supertag-tag-get id) :name) id))
-                            ids)))
+                            ids))
+             (scans (mapcar (lambda (id)
+                              (cons id (supertag-tag--text-scan
+                                        (supertag-tag--text-files-for-tag id))))
+                            ids))
+             (records (apply #'append
+                             (mapcar (lambda (entry)
+                                       (supertag-tag--text-records-for-tag
+                                        (car entry) (cdr entry)))
+                                     scans)))
+             (near (apply #'append
+                          (mapcar (lambda (entry)
+                                    (supertag-tag--text-near-misses-for-tag
+                                     (car entry) (cdr entry)))
+                                  scans)))
+             (file-count (length (supertag-tag--text-group-by-file records))))
+        (supertag-tag--text-preview
+         (format "Delete %d tags" (length ids))
+         (list (cons "WILL CHANGE" records)
+               (cons "NOT CHANGED" near))
+         (format "%s: %d occurrence(s) / %d file(s); %d candidate(s) will not be touched"
+                 (string-join names ", ") (length records) file-count (length near)))
         (when (yes-or-no-p
-               (format "Delete %d tags (%s) everywhere? "
-                       (length ids) (string-join names ", ")))
-          (dolist (id ids)
-            (supertag-delete-tag-everywhere id t))
+               (format "Delete %d tags (%s) everywhere? %d occurrence(s) in %d file(s) will be rewritten. "
+                       (length ids) (string-join names ", ") (length records) file-count))
+          (dolist (entry scans)
+            ;; No precomputed scan: each Tag re-enumerates so the deletion of
+            ;; an earlier Tag cannot shift the next one's recorded ranges.
+            (supertag-tag--text-delete-tag
+             (car entry)
+             (or (plist-get (supertag-tag-get (car entry)) :name) (car entry))
+             t))
           (with-current-buffer buffer
             (setq supertag-view-tags--marked-ids nil)
             (supertag-view-refresh))))

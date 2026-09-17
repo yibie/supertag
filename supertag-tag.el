@@ -20,7 +20,9 @@
 ;; supertag-ui-completion-mode, global-supertag-ui-completion-mode,
 ;; supertag-add-tag, supertag-remove-tag-from-node, supertag-tag-rename,
 ;; supertag-delete-tag-everywhere,
-;; supertag-cleanup-orphaned-tags.
+;; supertag-cleanup-orphaned-tags,
+;; supertag-report-orphan-tag-occurrences,
+;; supertag-cleanup-orphan-tag-occurrences.
 ;; Hooks: org-mode-hook, enable-theme-functions (when available).
 ;; Entry points: supertag--normalize-tag-id, supertag--create-tag-entities,
 ;; supertag-find-tag-descendants, supertag-query-tag-children,
@@ -91,6 +93,16 @@
 ;; FILETAGS callbacks run after the shared Org updater loads its Sync provider.
 (declare-function supertag-sync--parse-file-header "supertag-services-sync" ())
 (declare-function supertag-node-tag-occurrences-at-point "supertag-services-sync" ())
+(defvar supertag-sync-directories)
+(defvar supertag-sync-directories-mode)
+(defvar supertag-sync-exclude-directories)
+(defvar supertag-sync-file-pattern)
+(autoload 'supertag-sync--effective-directories "supertag-services-sync")
+(declare-function supertag-sync--effective-directories "supertag-services-sync" ())
+(autoload 'supertag-sync--parse-filetags "supertag-services-sync")
+(declare-function supertag-sync--parse-filetags "supertag-services-sync" (raw))
+(autoload 'supertag-service-org--save-current-buffer "supertag-service-org")
+(declare-function supertag-service-org--save-current-buffer "supertag-service-org" ())
 
 ;; Tag input reads Query only on first use, never while loading this feature.
 (autoload 'supertag-query-tag-descriptors "supertag-query")
@@ -3653,11 +3665,502 @@ and existence validation come from `supertag-tag-update'."
                                        (list parent-id)))))
     (supertag-tag-parents tag-id)))
 
+(defconst supertag-tag--text-candidate-regexp
+  (concat "[#＃]\\([^[:space:]#" supertag-inline-tag-terminator-chars "]+\\)")
+  "Loose `#name' candidate regexp used by the text scan.
+`supertag-inline-tag-regexp' requires a prose boundary, so it never sees a
+`#name' inside a link description, a src block or a property drawer; the scan
+must see those to report them as not-changed.  Acceptance is still decided by
+`supertag-view-helper--inline-tag-range-at'.")
+
+(defun supertag-tag--text-file-key (file)
+  "Return FILE as an absolute truename, the key for scan records."
+  (file-truename (expand-file-name file)))
+
+(defun supertag-tag--text-scope-directories ()
+  "Return the directories this command may scan.
+Mirrors `supertag-sync--effective-directories' without loading Sync merely to
+learn that no directory is configured."
+  (let ((configured (bound-and-true-p supertag-sync-directories))
+        (mode (bound-and-true-p supertag-sync-directories-mode)))
+    (if (and (or configured (eq mode 'vaults))
+             (fboundp 'supertag-sync--effective-directories))
+        (supertag-sync--effective-directories)
+      configured)))
+
+(defun supertag-tag--text-scope-files ()
+  "Return the sorted Org files inside the configured sync scope."
+  (let ((pattern (if (bound-and-true-p supertag-sync-file-pattern)
+                     supertag-sync-file-pattern
+                   "\\.org\\'"))
+        (excludes (bound-and-true-p supertag-sync-exclude-directories))
+        files)
+    (dolist (dir (supertag-tag--text-scope-directories))
+      (when (and (stringp dir) (file-directory-p dir))
+        (dolist (file (directory-files-recursively dir pattern t))
+          (when (file-regular-p file)
+            (push (supertag-tag--text-file-key file) files)))))
+    (setq files (delete-dups files))
+    (when excludes
+      (let ((excluded (mapcar (lambda (dir)
+                                (file-name-as-directory
+                                 (supertag-tag--text-file-key dir)))
+                              excludes)))
+        (setq files (cl-remove-if
+                     (lambda (file)
+                       (let ((dir (file-name-directory (file-name-as-directory file))))
+                         (cl-some (lambda (blocked) (string-prefix-p blocked dir))
+                                  excluded)))
+                     files))))
+    (sort files #'string<)))
+
+(defun supertag-tag--text-line-text (position)
+  "Return the line around POSITION as plain text."
+  (buffer-substring-no-properties
+   (save-excursion (goto-char position) (line-beginning-position))
+   (save-excursion (goto-char position) (line-end-position))))
+
+(defun supertag-tag--text-resolve (token)
+  "Return TOKEN's Tag ID, nil for an orphan, or `:ambiguous'."
+  (condition-case nil
+      (supertag-tag-resolve-occurrence token)
+    (error :ambiguous)))
+
+(defun supertag-tag--text-node-file-key (node-id)
+  "Return NODE-ID's file as a scan key, or nil."
+  (let ((file (plist-get (supertag-node-get node-id) :file)))
+    (and (stringp file) (ignore-errors (supertag-tag--text-file-key file)))))
+
+(defun supertag-tag--text-file-node-id (file-key)
+  "Return FILE-KEY's file node id when the Store owns that file."
+  (let* ((header (ignore-errors (supertag-sync--parse-file-header)))
+         (id (plist-get header :id)))
+    (and (stringp id)
+         (equal (supertag-tag--text-node-file-key id) file-key)
+         id)))
+
+(defun supertag-tag--text-context (file-key)
+  "Return (CONTEXT . NODE-ID) for the occurrence at point in FILE-KEY.
+NODE-ID is non-nil only when the Store projects this file for that heading."
+  (if (org-before-first-heading-p)
+      (cons :file-top (supertag-tag--text-file-node-id file-key))
+    (let ((id (org-entry-get nil "ID")))
+      (cond
+       ((null id) (cons :no-id nil))
+       ((null (supertag-node-get id)) (cons :unprojected-id nil))
+       ((equal (supertag-tag--text-node-file-key id) file-key) (cons :id id))
+       (t (cons :duplicate-id nil))))))
+
+(defun supertag-tag--text-reject-reason ()
+  "Explain why the candidate at point is not a Tag occurrence."
+  (let* ((context (org-element-context))
+         (type (org-element-type context))
+         (heading (org-element-lineage context '(headline) t)))
+    (cond
+     ((and heading (org-element-property :commentedp heading)) 'commented-heading)
+     ((org-element-lineage context '(drawer property-drawer) t) 'drawer)
+     ((eq type 'node-property) 'drawer)
+     ((or (eq type 'link) (org-element-lineage context '(link) t)) 'link)
+     ((eq type 'keyword) 'keyword)
+     ((memq type '(src-block example-block export-block comment comment-block
+                             fixed-width verse-block quote-block center-block
+                             special-block inline-src-block))
+      'block)
+     ((memq type '(headline paragraph)) 'prose-object)
+     (t (or type 'other)))))
+
+(defun supertag-tag--text-filetags-records (file-key)
+  "Return candidate records for the current buffer's #+FILETAGS tokens."
+  (save-excursion
+    (goto-char (point-min))
+    (let ((case-fold-search t)
+          records)
+      (when (re-search-forward "^#\\+FILETAGS:[ \t]*\\(.*\\)$" nil t)
+        (let* ((raw (match-string-no-properties 1))
+               (line (buffer-substring-no-properties
+                      (line-beginning-position) (line-end-position)))
+               (cursor (match-beginning 1))
+               (tokens (if (fboundp 'supertag-sync--parse-filetags)
+                           (supertag-sync--parse-filetags raw)
+                         (split-string raw "[ \t:]+" t)))
+               (node-id (supertag-tag--text-file-node-id file-key)))
+          (dolist (token tokens)
+            (when (and (stringp token) (not (string-empty-p token)))
+              (let ((position (save-excursion
+                                (goto-char cursor)
+                                (when (search-forward token (line-end-position) t)
+                                  (match-beginning 0)))))
+                (when position
+                  (setq cursor (+ position (length token)))
+                  (push (list :file file-key
+                              :begin position :end (+ position (length token))
+                              :token token :kind :filetags
+                              :line (line-number-at-pos position) :line-text line
+                              :context :filetags :node-id node-id
+                              :resolution (supertag-tag--text-resolve token))
+                        records)))))))
+      (nreverse records))))
+
+(defun supertag-tag--text-scan-buffer (file-key)
+  "Return candidate records for the current Org buffer.
+Accepted records are exactly the occurrences the view layer highlights, so
+what a caller deletes equals what the user sees.  Rejected `#name' text is
+kept as a record with `:reason' so it can be reported as not-changed."
+  (save-restriction
+    (widen)
+    (save-excursion
+      (let (records)
+        (setq records (supertag-tag--text-filetags-records file-key))
+        (goto-char (point-min))
+        (while (re-search-forward supertag-tag--text-candidate-regexp nil t)
+          (let* ((marker (1- (match-beginning 1)))
+                 (loose (match-string-no-properties 1))
+                 (range (supertag-view-helper--inline-tag-range-at marker)))
+            (if range
+                (progn
+                  (let ((context (supertag-tag--text-context file-key)))
+                    (push (list :file file-key
+                                :begin (nth 0 range) :end (nth 1 range)
+                                :token (nth 2 range) :kind :inline
+                                :line (line-number-at-pos marker)
+                                :line-text (supertag-tag--text-line-text marker)
+                                :node-id (cdr context)
+                                :context (car context)
+                                :resolution (supertag-tag--text-resolve (nth 2 range)))
+                          records))
+                  (goto-char (nth 1 range)))
+              (push (list :file file-key
+                          :begin marker :end (+ (match-end 1))
+                          :token loose :kind :candidate
+                          :line (line-number-at-pos marker)
+                          :line-text (supertag-tag--text-line-text marker)
+                          :reason (supertag-tag--text-reject-reason))
+                    records)
+              (goto-char (1+ marker)))))
+        (nreverse records)))))
+
+(defun supertag-tag--text-scan-file (file)
+  "Return candidate records for FILE.
+A live buffer is read as-is because it may hold unsaved text."
+  (let* ((file-key (supertag-tag--text-file-key file))
+         (buffer (find-buffer-visiting file-key)))
+    (if buffer
+        (with-current-buffer buffer
+          (supertag-tag--text-scan-buffer file-key))
+      (with-temp-buffer
+        (insert-file-contents file-key)
+        (delay-mode-hooks (org-mode))
+        (supertag-tag--text-scan-buffer file-key)))))
+
+(defun supertag-tag--text-scan (files)
+  "Return candidate records for FILES."
+  (let (records)
+    (dolist (file (sort (delete-dups (copy-sequence files)) #'string<))
+      (when (file-exists-p file)
+        (setq records (nconc records (supertag-tag--text-scan-file file)))))
+    records))
+
+(defun supertag-tag--text-scan-current-buffer ()
+  "Return candidate records for the current buffer."
+  (supertag-tag--text-scan-buffer
+   (supertag-tag--text-file-key (buffer-file-name))))
+
+(defun supertag-tag--text-files-for-tag (tag-id)
+  "Return the scan scope plus every file the Store projects TAG-ID on.
+The Store's files are included so an empty or partial sync scope cannot
+silently leave the Tag's own text behind."
+  (let ((files (supertag-tag--text-scope-files)))
+    (dolist (pair (supertag-find-nodes-by-tag tag-id))
+      (let ((file (plist-get (cdr pair) :file)))
+        (when (and (stringp file) (file-exists-p file))
+          (push (supertag-tag--text-file-key file) files))))
+    (sort (delete-dups files) #'string<)))
+
+(defun supertag-tag--text-occurrence-p (record)
+  "Return non-nil when RECORD is a real Tag occurrence."
+  (null (plist-get record :reason)))
+
+(defun supertag-tag--text-tokens-for-tag (tag-id)
+  "Return the token strings that name TAG-ID in Org text."
+  (let ((entity (supertag-tag-get tag-id)))
+    ;; Non-destructive: the entity's own alias list must stay untouched.
+    (cl-remove-duplicates
+     (delq nil (append (list (plist-get entity :name)
+                             (supertag-sanitize-tag-name (plist-get entity :name))
+                             (supertag-service-org--tag-token tag-id))
+                       (plist-get entity :aliases)))
+     :test #'equal)))
+
+(defun supertag-tag--text-records-for-tag (tag-id records)
+  "Return the occurrence records in RECORDS that resolve to TAG-ID."
+  (cl-remove-if-not (lambda (record)
+                      (and (supertag-tag--text-occurrence-p record)
+                           (equal tag-id (plist-get record :resolution))))
+                    records))
+
+(defun supertag-tag--text-records-for-token (token records)
+  "Return the orphan occurrence records in RECORDS named TOKEN."
+  (cl-remove-if-not (lambda (record)
+                      (and (supertag-tag--text-occurrence-p record)
+                           (null (plist-get record :resolution))
+                           (equal token (plist-get record :token))))
+                    records))
+
+(defun supertag-tag--text-look-alike-p (candidate token)
+  "Return non-nil when CANDIDATE looks like the same token as TOKEN.
+The inline regexp ends an ASCII name only at whitespace, so `#old;' is the
+single token `old;' while `#oldstuff' is a different token.  A rejected
+candidate reported as looking like TOKEN may therefore ignore a punctuation
+tail, but never an alphanumeric or CJK continuation."
+  (or (equal candidate token)
+      (and (stringp candidate)
+           (string-prefix-p token candidate)
+           (> (length candidate) (length token))
+           (not (string-match-p
+                 "[[:alnum:]_-]" (substring candidate (length token)))))))
+
+(defun supertag-tag--text-near-misses-for-tag (tag-id records)
+  "Return #name records that look like TAG-ID but are not occurrences."
+  (let ((tokens (supertag-tag--text-tokens-for-tag tag-id)))
+    (cl-remove-if-not (lambda (record)
+                        (and (plist-get record :reason)
+                             (cl-some (lambda (token)
+                                        (supertag-tag--text-look-alike-p
+                                         (plist-get record :token) token))
+                                      tokens)))
+                      records)))
+
+(defun supertag-tag--text-near-misses-for-token (token records)
+  "Return #TOKEN records that are not Tag occurrences."
+  (cl-remove-if-not (lambda (record)
+                      (and (plist-get record :reason)
+                           (supertag-tag--text-look-alike-p
+                            (plist-get record :token) token)))
+                    records))
+
+(defun supertag-tag--text-orphan-records (records)
+  "Return occurrence records whose token has no Tag entity."
+  (cl-remove-if-not (lambda (record)
+                      (and (supertag-tag--text-occurrence-p record)
+                           (null (plist-get record :resolution))))
+                    records))
+
+(defun supertag-tag--text-ambiguous-records (records)
+  "Return occurrence records whose token names several Tags."
+  (cl-remove-if-not (lambda (record)
+                      (eq :ambiguous (plist-get record :resolution)))
+                    records))
+
+(defun supertag-tag--text-group-by-file (records)
+  "Group RECORDS as ((FILE . RECORDS) ...) sorted by file and line."
+  (let (groups)
+    (dolist (record records)
+      (let ((group (assoc (plist-get record :file) groups)))
+        (unless group
+          (setq group (list (plist-get record :file)))
+          (push group groups))
+        (setcdr group (cons record (cdr group)))))
+    (mapcar (lambda (group)
+              (cons (car group)
+                    (sort (cdr group)
+                          (lambda (a b) (< (plist-get a :begin) (plist-get b :begin))))))
+            (sort groups (lambda (a b) (string< (car a) (car b)))))))
+
+(defun supertag-tag--text-context-label (record)
+  "Return RECORD's context or not-changed reason as a display label."
+  (or (pcase (plist-get record :reason)
+        ('commented-heading "not a Tag: commented heading")
+        ('drawer "not a Tag: property drawer")
+        ('link "not a Tag: link path or description")
+        ('keyword "not a Tag: keyword line")
+        ('block "not a Tag: src or example block")
+        ('prose-object "not a Tag: inside an Org object")
+        ((pred null) nil)
+        (reason (format "not a Tag: %s" reason)))
+      (pcase (plist-get record :context)
+        (:file-top "file top")
+        (:filetags "FILETAGS")
+        (:no-id "heading without :ID:")
+        (:unprojected-id "heading :ID: not projected")
+        (:duplicate-id "duplicate :ID: (Store points at another file)")
+        (:id (format "heading :ID: %s" (plist-get record :node-id)))
+        (context (format "%s" context)))))
+
+(defun supertag-tag--text-preview (title sections summary)
+  "Render the text preview in `*Supertag Tag Change*' and return it.
+SECTIONS is a list of (LABEL . RECORDS).  Nothing is written here."
+  (let ((buffer (get-buffer-create "*Supertag Tag Change*")))
+    (with-current-buffer buffer
+      (let ((inhibit-read-only t))
+        (erase-buffer)
+        (insert (format "%s\n%s\n\n" title summary))
+        (dolist (section sections)
+          (let ((records (cdr section)))
+            (insert (format "%s: %d\n" (car section) (length records)))
+            (dolist (group (supertag-tag--text-group-by-file records))
+              (insert (format "  %s\n" (car group)))
+              (dolist (record (cdr group))
+                (insert (format "    %d  [%s]  %s\n"
+                                (plist-get record :line)
+                                (supertag-tag--text-context-label record)
+                                (plist-get record :line-text))))
+              (insert "\n")))))
+      (special-mode)
+      (goto-char (point-min)))
+    (pop-to-buffer buffer)
+    buffer))
+
+(defun supertag-tag--text-signature (records)
+  "Return the comparable form of RECORDS."
+  (sort (mapcar (lambda (record)
+                  (list (plist-get record :begin) (plist-get record :end)
+                        (plist-get record :token)))
+                records)
+        (lambda (a b) (or (< (car a) (car b))
+                          (and (= (car a) (car b)) (string< (cadr a) (cadr b)))))))
+
+(defun supertag-tag--text-group-by-owner (records)
+  "Group RECORDS by owning node id, `nil' when no node owns them.
+Groups come back back-to-front so deleting one cannot shift the next."
+  (let (groups)
+    (dolist (record records)
+      (let* ((node-id (plist-get record :node-id))
+             (group (assoc node-id groups)))
+        (unless group
+          (setq group (list node-id))
+          (push group groups))
+        (setcdr group (cons record (cdr group)))))
+    (sort (mapcar (lambda (group)
+                    (cons (car group)
+                          (sort (cdr group)
+                                (lambda (a b) (> (plist-get a :begin)
+                                                 (plist-get b :begin))))))
+                  groups)
+          (lambda (a b)
+            (> (apply #'max (mapcar (lambda (record) (plist-get record :begin))
+                                    (cdr a)))
+               (apply #'max (mapcar (lambda (record) (plist-get record :begin))
+                                    (cdr b))))))))
+
+(defun supertag-tag--text-delete-records (records drop-p)
+  "Delete RECORDS in the current buffer, highest position first.
+DROP-P decides which `#+FILETAGS' tokens go; inline ranges are deleted as
+recorded."
+  (dolist (record (sort (copy-sequence records)
+                        (lambda (a b) (> (plist-get a :begin) (plist-get b :begin)))))
+    (if (eq (plist-get record :kind) :filetags)
+        (supertag-service-org--set-filetags
+         (cl-remove-if drop-p (supertag-service-org--filetags)))
+      (delete-region (plist-get record :begin) (plist-get record :end)))))
+
+(defun supertag-tag--text-write (records rescan-fn drop-p)
+  "Delete RECORDS from Org text, file by file, back to front.
+RESCAN-FN re-reads the same selection from the current buffer; when it
+differs from the planned records, that file is left untouched and reported.
+DROP-P decides which `#+FILETAGS' tokens are removed.
+Returns a plist (:occurrences N :files N :aborted ((FILE . REASON) ...))."
+  (let ((planned (supertag-tag--text-group-by-file records))
+        (written 0) (files 0) aborted)
+    (dolist (group planned)
+      (let ((file (car group))
+            (group-records (cdr group)))
+        (with-current-buffer (find-file-noselect file t)
+          (save-restriction
+            (widen)
+            (if (not (equal (supertag-tag--text-signature (funcall rescan-fn))
+                            (supertag-tag--text-signature group-records)))
+                (push (cons file "text changed since the preview") aborted)
+              (dolist (owner-group (supertag-tag--text-group-by-owner group-records))
+                (let ((node-id (car owner-group))
+                      (owner-records (cdr owner-group)))
+                  (if node-id
+                      (supertag-service-org--update-buffer-and-resync
+                       node-id
+                       (lambda ()
+                         (supertag-tag--text-delete-records owner-records drop-p)))
+                    (progn
+                      (supertag-tag--text-delete-records owner-records drop-p)
+                      (supertag-service-org--save-current-buffer)))))
+              (cl-incf files)
+              (cl-incf written (length group-records)))))))
+    (list :occurrences written :files files :aborted (nreverse aborted))))
+
+(defun supertag-tag--text-repair-owners (tag-id records)
+  "Refresh owner nodes whose text no longer carries TAG-ID.
+Membership without text is a stale projection, not an occurrence; refreshing
+it from the file keeps the Store honest without deleting any text.  Nodes
+whose file still holds an occurrence are left alone."
+  (let ((with-text (make-hash-table :test 'equal)))
+    (dolist (record (supertag-tag--text-records-for-tag tag-id records))
+      (let ((node-id (plist-get record :node-id)))
+        (when node-id (puthash node-id t with-text))))
+    (dolist (pair (supertag-find-nodes-by-tag tag-id))
+      (let ((node-id (car pair))
+            (file (plist-get (cdr pair) :file)))
+        (unless (or (gethash node-id with-text)
+                    (not (stringp file))
+                    (not (file-exists-p file)))
+          (supertag-service-org--update-buffer-and-resync node-id #'ignore t))))))
+
+(defun supertag-tag--text-delete-tag (tag-id display skip-confirm &optional scan)
+  "Delete TAG-ID's text occurrences after previewing them.
+DISPLAY names the Tag in prompts.  SKIP-CONFIRM means the caller already
+showed this text preview.  SCAN may supply the enumeration."
+  (let* ((files (supertag-tag--text-files-for-tag tag-id))
+         (scan (or scan (supertag-tag--text-scan files)))
+         (records (supertag-tag--text-records-for-tag tag-id scan))
+         (near (supertag-tag--text-near-misses-for-tag tag-id scan))
+         (file-count (length (supertag-tag--text-group-by-file records))))
+    (supertag-tag--text-preview
+     (format "Delete Tag '%s'" display)
+     (list (cons "WILL CHANGE" records)
+           (cons "NOT CHANGED" near))
+     (format "%d occurrence(s) / %d file(s); %d candidate(s) will not be touched"
+             (length records) file-count (length near)))
+    (when (or skip-confirm
+              (yes-or-no-p (format "Delete '%s': rewrite %d occurrence(s) in %d file(s)? "
+                                   display (length records) file-count)))
+      (let* ((result (supertag-tag--text-write
+                      records
+                      (lambda ()
+                        (supertag-tag--text-records-for-tag
+                         tag-id (supertag-tag--text-scan-current-buffer)))
+                      (lambda (token)
+                        (supertag-service-org--token-identifies-p token tag-id))))
+             (after (supertag-tag--text-scan files))
+             (remaining (supertag-tag--text-records-for-tag tag-id after)))
+        (supertag-tag--text-repair-owners tag-id after)
+        (let ((owners (supertag-find-nodes-by-tag tag-id))
+              (aborted (plist-get result :aborted)))
+          (if (or remaining owners aborted)
+              (progn
+                (supertag-tag--text-preview
+                 (format "Not removed for '%s'" display)
+                 (list (cons "NOT REMOVED" remaining)
+                       (cons "NOT CHANGED" near))
+                 (format "Tag kept: %d occurrence(s) and %d node(s) still name it; %d file(s) left untouched"
+                         (length remaining) (length owners) (length aborted)))
+                (message "Tag '%s' kept: %d occurrence(s) / %d node(s) remain%s"
+                         display (length remaining) (length owners)
+                         (if aborted
+                             (format " (%d file(s) changed since the preview; preview again)"
+                                     (length aborted))
+                           ""))
+                t)
+            (supertag-tag-delete tag-id)
+            (message "Deleted Tag '%s': rewrote %d occurrence(s) in %d file(s)"
+                     display (plist-get result :occurrences) (plist-get result :files))
+            t))))))
+
 (defun supertag-delete-tag-everywhere (&optional tag-name skip-confirm)
-  "Preview and confirm removing TAG-NAME from Org and its projection.
-Only delete the old entity after no projected node owns it.
+  "Preview and confirm removing TAG-NAME from Org text and its projection.
+Occurrences are enumerated from Org text, not from the Store's node
+projection, so a heading without `:ID:', a duplicate-ID copy and a FILETAGS
+entry are all included.  The preview lists every file and line before
+anything is written, and the entity is deleted only when no text occurrence
+and no node projection remains.
 Preview is always shown before confirmation, whatever the caller.
-When SKIP-CONFIRM is non-nil, the caller already obtained confirmation."
+When SKIP-CONFIRM is non-nil, the caller already showed the text preview."
   (interactive)
   (let* ((name (or tag-name (supertag-ui-read-tag
                             "Delete tag permanently: " (supertag-view-api-list-tag-ids) nil nil)))
@@ -3665,16 +4168,103 @@ When SKIP-CONFIRM is non-nil, the caller already obtained confirmation."
                   (or (supertag-service-org--semantic-tag-id name)
                       (user-error "Unknown Tag '%s'" name)))))
     (when id
-      (let* ((groups (supertag-tag-change-preview
-                      id nil t))
-             (count (apply #'+ (mapcar (lambda (group) (length (cadr group))) groups))))
-        (when (or skip-confirm
-                  (yes-or-no-p (format "Delete '%s' in %d nodes / %d files? " name count (length groups))))
-          (dolist (group groups)
-            (dolist (entry (cadr group))
-              (supertag-service-org-remove-tag (car entry) id (null (nth 2 entry)))))
-          (unless (supertag-find-nodes-by-tag id) (supertag-tag-delete id))
-          t)))))
+      (supertag-tag--text-delete-tag id (or name id) skip-confirm))))
+
+(defun supertag-report-orphan-tag-occurrences ()
+  "Report `#token' text whose Tag entity does not exist.  Read-only.
+Occurrences come from Org text, so an unregistered token the user typed is
+reported too; nothing here decides that an orphan is garbage."
+  (interactive)
+  (let* ((records (supertag-tag--text-scan (supertag-tag--text-scope-files)))
+         (orphans (supertag-tag--text-orphan-records records))
+         (ambiguous (supertag-tag--text-ambiguous-records records))
+         (tokens (delete-dups (mapcar (lambda (record) (plist-get record :token))
+                                      orphans)))
+         (buffer (get-buffer-create "*Supertag Orphan Tags*")))
+    (with-current-buffer buffer
+      (let ((inhibit-read-only t))
+        (erase-buffer)
+        (insert (format "Orphan Tag occurrences: %d token(s) / %d occurrence(s)\n"
+                        (length tokens) (length orphans)))
+        (insert "These tokens have no Tag entity.  Nothing is cleaned by default;\n")
+        (insert "use `supertag-cleanup-orphan-tag-occurrences' to pick one.\n\n")
+        (dolist (token (sort tokens #'string<))
+          (let ((selected (cl-remove-if-not
+                           (lambda (record) (equal token (plist-get record :token)))
+                           orphans)))
+            (insert (format "#%s: %d\n" token (length selected)))
+            (dolist (group (supertag-tag--text-group-by-file selected))
+              (insert (format "  %s\n" (car group)))
+              (dolist (record (cdr group))
+                (insert (format "    %d  [%s]  %s\n"
+                                (plist-get record :line)
+                                (supertag-tag--text-context-label record)
+                                (plist-get record :line-text)))))
+            (insert "\n")))
+        (when ambiguous
+          (insert (format "Ambiguous tokens (not orphans): %d occurrence(s)\n"
+                          (length ambiguous)))
+          (dolist (token (sort (delete-dups
+                                (mapcar (lambda (record) (plist-get record :token))
+                                        ambiguous))
+                               #'string<))
+            (insert (format "  #%s\n" token)))))
+      (special-mode)
+      (goto-char (point-min)))
+    (pop-to-buffer buffer)
+    (message "%d orphan token(s) / %d occurrence(s); %d ambiguous occurrence(s)"
+             (length tokens) (length orphans) (length ambiguous))
+    buffer))
+
+(defun supertag-cleanup-orphan-tag-occurrences (&optional token)
+  "Preview and remove one orphan token's occurrences from Org text.
+The user picks the token; nothing is cleaned by default.  This never touches
+tokens that resolve to a Tag entity, not even ambiguous ones."
+  (interactive)
+  (let* ((records (supertag-tag--text-scan (supertag-tag--text-scope-files)))
+         (orphans (supertag-tag--text-orphan-records records))
+         (tokens (sort (delete-dups
+                        (mapcar (lambda (record) (plist-get record :token)) orphans))
+                       #'string<))
+         (name (cond
+                ((null tokens) (message "No orphan Tag occurrences found.") nil)
+                ((and token (member token tokens)) token)
+                (token (user-error "'%s' has no orphan occurrence" token))
+                (t (completing-read "Orphan token to remove: " tokens nil t)))))
+    (when name
+      (let* ((selected (supertag-tag--text-records-for-token name records))
+             (near (supertag-tag--text-near-misses-for-token name records))
+             (file-count (length (supertag-tag--text-group-by-file selected))))
+        (supertag-tag--text-preview
+         (format "Remove orphan '#%s'" name)
+         (list (cons "WILL CHANGE" selected)
+               (cons "NOT CHANGED" near))
+         (format "%d orphan occurrence(s) / %d file(s); %d candidate(s) will not be touched"
+                 (length selected) file-count (length near)))
+        (when (yes-or-no-p
+               (format "Remove %d orphan '#%s' occurrence(s) in %d file(s)? "
+                       (length selected) name file-count))
+          (let* ((result (supertag-tag--text-write
+                          selected
+                          (lambda ()
+                            (supertag-tag--text-records-for-token
+                             name (supertag-tag--text-scan-current-buffer)))
+                          (lambda (candidate) (equal candidate name))))
+                 (remaining (supertag-tag--text-records-for-token
+                             name (supertag-tag--text-scan (supertag-tag--text-scope-files))))
+                 (aborted (plist-get result :aborted)))
+            (if (or remaining aborted)
+                (progn
+                  (supertag-tag--text-preview
+                   (format "Not removed for '#%s'" name)
+                   (list (cons "NOT REMOVED" remaining)
+                         (cons "NOT CHANGED" near))
+                   (format "%d occurrence(s) remain; %d file(s) left untouched"
+                           (length remaining) (length aborted)))
+                  (message "Orphan '#%s': %d occurrence(s) remain" name (length remaining)))
+              (message "Removed orphan '#%s': %d occurrence(s) in %d file(s)"
+                       name (plist-get result :occurrences) (plist-get result :files)))
+            t))))))
 
 ;;;###autoload
 (defun supertag-cleanup-orphaned-tags ()

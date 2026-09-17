@@ -32,7 +32,8 @@ probe_root="$(mktemp -d "${TMPDIR:-/tmp}/supertag-entrypoints.XXXXXX")"
 echo "Runner counterexamples: $probe_root"
 mkdir -p "$probe_root/tree/test"
 cp ./*.el "$probe_root/tree/"
-cp test/run-tests.sh "$probe_root/tree/test/"
+# run-tests.sh sources test/deps-loadpath.sh, so the probe copy needs it too.
+cp test/run-tests.sh test/deps-loadpath.sh "$probe_root/tree/test/"
 cat > "$probe_root/tree/test/probe.el" <<'ELISP'
 (require 'ert)
 (ert-deftest probe-pass () (should t))

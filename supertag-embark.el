@@ -59,7 +59,13 @@ An already registered integration stays active for the current session."
 (defun supertag-embark--node-target-at (position)
   "Return a target from a semantic node property at POSITION.
 Stable identifiers emitted by projection views are recognized here without
-requiring those views to duplicate an action keymap."
+requiring those views to duplicate an action keymap.
+The properties are checked most-specific-first.  A reference card's title
+button carries both `supertag-reference-node-id' (the whole card) and
+`supertag-node-id' (its jump link); the card is the context the actions act
+on, so it must win there, independent of whether the card's leading ornament
+kept its properties.  `:node-link' still covers the view buttons that never
+carry the card property (OPEN, relation lines, semantic hits)."
   (or
    (when-let* ((concept-id
                 (get-text-property position 'supertag-concept-node-id))
@@ -68,11 +74,11 @@ requiring those views to duplicate an action keymap."
      (list :kind :concept :origin :concept-mention :node-id concept-id
            :begin (car bounds) :end (cdr bounds)))
    (supertag-embark--node-property-target
+    position 'supertag-reference-node-id :reference-card)
+   (supertag-embark--node-property-target
     position 'supertag-node-id :node-link)
    (supertag-embark--node-property-target
     position 'supertag-entity-id :view-entity)
-   (supertag-embark--node-property-target
-    position 'supertag-reference-node-id :reference-card)
    (supertag-embark--node-property-target
     position 'supertag-source-id :mention-source)))
 

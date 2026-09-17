@@ -271,6 +271,8 @@
           (with-temp-file script
             (insert ";;; -*- lexical-binding: t; -*-\n")
             (let ((print-length nil) (print-level nil)) (prin1 form (current-buffer))))
+          ;; Pin the child cwd before HOME is repointed.
+          (setq default-directory (file-truename default-directory))
           (setenv "HOME" directory) (setenv "CFFIXED_USER_HOME" directory)
           (setenv "EMACSLOADPATH" (concat (mapconcat #'identity deps path-separator) path-separator))
           (with-temp-buffer
@@ -587,6 +589,8 @@
           (with-temp-file script
             (insert ";;; -*- lexical-binding: t; -*-\n")
             (let ((print-length nil) (print-level nil)) (prin1 form (current-buffer))))
+          ;; Pin the child cwd before HOME is repointed.
+          (setq default-directory (file-truename default-directory))
           (setenv "HOME" tmp) (setenv "CFFIXED_USER_HOME" tmp)
           (setenv "EMACSLOADPATH" (concat (mapconcat #'identity deps path-separator) path-separator))
           (with-temp-buffer
@@ -787,6 +791,8 @@
           (with-temp-file script
             (insert ";;; -*- lexical-binding: t; -*-\n")
             (let ((print-length nil) (print-level nil)) (prin1 form (current-buffer))))
+          ;; Pin the child cwd before HOME is repointed.
+          (setq default-directory (file-truename default-directory))
           (setenv "HOME" tmp) (setenv "CFFIXED_USER_HOME" tmp)
           (setenv "EMACSLOADPATH" (concat (mapconcat #'identity deps path-separator) path-separator))
           (with-temp-buffer
@@ -896,6 +902,8 @@
                                 (with-current-buffer buffer
                                   (set-buffer-modified-p nil) (kill-buffer buffer)))))
                         (error (princ (format "NODE-F-ERROR %S\n" err)) (kill-emacs 1))) (current-buffer))))
+          ;; Pin the child cwd before HOME is repointed.
+          (setq default-directory (file-truename default-directory))
           (setenv "HOME" tmp) (setenv "CFFIXED_USER_HOME" tmp)
           (setenv "EMACSLOADPATH" (concat (mapconcat #'identity deps path-separator) path-separator))
           (with-temp-buffer
@@ -1186,6 +1194,8 @@
                                 (with-current-buffer buffer
                                   (set-buffer-modified-p nil) (kill-buffer buffer)))))
                         (error (princ (format "NODE-G-ERROR %S\n" err)) (kill-emacs 1))) (current-buffer))))
+          ;; Pin the child cwd before HOME is repointed.
+          (setq default-directory (file-truename default-directory))
           (setenv "HOME" tmp) (setenv "CFFIXED_USER_HOME" tmp)
           (setenv "EMACSLOADPATH" (concat (mapconcat #'identity deps path-separator) path-separator))
           (with-temp-buffer
@@ -1461,6 +1471,8 @@
                                 (with-current-buffer buffer
                                   (set-buffer-modified-p nil) (kill-buffer buffer)))))
                         (error (princ (format "NODE-H-ERROR %S\n" err)) (kill-emacs 1))) (current-buffer))))
+          ;; Pin the child cwd before HOME is repointed.
+          (setq default-directory (file-truename default-directory))
           (setenv "HOME" tmp) (setenv "CFFIXED_USER_HOME" tmp)
           (setenv "EMACSLOADPATH" (concat (mapconcat #'identity deps path-separator) path-separator))
           (with-temp-buffer

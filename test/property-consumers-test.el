@@ -176,6 +176,8 @@
              (setq emacs-startup-hook nil kill-emacs-hook nil org-mode-hook nil
                    enable-theme-functions nil)
              (mapc #'cancel-timer (append timer-list timer-idle-list)))))
+    ;; Pin the child cwd before HOME is repointed.
+    (setq default-directory (file-truename default-directory))
     (setenv "HOME" tmp) (setenv "CFFIXED_USER_HOME" tmp)
     (setenv "EMACSLOADPATH" (concat (mapconcat #'identity deps path-separator) path-separator))
     (with-temp-file script

@@ -452,6 +452,8 @@
       (with-temp-file snapshot (let ((print-length nil) (print-level nil)) (prin1 supertag--store (current-buffer))))
       (with-temp-buffer
         (make-directory (expand-file-name "child-home" tmp) t)
+        ;; Pin the child cwd before HOME is repointed.
+        (setq default-directory (file-truename default-directory))
         (setenv "HOME" (expand-file-name "child-home" tmp))
         (setenv "CFFIXED_USER_HOME" (getenv "HOME"))
         (setenv "EMACSLOADPATH" (concat (mapconcat #'identity dependencies path-separator) path-separator))
@@ -934,6 +936,8 @@
              (setq emacs-startup-hook nil kill-emacs-hook nil org-mode-hook nil enable-theme-functions nil))))
     (unwind-protect
         (with-temp-buffer
+          ;; Pin the child cwd before HOME is repointed.
+          (setq default-directory (file-truename default-directory))
           (setenv "HOME" tmp) (setenv "CFFIXED_USER_HOME" tmp)
           (setenv "EMACSLOADPATH" (concat (mapconcat #'identity dependencies path-separator) path-separator))
           (let* ((args (append '("-Q" "--batch")
@@ -1228,6 +1232,8 @@
              (mapc #'cancel-timer (append timer-list timer-idle-list)))))
     (unwind-protect
         (with-temp-buffer
+          ;; Pin the child cwd before HOME is repointed.
+          (setq default-directory (file-truename default-directory))
           (setenv "HOME" tmp) (setenv "CFFIXED_USER_HOME" tmp)
           (setenv "EMACSLOADPATH" (concat (mapconcat #'identity deps path-separator) path-separator))
           (let* ((status (apply #'call-process program nil t nil
@@ -1392,6 +1398,8 @@
                (mapc #'cancel-timer (append timer-list timer-idle-list)))))
       (with-temp-file snapshot (let ((print-length nil) (print-level nil)) (prin1 supertag--store (current-buffer))))
       (with-temp-buffer
+        ;; Pin the child cwd before HOME is repointed.
+        (setq default-directory (file-truename default-directory))
         (setenv "HOME" tmp) (setenv "CFFIXED_USER_HOME" tmp)
         (setenv "EMACSLOADPATH" (concat (mapconcat #'identity deps path-separator) path-separator))
         (let* ((status (apply #'call-process program nil t nil
@@ -1686,6 +1694,8 @@
                 (advice-remove 'supertag-ui--ensure-file-node-synced #'d5-file-helper)
                 (mapc #'cancel-timer (append timer-list timer-idle-list)))))
         (with-temp-buffer
+          ;; Pin the child cwd before HOME is repointed.
+          (setq default-directory (file-truename default-directory))
           (setenv "HOME" tmp) (setenv "CFFIXED_USER_HOME" tmp)
           (setenv "EMACSLOADPATH" (concat (mapconcat #'identity deps path-separator) path-separator))
           (let* ((status (apply #'call-process program nil t nil
@@ -1934,6 +1944,8 @@
                 (advice-remove 'supertag-service-org-save-and-record-tags-at-point #'d6-sync-observe)
                 (mapc #'cancel-timer (append timer-list timer-idle-list)))))
         (with-temp-buffer
+          ;; Pin the child cwd before HOME is repointed.
+          (setq default-directory (file-truename default-directory))
           (setenv "HOME" tmp) (setenv "CFFIXED_USER_HOME" tmp)
           (setenv "EMACSLOADPATH" (concat (mapconcat #'identity deps path-separator) path-separator))
           (let* ((status (apply #'call-process program nil t nil
@@ -2072,6 +2084,8 @@
                 (setq emacs-startup-hook nil kill-emacs-hook nil org-mode-hook nil enable-theme-functions nil)
                 (mapc #'cancel-timer (append timer-list timer-idle-list)))))
         (with-temp-buffer
+          ;; Pin the child cwd before HOME is repointed.
+          (setq default-directory (file-truename default-directory))
           (setenv "HOME" tmp) (setenv "CFFIXED_USER_HOME" tmp)
           (setenv "EMACSLOADPATH" (concat (mapconcat #'identity deps path-separator) path-separator))
           (let* ((status (apply #'call-process program nil t nil
@@ -2289,6 +2303,8 @@
                 (setq emacs-startup-hook nil kill-emacs-hook nil org-mode-hook nil enable-theme-functions nil)
                 (mapc #'cancel-timer (append timer-list timer-idle-list)))))
         (with-temp-buffer
+          ;; Pin the child cwd before HOME is repointed.
+          (setq default-directory (file-truename default-directory))
           (setenv "HOME" tmp) (setenv "CFFIXED_USER_HOME" tmp)
           (setenv "EMACSLOADPATH" (concat (mapconcat #'identity deps path-separator) path-separator))
           (let* ((status (apply #'call-process program nil t nil
@@ -2496,6 +2512,8 @@
                 (setq emacs-startup-hook nil kill-emacs-hook nil org-mode-hook nil enable-theme-functions nil)
                 (mapc #'cancel-timer (append timer-list timer-idle-list)))))
         (with-temp-buffer
+          ;; Pin the child cwd before HOME is repointed.
+          (setq default-directory (file-truename default-directory))
           (setenv "HOME" tmp) (setenv "CFFIXED_USER_HOME" tmp)
           (setenv "EMACSLOADPATH" (concat (mapconcat #'identity deps path-separator) path-separator))
           (let* ((status (apply #'call-process program nil t nil

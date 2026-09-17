@@ -1034,6 +1034,8 @@
          (process-environment (copy-sequence process-environment)))
     (unwind-protect
         (progn
+          ;; Pin the child cwd before HOME is repointed.
+          (setq default-directory (file-truename default-directory))
           (setenv "HOME" tmp) (setenv "CFFIXED_USER_HOME" tmp)
           (setenv "EMACSLOADPATH" (concat (mapconcat #'identity deps path-separator) path-separator))
           (let ((form

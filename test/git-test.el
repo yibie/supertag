@@ -698,6 +698,8 @@
          (evidence (getenv "SUPERTAG_VC_EVIDENCE")))
     (unwind-protect
         (progn
+          ;; Pin the child cwd before HOME is repointed.
+          (setq default-directory (file-truename default-directory))
           (setenv "HOME" tmp) (setenv "CFFIXED_USER_HOME" tmp)
           (setenv "GIT_CONFIG_GLOBAL" "/dev/null") (setenv "GIT_CONFIG_NOSYSTEM" "1")
           (setenv "GIT_TERMINAL_PROMPT" "0") (setenv "GIT_ALLOW_PROTOCOL" "file")

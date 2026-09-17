@@ -320,6 +320,8 @@
                                         (and (buffer-file-name b) (file-in-directory-p (buffer-file-name b) qa-tmp)))
                                 (with-current-buffer b (set-buffer-modified-p nil) (kill-buffer b)))))
                         (error (princ (format "QUERY-A-ERROR %S\n" err)) (kill-emacs 1))) (current-buffer))))
+          ;; Pin the child cwd before HOME is repointed.
+          (setq default-directory (file-truename default-directory))
           (setenv "HOME" tmp) (setenv "CFFIXED_USER_HOME" tmp)
           (setenv "EMACSLOADPATH" (concat (mapconcat #'identity deps path-separator) path-separator))
           (with-temp-buffer
@@ -508,6 +510,8 @@
                                         (and (buffer-file-name b) (file-in-directory-p (buffer-file-name b) qb-tmp)))
                                 (with-current-buffer b (set-buffer-modified-p nil) (kill-buffer b)))))
                         (error (princ (format "QUERY-B-ERROR %S\n" err)) (kill-emacs 1))) (current-buffer))))
+          ;; Pin the child cwd before HOME is repointed.
+          (setq default-directory (file-truename default-directory))
           (setenv "HOME" tmp) (setenv "CFFIXED_USER_HOME" tmp)
           (setenv "EMACSLOADPATH" (concat (mapconcat #'identity deps path-separator) path-separator))
           (with-temp-buffer
@@ -743,6 +747,8 @@
                                         (and (buffer-file-name b) (file-in-directory-p (buffer-file-name b) qc-tmp)))
                                 (with-current-buffer b (set-buffer-modified-p nil) (kill-buffer b)))))
                         (error (princ (format "QUERY-C-ERROR %S\n" err)) (kill-emacs 1))) (current-buffer))))
+          ;; Pin the child cwd before HOME is repointed.
+          (setq default-directory (file-truename default-directory))
           (setenv "HOME" tmp) (setenv "CFFIXED_USER_HOME" tmp)
           (setenv "EMACSLOADPATH" (concat (mapconcat #'identity deps path-separator) path-separator))
           (with-temp-buffer
@@ -1030,6 +1036,8 @@
                                         (and (buffer-file-name b) (file-in-directory-p (buffer-file-name b) qd-tmp)))
                                 (with-current-buffer b (set-buffer-modified-p nil) (kill-buffer b)))))
                         (error (princ (format "QUERY-D-ERROR %S\n" err)) (kill-emacs 1))) (current-buffer))))
+          ;; Pin the child cwd before HOME is repointed.
+          (setq default-directory (file-truename default-directory))
           (setenv "HOME" tmp) (setenv "CFFIXED_USER_HOME" tmp)
           (setenv "EMACSLOADPATH" (concat (mapconcat #'identity deps path-separator) path-separator))
           (with-temp-buffer
@@ -1237,6 +1245,8 @@
                                 (with-current-buffer b (set-buffer-modified-p nil) (kill-buffer b)))))
                         (error (princ (format "QUERY-E-ERROR %S\n" err)) (kill-emacs 1)))
                      (current-buffer))))
+          ;; Pin the child cwd before HOME is repointed.
+          (setq default-directory (file-truename default-directory))
           (setenv "HOME" tmp) (setenv "CFFIXED_USER_HOME" tmp)
           (setenv "EMACSLOADPATH" (concat (mapconcat #'identity deps path-separator) path-separator))
           (with-temp-buffer

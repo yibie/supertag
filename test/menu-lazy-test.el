@@ -12,6 +12,8 @@
          (script (expand-file-name "child.el" tmp))
          (menu (expand-file-name "supertag-menu.el" supertag-menu-test--root))
          (process-environment (copy-sequence process-environment)))
+    ;; Pin the child cwd before HOME is repointed.
+    (setq default-directory (file-truename default-directory))
     (setenv "HOME" tmp)
     (setenv "CFFIXED_USER_HOME" tmp)
     (setenv "XDG_CONFIG_HOME" (expand-file-name ".config" tmp))

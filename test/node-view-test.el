@@ -67,6 +67,8 @@
          (deps (split-string (or (getenv "SUPERTAG_DEPS_LOADPATH") "") path-separator t))
          (root supertag-node-view-vwa--root)
          (process-environment (copy-sequence process-environment)))
+    ;; Pin the child cwd before HOME is repointed.
+    (setq default-directory (file-truename default-directory))
     (setenv "HOME" tmp) (setenv "CFFIXED_USER_HOME" tmp)
     (with-temp-file script
       (insert ";;; -*- lexical-binding: t; -*-\n")

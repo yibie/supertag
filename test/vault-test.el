@@ -483,6 +483,8 @@
             (setq root (expand-file-name "compile-tree/" tmp)) (make-directory root)
             (dolist (file (directory-files source t "\\.el\\'"))
               (copy-file file (expand-file-name (file-name-nondirectory file) root))))
+          ;; Pin the child cwd before HOME is repointed.
+          (setq default-directory (file-truename default-directory))
           (setenv "HOME" tmp) (setenv "CFFIXED_USER_HOME" tmp)
           (setenv "EMACSLOADPATH" (concat (mapconcat #'identity deps path-separator) path-separator))
           (dolist (phase (if (eq case 'compiled) '(compile compiled) (list case)))
@@ -540,6 +542,8 @@
           (make-directory tree)
           (dolist (file (directory-files source t "\\.el\\'"))
             (copy-file file (expand-file-name (file-name-nondirectory file) tree)))
+          ;; Pin the child cwd before HOME is repointed.
+          (setq default-directory (file-truename default-directory))
           (setenv "HOME" tmp) (setenv "CFFIXED_USER_HOME" tmp)
           (setenv "VC_R1_TREE" tree)
           (setenv "EMACSLOADPATH" (concat (mapconcat #'identity deps path-separator) path-separator))
@@ -689,6 +693,8 @@
               (should (search-forward "(supertag-vault--prepare-guard-defaults)" nil t))
               (insert "\n(supertag-vd-test--observe 'guard-after)")
               (write-region (point-min) (point-max) (expand-file-name "supertag.el" tree) nil 'silent)))
+          ;; Pin the child cwd before HOME is repointed.
+          (setq default-directory (file-truename default-directory))
           (setenv "HOME" tmp) (setenv "CFFIXED_USER_HOME" tmp)
           (setenv "EMACSLOADPATH" (concat (mapconcat #'identity deps path-separator) path-separator))
           (setenv "VD_TREE" tree) (setenv "VD_TMP" tmp) (setenv "VD_CASE" case)

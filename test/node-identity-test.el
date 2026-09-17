@@ -919,6 +919,8 @@ the advice was in place."
                                 (with-current-buffer buffer
                                   (set-buffer-modified-p nil) (kill-buffer buffer)))))
                         (error (princ (format "NODE-E-ERROR %S\n" err)) (kill-emacs 1))) (current-buffer))))
+          ;; Pin the child cwd before HOME is repointed.
+          (setq default-directory (file-truename default-directory))
           (setenv "HOME" tmp) (setenv "CFFIXED_USER_HOME" tmp)
           (setenv "EMACSLOADPATH" (concat (mapconcat #'identity deps path-separator) path-separator))
           (with-temp-buffer

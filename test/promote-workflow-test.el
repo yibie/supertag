@@ -185,7 +185,10 @@
         (should-error (apply (plist-get payload :retry) (plist-get payload :retry-args))))
       (should (string-match-p ":ID: retained" (supertag-promote-test--disk (nth 2 files))))
       (should-not (supertag-reference-recovery-complete-p payload))
-      (cl-letf (((symbol-function 'supertag-service-org-retry-node-projection)
+      (cl-letf (((symbol-function 'supertag-sync--reconcile-node)
+                 ;; Inject the failure where every projection path writes to the
+                 ;; Store, so this retry contract does not depend on which
+                 ;; caller parses a node.
                  (lambda (&rest _) (error "Injected projection"))))
         (condition-case data
             (apply (plist-get payload :retry) (plist-get payload :retry-args))

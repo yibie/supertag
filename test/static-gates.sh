@@ -15,24 +15,17 @@ if grep -nE '^\s+\(require ' ./*.el >/tmp/supertag-static-requires.$$ 2>/dev/nul
 fi
 rm -f /tmp/supertag-static-requires.$$
 static_tmp=$(mktemp -d "${TMPDIR:-/tmp}/supertag-static-cold.XXXXXX")
+# The dependency load path is shared with test/run-tests.sh so the two scripts
+# can never disagree about where ht/dash live.
+source test/deps-loadpath.sh
 dep_args=()
-if [ -n "${SUPERTAG_DEPS_LOADPATH:-}" ]; then
-  IFS=: read -r -a dep_dirs <<< "$SUPERTAG_DEPS_LOADPATH"
-else
-  dep_dirs=()
-  for name in ht dash; do
-    pat=$(ls -d "$HOME"/.emacs.d/elpa/${name}-* 2>/dev/null | sort -V | tail -1 || true)
-    [ -n "$pat" ] && dep_dirs+=("$pat")
-  done
-fi
-if [ "${#dep_dirs[@]}" -eq 0 ]; then echo 'No ht/dash dependency directories found; set SUPERTAG_DEPS_LOADPATH' >&2; exit 1; fi
-for d in "${dep_dirs[@]}"; do [ -d "$d" ] || { echo "Dependency directory not found: $d" >&2; exit 1; }; dep_args+=( -L "$d" ); done
+for d in "${SUPERTAG_DEPS_DIRS[@]}"; do dep_args+=( -L "$d" ); done
 if ! emacs --batch -Q "${dep_args[@]}" -L . -L test -L tests --eval "
 (progn
 (setq user-emacs-directory (file-name-as-directory \"$static_tmp\")
       supertag-data-directory (expand-file-name \"data/\" user-emacs-directory)
       repo-root (file-truename \"$(pwd)\")
-      dep-roots '($(printf '"%s" ' "${dep_dirs[@]}")))
+      dep-roots '($(printf '"%s" ' "${SUPERTAG_DEPS_DIRS[@]}")))
 (condition-case err
     (progn
       (require 'supertag)

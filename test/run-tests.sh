@@ -9,6 +9,10 @@ emacs_bin="${EMACS_BIN:-emacs}"
 if [[ ${1-} == --guidance ]]; then
   exec bash test/development-entrypoints-test.sh --guidance
 fi
+# Every spawned test child reads its package load path from
+# SUPERTAG_DEPS_LOADPATH and nothing else, so derive and export it once here;
+# a machine without ht/dash stops now instead of reporting phantom failures.
+source test/deps-loadpath.sh
 # The static manifest is authoritative; this first process only expands names.
 export SUPERTAG_TEST_SELECTION="$*"
 for argument in "$@"; do

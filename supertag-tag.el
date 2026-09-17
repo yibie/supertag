@@ -3889,6 +3889,7 @@ When INCLUDE-DESCENDANTS is non-nil, include transitive `:extends' descendants."
 
 (defun supertag-view-helper-format-tag-value (value)
   "Format tag VALUE with the shared role faces."
+  ;; lazy-require: cycle guard; the framework requires tag directly and via sync.
   (require 'supertag-view-framework)
   (if (or (null value) (string-empty-p (format "%s" value)))
       (propertize "[No tags]" 'face 'supertag-view-mute)

@@ -2,6 +2,9 @@
 
 ;;; Commentary:
 ;; Commands: supertag-view-refresh.
+;; Dependencies: cl-lib, button, subr-x, org, widget, wid-edit, supertag-query,
+;;   supertag-tag, supertag-services-sync, and supertag-node's cache listener.
+;;   Node View's refresh helpers are ordinary providers, loaded lazily.
 ;; This module supplies the View Runtime and shared, role-based drawing faces.
 
 ;;; Code:

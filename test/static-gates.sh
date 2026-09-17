@@ -10,10 +10,25 @@ for f in ./*.el; do
   grep -q '^;; Commands:' "$f"
   grep -q '^;; Dependencies:' "$f"
 done
-if grep -nE '^\s+\(require ' ./*.el >/tmp/supertag-static-requires.$$ 2>/dev/null; then
-  cat /tmp/supertag-static-requires.$$ >&2; rm -f /tmp/supertag-static-requires.$$; exit 1
+# An indented `(require ...)' is allowed only as an explicitly justified lazy
+# load, marked on the immediately preceding line:
+#
+#   ;; lazy-require: <why this load has to wait>
+#
+# Anything else is a careless require that hides a load-order or cycle problem.
+unmarked_requires=$(awk '
+  FNR == 1 { previous = "" }
+  /^[[:space:]]+\(require / {
+    if (previous !~ /^[[:space:]]*;;[[:space:]]*lazy-require:/)
+      printf "%s:%d:%s\n", FILENAME, FNR, $0
+  }
+  { previous = $0 }
+' ./*.el)
+if [ -n "$unmarked_requires" ]; then
+  printf '%s\n' "$unmarked_requires" >&2
+  printf 'Unmarked indented (require ...): mark it with ";; lazy-require: <why>", or lift it to the top level.\n' >&2
+  exit 1
 fi
-rm -f /tmp/supertag-static-requires.$$
 static_tmp=$(mktemp -d "${TMPDIR:-/tmp}/supertag-static-cold.XXXXXX")
 # The dependency load path is shared with test/run-tests.sh so the two scripts
 # can never disagree about where ht/dash live.

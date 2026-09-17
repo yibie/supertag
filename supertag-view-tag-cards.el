@@ -1427,6 +1427,7 @@ filters, q quits the window, and TAB/S-TAB move among native text buttons."
   (interactive)
   ;; Keep the file independently loadable alongside TextUI, while making the
   ;; command robust when it is invoked outside the normal `supertag' loader.
+  ;; lazy-require: keep this command loadable outside the `supertag' loader.
   (require 'supertag-view-framework)
   (let* ((existing (get-buffer supertag-view-tag-cards--buffer-name))
          (buffer (or existing

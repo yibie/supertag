@@ -1879,6 +1879,7 @@ Returns the ID of the selected node to unlink."
 An entry is the `→ title' line, one muted excerpt line when the excerpt
 service kept one that adds information, and one muted file/date line.
 Entries are separated by one blank line."
+  ;; lazy-require: ordinary providers stay lazy, as this file's header states.
   (require 'supertag-view-framework)
   (let* ((node-id (or (plist-get item :node-id) (plist-get item :source-id)
                       (plist-get item :target-id)))

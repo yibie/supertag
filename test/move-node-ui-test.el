@@ -478,7 +478,7 @@
 (defconst move-node-ui-test--node-d-root
   (expand-file-name ".." (file-name-directory load-file-name)))
 (defun move-node-ui-test--node-d-cold (mode spec available)
-  (let* ((tmp (make-temp-file "supertag-node-d-" t))
+  (let* ((tmp (file-truename (make-temp-file "supertag-node-d-" t)))
          (root move-node-ui-test--node-d-root)
          (program (or (getenv "EMACS_BIN") (expand-file-name invocation-name invocation-directory)))
          (deps (split-string (or (getenv "SUPERTAG_DEPS_LOADPATH") "") path-separator t))
@@ -557,16 +557,20 @@
       (cl-labels ((save-observer (orig &rest args)
                     (when (member (buffer-file-name) (list source target)) (push (buffer-file-name) saves))
                     (apply orig args))
-                  (project-observer (orig id &rest args)
-                    (push (cons id args) projects) (apply orig id args))
+                  ;; `54d350f' moved the move path off the per-node provider and
+                  ;; onto this shared reconcile seam, so count reconciled
+                  ;; headings (one per move, two with a link stub).
+                  (project-observer (orig props &optional counters)
+                    (push (cons (plist-get props :id) counters) projects)
+                    (funcall orig props counters))
                   (provider-observer (_file)
-                    (when (and (featurep 'supertag-service-org)
-                               (not (advice-member-p #'project-observer 'supertag-service-org-retry-node-projection)))
-                      (advice-add 'supertag-service-org-retry-node-projection :around #'project-observer))))
+                    (when (and (fboundp 'supertag-sync--reconcile-node)
+                               (not (advice-member-p #'project-observer 'supertag-sync--reconcile-node)))
+                      (advice-add 'supertag-sync--reconcile-node :around #'project-observer))))
         (unwind-protect
             (progn
               (advice-add 'save-buffer :around #'save-observer)
-              (if (featurep 'supertag-service-org)
+              (if (fboundp 'supertag-sync--reconcile-node)
                   (provider-observer nil)
                 (add-hook 'after-load-functions #'provider-observer))
               (cl-letf (((symbol-function 'read-file-name)
@@ -596,7 +600,7 @@
                     (should (eq origin (current-buffer))) (should (= 1 (point)))))))
           (remove-hook 'after-load-functions #'provider-observer)
           (advice-remove 'save-buffer #'save-observer)
-          (advice-remove 'supertag-service-org-retry-node-projection #'project-observer)))
+          (advice-remove 'supertag-sync--reconcile-node #'project-observer)))
       (should (= (if will-move 1 0) confirms))
       (should (= (if will-move 1 0) positions-prompt))
       (should (= (if (and will-move (not within)) 1 0) files-prompt))

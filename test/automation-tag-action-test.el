@@ -160,7 +160,9 @@
       (should-error
        (cl-letf (((symbol-function 'save-buffer)
                   (lambda (&rest _) (error "deliberate save failure")))
-                 ((symbol-function 'supertag-service-org--project-current-node)
+                 ;; Tag actions refresh membership here, not through the
+                 ;; whole-file projector (`8b020d3').
+                 ((symbol-function 'supertag-sync--resolve-node-tag-occurrences)
                   (lambda (&rest _) (setq projected t))))
          (supertag-automation-action-add-tag
           supertag-ownership-test-node-a '(:tag "extra"))))
@@ -187,7 +189,9 @@
                      (lambda (&rest args)
                        (cl-incf saves)
                        (apply real-save args)))
-                    ((symbol-function 'supertag-service-org--project-current-node)
+                    ;; Tag actions refresh membership here, not through the
+                    ;; whole-file projector (`8b020d3').
+                    ((symbol-function 'supertag-sync--resolve-node-tag-occurrences)
                      (lambda (&rest _)
                        (error "deliberate projection failure"))))
             (supertag-automation-action-add-tag
@@ -211,24 +215,27 @@
   (supertag-automation-tag-test--with-vault
     (let ((file (car files))
           (real-save (symbol-function 'save-buffer))
-          (real-project
-           (symbol-function 'supertag-service-org--project-current-node))
+          (real-record
+           (symbol-function 'supertag-service-org-save-and-record-tags-at-point))
           calls)
       (cl-letf (((symbol-function 'save-buffer)
                  (lambda (&rest args)
                    (push 'save calls)
                    (apply real-save args)))
-                ((symbol-function 'supertag-service-org--project-current-node)
+                ;; Tag actions record membership here, not through the
+                ;; whole-file projector (`8b020d3').
+                ((symbol-function 'supertag-service-org-save-and-record-tags-at-point)
                  (lambda (&rest args)
-                   (push 'project calls)
-                   (apply real-project args))))
+                   (push 'record calls)
+                   (apply real-record args))))
         (dotimes (_ 2)
           (supertag-automation-action-add-tag
            supertag-ownership-test-node-a '(:tag "extra")))
         (dotimes (_ 2)
           (supertag-automation-action-remove-tag
            supertag-ownership-test-node-a '(:tag "extra"))))
-      (should (equal '(save project save project) (nreverse calls)))
+      ;; The save happens inside the recorder, so it is pushed second.
+      (should (equal '(record save record save) (nreverse calls)))
       (should-not (supertag-automation-tag-test--disk-has-token-p file "extra")))))
 
 (ert-deftest supertag-automation-add-unknown-save-failure-keeps-definition ()
@@ -284,7 +291,7 @@
     (let ((file (car files)) caught)
       (condition-case err
           (cl-letf (((symbol-function
-                      'supertag-service-org--project-current-node)
+                      'supertag-sync--resolve-node-tag-occurrences)
                      (lambda (&rest _)
                        (error "deliberate projection failure"))))
             (supertag-automation-action-add-tag

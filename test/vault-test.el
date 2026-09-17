@@ -651,7 +651,7 @@
 
 (defun supertag-vault-test--vd-child (case)
   "Execute CASE in fresh processes with complete temporary source copies."
-  (let* ((tmp (make-temp-file "supertag-vd-" t))
+  (let* ((tmp (file-truename (make-temp-file "supertag-vd-" t)))
          (tree (expand-file-name "tree/" tmp))
          (source (file-name-as-directory
                   (or (getenv "SUPERTAG_VD_ROOT")

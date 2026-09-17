@@ -20,7 +20,7 @@
 (defmacro supertag-add-link-test--isolated (&rest body)
   "Run BODY with isolated Store, Org identity and temporary files."
   (declare (indent 0))
-  `(let* ((tmp (make-temp-file "supertag-add-link-test-" t))
+  `(let* ((tmp (file-truename (make-temp-file "supertag-add-link-test-" t)))
           (supertag-data-directory tmp)
           (supertag-db-file (expand-file-name "db.el" tmp))
           (supertag-db-backup-directory (expand-file-name "backup" tmp))
@@ -312,7 +312,7 @@
     (should-not (commandp symbol))))
 
 (ert-deftest supertag-add-link-configured-name-survives-fresh-reindex-and-view ()
-  (let* ((tmp (make-temp-file "supertag-add-link-restart-" t))
+  (let* ((tmp (file-truename (make-temp-file "supertag-add-link-restart-" t)))
          (source (expand-file-name "source.org" tmp))
          (target (expand-file-name "target.org" tmp))
          (program (expand-file-name invocation-name invocation-directory)))
@@ -417,7 +417,7 @@
                               (supertag-add-link-test--file-string source))))))
 
 (ert-deftest supertag-add-link-standalone-template-uses-active-vault ()
-  (let* ((tmp (make-temp-file "supertag-template-vault-" t))
+  (let* ((tmp (file-truename (make-temp-file "supertag-template-vault-" t)))
          (vault-a (expand-file-name "a" tmp))
          (vault-b (expand-file-name "b" tmp))
          (program (expand-file-name invocation-name invocation-directory)))
@@ -450,7 +450,7 @@
       (ignore-errors (delete-directory tmp t)))))
 
 (ert-deftest supertag-add-link-template-rejects-stale-active-vault ()
-  (let* ((tmp (make-temp-file "supertag-template-stale-vault-" t))
+  (let* ((tmp (file-truename (make-temp-file "supertag-template-stale-vault-" t)))
          (configured (expand-file-name "configured" tmp))
          (stale (expand-file-name "stale" tmp))
          (program (expand-file-name invocation-name invocation-directory)))
@@ -1498,7 +1498,7 @@
 ;;; LINK-B: formatter ownership and real first-use loading, isolated from LA.
 (defun supertag-add-link-test--lb-child (entry name body)
   "Run BODY after real ENTRY in a new process, checking explicit phase markers."
-  (let* ((tmp (make-temp-file "supertag-link-b-" t))
+  (let* ((tmp (file-truename (make-temp-file "supertag-link-b-" t)))
          (deps (split-string (or (getenv "SUPERTAG_DEPS_LOADPATH") "") path-separator t))
          (program (or (getenv "EMACS_BIN") (expand-file-name invocation-name invocation-directory)))
          (process-environment (copy-sequence process-environment))
@@ -1884,7 +1884,7 @@
 
 (defun supertag-add-link-test--lc-child (case entry)
   "Execute CASE in a fresh source process, preserving actual phase evidence."
-  (let* ((tmp (make-temp-file "supertag-lc-" t))
+  (let* ((tmp (file-truename (make-temp-file "supertag-lc-" t)))
          (root (file-name-as-directory (or (getenv "SUPERTAG_LC_ROOT") supertag-add-link-test--root)))
          (before (equal (getenv "SUPERTAG_LC_STAGE") "before"))
          (deps (split-string (or (getenv "SUPERTAG_DEPS_LOADPATH") "") path-separator t))
@@ -2121,7 +2121,7 @@
 
 (defun supertag-add-link-test--ld-child (case entry)
   "Run independent LD CASE against ENTRY in a fresh isolated source process."
-  (let* ((tmp (make-temp-file "supertag-ld-" t))
+  (let* ((tmp (file-truename (make-temp-file "supertag-ld-" t)))
          (root (file-name-as-directory (or (getenv "SUPERTAG_LD_ROOT") supertag-add-link-test--root)))
          (before (equal (getenv "SUPERTAG_LD_STAGE") "before"))
          (deps (split-string (or (getenv "SUPERTAG_DEPS_LOADPATH") "") path-separator t))
@@ -2352,7 +2352,7 @@
 
 (defun supertag-add-link-test--va-child (case)
   "Execute VA CASE in a genuinely fresh process, separately from suite loading."
-  (let* ((tmp (make-temp-file "supertag-va-" t))
+  (let* ((tmp (file-truename (make-temp-file "supertag-va-" t)))
          (root (file-name-as-directory (or (getenv "SUPERTAG_VA_ROOT") supertag-add-link-test--root)))
          (before (equal (getenv "SUPERTAG_VA_STAGE") "before"))
          (deps (split-string (or (getenv "SUPERTAG_DEPS_LOADPATH") "") path-separator t))
@@ -2605,7 +2605,7 @@
 
 (defun supertag-add-link-test--vb-child (case)
   "Run VB CASE in its own process, without a preconfigured project fixture."
-  (let* ((tmp (make-temp-file "supertag-vb-" t))
+  (let* ((tmp (file-truename (make-temp-file "supertag-vb-" t)))
          (root (file-name-as-directory (or (getenv "SUPERTAG_VB_ROOT") supertag-add-link-test--root)))
          (before (equal (getenv "SUPERTAG_VB_STAGE") "before"))
          (deps (split-string (or (getenv "SUPERTAG_DEPS_LOADPATH") "") path-separator t))

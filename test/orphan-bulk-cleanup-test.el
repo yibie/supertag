@@ -71,16 +71,15 @@ preview and the write."
         (should (eq 'supertag-orphan-tags-mode major-mode))
         (should (equal (sort (copy-sequence supertag-orphan-tags--marked-tokens)
                              #'string<)
-                       '("seo" "seo," "word")))
+                       '("seo" "word")))
         (should (= 6 (length supertag-orphan-tags--records)))
-        (should (string-match-p "3 token(s) marked, 6 occurrence(s) selected"
+        (should (string-match-p "2 token(s) marked, 6 occurrence(s) selected"
                                 header-line-format))
         (let ((report (buffer-string)))
-          ;; Punctuation variants stay adjacent and carry their stem.
-          (should (string-match-p "#seo,   1 occurrence(s)   \\[stem #seo\\]"
-                                  report))
-          (should (< (string-match "^\\* #seo " report)
-                     (string-match "^\\* #seo," report)))
+          ;; `#seo,' is the sentence-final occurrence of `seo', not a token of
+          ;; its own, so one row holds all four of its occurrences.
+          (should (string-match-p "^\\* #seo   4 occurrence(s)" report))
+          (should-not (string-match-p "^\\* #seo," report))
           (should (string-match-p "9  /.*node\\.org   \\[heading :ID: hashed\\]   Body #seo and #seo, and #old"
                                   report))))
       (cl-letf (((symbol-function 'yes-or-no-p)
@@ -135,7 +134,7 @@ preview and the write."
         (call-interactively #'supertag-orphan-tags-unmark)
         (should (equal (sort (copy-sequence supertag-orphan-tags--marked-tokens)
                              #'string<)
-                       '("seo" "seo,")))
+                       '("seo")))
         (should (= 4 (length (supertag-orphan-tags--marked-records))))
         ;; The unmarked token and its occurrences are visibly unmarked.
         (should (string-match-p "^  #word" (buffer-string)))
@@ -164,9 +163,9 @@ preview and the write."
         (should (string-match-p "0 token(s) marked, 0 occurrence(s) selected"
                                 header-line-format))
         (call-interactively #'supertag-orphan-tags-mark-all)
-        (should (= 3 (length supertag-orphan-tags--marked-tokens)))
+        (should (= 2 (length supertag-orphan-tags--marked-tokens)))
         (should (= 6 (length (supertag-orphan-tags--marked-records))))
-        (should (string-match-p "3 token(s) marked, 6 occurrence(s) selected"
+        (should (string-match-p "2 token(s) marked, 6 occurrence(s) selected"
                                 header-line-format))))))
 
 (ert-deftest supertag-orphan-tags-visit-opens-the-occurrence-line ()
@@ -200,11 +199,13 @@ preview and the write."
       (cl-letf (((symbol-function 'completing-read)
                  (lambda (&rest _) (setq asked t) (ert-fail "minibuffer used")))
                 ((symbol-function 'yes-or-no-p) (lambda (&rest _) t)))
-        (should (supertag-cleanup-orphan-tag-occurrences '("seo,"))))
+        (should (supertag-cleanup-orphan-tag-occurrences '("seo"))))
       (should-not asked)
       (let ((main (supertag-document-test-disk file)))
+        ;; `seo' also owns `#seo,', so one name clears both spellings.
         (should-not (string-match-p "and #seo," main))
-        (should (string-match-p "\\* Hashed #seo" main))
+        (should-not (string-match-p "\\* Hashed #seo" main))
+        (should (string-match-p "#old" main))
         (should (string-match-p "Prose #word" main)))))
   (supertag-orphan-tags-test--vault
     (let ((asked nil))
@@ -260,13 +261,13 @@ preview and the write."
       (with-current-buffer buffer
         (call-interactively #'supertag-orphan-tags-unmark-all)
         (goto-char (point-min))
-        (re-search-forward "^  #seo," nil t)
+        (re-search-forward "^  #seo " nil t)
         (beginning-of-line)
         (call-interactively #'supertag-orphan-tags-mark)
-        (should (equal supertag-orphan-tags--marked-tokens '("seo,")))
+        (should (equal supertag-orphan-tags--marked-tokens '("seo")))
         (call-interactively #'supertag-orphan-tags-refresh)
-        (should (equal supertag-orphan-tags--marked-tokens '("seo,")))
-        (should (= 1 (length (supertag-orphan-tags--marked-records))))
+        (should (equal supertag-orphan-tags--marked-tokens '("seo")))
+        (should (= 4 (length (supertag-orphan-tags--marked-records))))
         (should (= 6 (length supertag-orphan-tags--records)))))))
 
 ;;; orphan-bulk-cleanup-test.el ends here

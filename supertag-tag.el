@@ -167,10 +167,43 @@ precise bounds and context validation after it is loaded."
 
 (defconst supertag-inline-tag-terminator-chars
   "＃　，。；：！？、（）【】《》“”‘’"
-  "Characters that terminate an inline tag name.
+  "Full-width characters that terminate an inline tag name.
 CJK prose uses full-width punctuation where ASCII text uses whitespace,
 so these characters must end a tag name the same way whitespace does.
-The full-width hash and ideographic space can never be part of a name.")
+The full-width hash and ideographic space can never be part of a name.
+ASCII punctuation follows the two rules below instead, because ASCII prose
+separates words with whitespace and may put punctuation inside a name.")
+
+(defconst supertag-inline-tag-ascii-delimiter-regexp
+  "]([){}<>\""
+  "Regexp fragment: ASCII delimiters that can never be part of a tag name.
+Brackets and quotes are Org structure (`[[id:x][#name]]', `(#name)'), so a
+name ends at one wherever it appears.  The leading `]' is load-bearing: Emacs
+ends a character class at an unescaped `]', and the two name classes below
+concatenate this fragment right after `[^', which is the only position where
+`]' is a literal class member.")
+
+(defconst supertag-inline-tag-ascii-trailing-regexp
+  ",.;:!?'`"
+  "Regexp fragment: ASCII punctuation a tag name may contain but never end with.
+Sentence punctuation and quote marks trail prose (`#seo,'), while the same
+character inside a name is ordinary text (`#don't'), so only the final run is
+dropped.")
+
+(defconst supertag-inline-tag-name-inner-regexp
+  (concat "[^" supertag-inline-tag-ascii-delimiter-regexp
+          "[:space:]#" supertag-inline-tag-terminator-chars "]*")
+  "Regexp for the characters a tag name may run through.
+Quantified as `*', it precedes the final name character in
+`supertag-inline-tag-regexp' so punctuation can sit inside a name.")
+
+(defconst supertag-inline-tag-name-last-regexp
+  (concat "[^" supertag-inline-tag-ascii-delimiter-regexp
+          "[:space:]#" supertag-inline-tag-terminator-chars
+          supertag-inline-tag-ascii-trailing-regexp "]")
+  "Regexp for the character a tag name must end on.
+Excludes `supertag-inline-tag-ascii-trailing-regexp', which is how trailing
+ASCII punctuation stays out of the name.")
 
 (defconst supertag-inline-tag-boundary-char-regexp
   "\\(?:[[:space:]]\\|\\cc\\|\\cj\\|\\ck\\|\\ch\\)"
@@ -187,11 +220,15 @@ character (see `supertag-inline-tag-boundary-char-regexp').")
 
 (defconst supertag-inline-tag-regexp
   (concat supertag-inline-tag-boundary-regexp
-          "[#＃]\\([^[:space:]#" supertag-inline-tag-terminator-chars "]+\\)")
+          "[#＃]\\(" supertag-inline-tag-name-inner-regexp
+          supertag-inline-tag-name-last-regexp "\\)")
   "Regexp for an inline tag at string start, after whitespace, or after CJK.
 Group 1 is the optional whitespace boundary; group 2 is the tag name.
-Both the ASCII and full-width hash mark a tag; full-width punctuation
-terminates the name (see `supertag-inline-tag-terminator-chars').")
+Both the ASCII and full-width hash mark a tag.  A name runs until whitespace,
+`#', `＃', a full-width punctuation character or an ASCII delimiter, and drops
+any trailing ASCII sentence punctuation, so `#seo,' yields `seo' while
+`#v1.2', `#c++' and `#emacs/package' stay whole; what the regexp matches is
+also what highlighting and extraction report.")
 
 (defun supertag-transform-inline-tag-name-p (name)
   "Return non-nil when NAME can be an inline tag.
@@ -2933,13 +2970,17 @@ boundary character typed after the same token.")
 
 (defun supertag-completion--valid-tag-char-p (char)
   "Return non-nil if CHAR should be considered part of a tag name.
-Anything except whitespace/control characters, the (full-width) hash,
-and full-width punctuation counts as valid.  This keeps completion
-flexible enough for emoji while letting CJK punctuation end a tag the
-way ASCII whitespace does."
+Mirrors `supertag-inline-tag-name-inner-regexp': anything except whitespace,
+control characters, the (full-width) hash, full-width punctuation and the
+ASCII delimiters that end a name counts as valid.  This keeps completion
+flexible enough for emoji, lets ASCII punctuation sit inside a name, and
+still lets CJK punctuation end a tag the way ASCII whitespace does."
   (and char
        (not (memq char '(?\s ?\t ?\n ?\r ?#)))
-       (not (seq-position supertag-inline-tag-terminator-chars char))))
+       (not (seq-position supertag-inline-tag-terminator-chars char))
+       (not (string-match-p
+             (concat "\\`[" supertag-inline-tag-ascii-delimiter-regexp "]\\'")
+             (char-to-string char)))))
 
 (defun supertag-completion--get-prefix-bounds ()
   "Find the bounds of a tag prefix at point, if any.
@@ -3912,10 +3953,10 @@ silently leave the Tag's own text behind."
 
 (defun supertag-tag--text-look-alike-p (candidate token)
   "Return non-nil when CANDIDATE looks like the same token as TOKEN.
-The inline regexp ends an ASCII name only at whitespace, so `#old;' is the
-single token `old;' while `#oldstuff' is a different token.  A rejected
-candidate reported as looking like TOKEN may therefore ignore a punctuation
-tail, but never an alphanumeric or CJK continuation."
+Rejected candidates come from the loose scan, which still runs past trailing
+punctuation, so `#old;' inside a src block reads as `old;' while the token
+itself is `old'.  Reporting one as looking like TOKEN may therefore ignore a
+trailing punctuation run, but never an alphanumeric or CJK continuation."
   (or (equal candidate token)
       (and (stringp candidate)
            (string-prefix-p token candidate)
@@ -4178,9 +4219,10 @@ When SKIP-CONFIRM is non-nil, the caller already showed the text preview."
 
 (defun supertag-orphan-tags--stem (token)
   "Return TOKEN without its trailing ASCII punctuation.
-The occurrence model keeps punctuation inside a token, so `seo' and `seo,'
-are different tokens of one stem; the report sorts and labels by stem so a
-variant is never silently missed.  The tokenizer itself is untouched."
+A rare token may still end with a name character that reads as punctuation
+(`tag-'), which is what the report's `[stem ...]' label is for.  Sentence
+punctuation is no longer part of a token at all, because
+`supertag-inline-tag-regexp' drops it."
   (if (string-match "[[:punct:]]+\\'" token)
       (substring token 0 (match-beginning 0))
     token))
@@ -4268,8 +4310,8 @@ Rendering writes no Org text and no Store entity."
                     (length supertag-orphan-tags--records)))
     (insert "All tokens start marked.  D removes the marked occurrences after one preview;\n")
     (insert "m mark  u unmark  M mark all  U unmark all  RET visit  g refresh.\n")
-    (insert "ASCII punctuation belongs to the token, so #seo and #seo, are variants of one\n")
-    (insert "stem; variants stay adjacent and are labelled with that stem.\n\n")
+    (insert "A name ends at whitespace, a hash, full-width punctuation or an ASCII bracket,\n")
+    (insert "and trailing sentence punctuation is not part of it: `#seo,' is the token seo.\n\n")
     (dolist (token (supertag-orphan-tags--sorted-tokens))
       (let* ((records (supertag-orphan-tags--records-for-token token))
              (stem (supertag-orphan-tags--stem token)))

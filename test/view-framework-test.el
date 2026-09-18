@@ -283,7 +283,9 @@
 
 (ert-deftest test-view-style-face-stops-before-adjacent-org-link ()
   "Face font-lock must style only the range-aware Tag token."
-  (let ((supertag-view-style-auto-enable nil))
+  (let ((supertag-view-style-auto-enable nil)
+        ;; This test is about where styling stops, not about its colour.
+        (supertag-view-style-color-by-name nil))
     (with-temp-buffer
       (org-mode)
       (insert "* T #outer[[id:n][label]]\n")
@@ -1215,8 +1217,10 @@
         (let ((known-start (- (point) (length "#known"))))
           (search-forward "#unknown")
           (let ((unknown-start (- (point) (length "#unknown"))))
-            (should (eq 'supertag-inline-face
-                        (get-text-property known-start 'face)))
+            (let ((face (get-text-property known-start 'face)))
+              (should (eq t (plist-get face :underline)))
+              (should (string-match-p "\\`#[0-9a-f]\\{6\\}\\'"
+                                      (plist-get face :foreground))))
             (should (eq 'supertag-unresolved-tag-face
                         (get-text-property unknown-start 'face)))
             ;; No image is attached any more: no tag carries `display'.
@@ -1226,3 +1230,171 @@
         (should (eq 'unspecified
                     (face-attribute 'supertag-unresolved-tag-face
                                     :underline nil t)))))))
+
+;;; Per-tag colour: a Tag's colour is a pure function of its canonical name.
+(require 'supertag-core-persistence)
+
+(ert-deftest test-view-style-colour-is-stable-and-store-independent ()
+  "One Tag keeps one colour: repeated calls and a store reload included."
+  (supertag-document-test-with-vault
+    (supertag-tag-create '(:id "alpha" :name "alpha"))
+    (let ((first (supertag-view-style--color-for-name "alpha" 'dark)))
+      (should (equal first (supertag-view-style--color-for-name "alpha" 'dark)))
+      (supertag-view-style--clear-face-cache)
+      (supertag-load-store)
+      (should (equal first (supertag-view-style--color-for-name "alpha" 'dark)))
+      (should (equal (list :foreground first :underline t)
+                     (supertag-view-style--tag-face "alpha"))))))
+
+(ert-deftest test-view-style-colour-differs-per-tag ()
+  "Different Tags differ in colour (a handful of names, not a guarantee)."
+  (let ((colors (mapcar (lambda (name)
+                          (supertag-view-style--color-for-name name 'dark))
+                        '("emacs" "rust" "zettel" "meeting" "reading"))))
+    (should (= (length colors) (length (delete-dups (copy-sequence colors)))))))
+
+(ert-deftest test-view-style-alias-and-name-share-one-colour ()
+  "Two spellings of one Tag must not look like two Tags."
+  (supertag-document-test-with-vault
+    (supertag-tag-create '(:id "emacs" :name "emacs" :aliases ("editor")))
+    (let ((supertag-view-style-auto-enable nil))
+      (with-temp-buffer
+        (org-mode)
+        (insert "Body #emacs and #editor.\n")
+        (supertag-view-style-mode 1)
+        (font-lock-ensure)
+        (goto-char (point-min))
+        (search-forward "#emacs")
+        (let ((canonical (get-text-property (- (point) (length "#emacs")) 'face)))
+          (search-forward "#editor")
+          (should (equal canonical
+                         (get-text-property (- (point) (length "#editor")) 'face)))
+          (should (string-match-p "\\`#[0-9a-f]\\{6\\}\\'"
+                                  (plist-get canonical :foreground))))))))
+
+(ert-deftest test-view-style-nested-tag-is-coloured-by-its-leaf ()
+  "`#emacs/package' wears the leaf's colour, never a colour of its own.
+Measured: a path token resolves only when a Tag claims that exact token (a Tag
+name may not contain a separator), and resolution then returns the leaf's id."
+  (supertag-document-test-with-vault
+    (let ((leaf (plist-get (supertag-tag-create
+                            '(:id "package" :name "package"
+                              :aliases ("emacs/package")))
+                           :id)))
+      (should (equal leaf (supertag-tag-resolve-occurrence "emacs/package")))
+      (let ((supertag-view-style-auto-enable nil))
+        (with-temp-buffer
+          (org-mode)
+          (insert "Body #emacs/package and #package.\n")
+          (supertag-view-style-mode 1)
+          (font-lock-ensure)
+          (goto-char (point-min))
+          (search-forward "#emacs/package")
+          (let ((through-path (get-text-property
+                               (- (point) (length "#emacs/package")) 'face)))
+            (search-forward "#package")
+            (let ((bare (get-text-property (- (point) (length "#package")) 'face)))
+              ;; One Tag, one colour, however it was written.
+              (should (equal bare through-path))
+              (should (equal (supertag-view-style--tag-face leaf) bare))
+              ;; The raw token is not what gets hashed.
+              (should-not (equal (plist-get bare :foreground)
+                                 (supertag-view-style--color-for-name
+                                  "emacs/package"))))))))))
+
+(ert-deftest test-view-style-unresolved-token-keeps-shadow-without-colour ()
+  "An unknown token is dimmed, never coloured and never underlined."
+  (let ((supertag-view-style-auto-enable nil))
+    (with-temp-buffer
+      (org-mode)
+      (insert "Body #nosuchtag.\n")
+      (supertag-view-style-mode 1)
+      (font-lock-ensure)
+      (goto-char (point-min))
+      (search-forward "#nosuchtag")
+      (let ((face (get-text-property (- (point) (length "#nosuchtag")) 'face)))
+        (should (eq 'supertag-unresolved-tag-face face))
+        (should-not (plist-get face :foreground))
+        (should (eq 'unspecified
+                    (face-attribute 'supertag-unresolved-tag-face :underline nil t)))
+        (should (eq 'unspecified
+                    (face-attribute 'supertag-unresolved-tag-face :foreground nil t)))))))
+
+(ert-deftest test-view-style-colour-follows-the-background-band ()
+  "Every hue stays inside its background mode's pinned lightness band."
+  (pcase-dolist (`(,mode ,sat ,light) supertag-view-style--color-bands)
+    (dolist (name '("emacs" "rust" "zettel" "meeting" "reading"))
+      (let* ((hex (supertag-view-style--color-for-name name mode))
+             ;; `color-name-to-rgb' and `color-values' both go through the
+             ;; frame's colour model and quantise in batch, so read the hex
+             ;; digits directly.
+             (rgb (mapcar (lambda (i)
+                            (/ (string-to-number (substring hex i (+ i 2)) 16)
+                               255.0))
+                          '(1 3 5))))
+        (pcase-let ((`(,h ,s ,l) (apply #'color-rgb-to-hsl rgb)))
+          (should (< (abs (- s sat)) 0.02))
+          (should (< (abs (- l light)) 0.02))
+          ;; Never near-black, never near-white.
+          (should (< 0.2 l 0.9)))))))
+
+(ert-deftest test-view-style-face-is-computed-once-per-tag ()
+  "Fontifying many occurrences computes each Tag's colour once."
+  (supertag-document-test-with-vault
+    (supertag-tag-create '(:id "emacs" :name "emacs"))
+    (let ((supertag-view-style-auto-enable nil)
+          (calls 0)
+          (real nil))
+      (supertag-view-style--clear-face-cache)
+      (setq real (symbol-function 'supertag-view-style--compute-tag-face))
+      (cl-letf (((symbol-function 'supertag-view-style--compute-tag-face)
+                 (lambda (tag-id mode)
+                   (cl-incf calls)
+                   (funcall real tag-id mode))))
+        (with-temp-buffer
+          (org-mode)
+          (insert "Body #emacs, #emacs and #emacs again.\n")
+          (supertag-view-style-mode 1)
+          (font-lock-ensure)
+          (goto-char (point-min))
+          (let ((tagged 0) (faces nil))
+            (while (re-search-forward "#emacs" nil t)
+              (let ((face (get-text-property (match-beginning 0) 'face)))
+                (when face (cl-incf tagged) (push face faces))))
+            ;; All three occurrences were styled, with one and the same face.
+            (should (= 3 tagged))
+            (should (= 1 (length (delete-dups faces)))))))
+      (should (= 1 calls)))))
+
+(ert-deftest test-view-style-face-cache-is-dropped-on-theme-change ()
+  "The theme hook empties the face cache; there is no per-Tag defface."
+  (supertag-document-test-with-vault
+    (supertag-tag-create '(:id "emacs" :name "emacs"))
+    (supertag-view-style--clear-face-cache)
+    (should (supertag-view-style--tag-face "emacs"))
+    (should (= 1 (hash-table-count supertag-view-style--face-cache)))
+    (supertag-view-style--clear-face-cache)
+    (should (= 0 (hash-table-count supertag-view-style--face-cache)))
+    (when (boundp 'enable-theme-functions)
+      (should (memq #'supertag-view-style--clear-face-cache
+                    enable-theme-functions)))))
+
+(ert-deftest test-view-style-colour-can-be-switched-off ()
+  "With the defcustom off every tag uses the plain face again."
+  (supertag-document-test-with-vault
+    (supertag-tag-create '(:id "emacs" :name "emacs"))
+    (let ((supertag-view-style-auto-enable nil)
+          (supertag-view-style-color-by-name nil))
+      (with-temp-buffer
+        (org-mode)
+        (insert "Body #emacs and #nosuchtag.\n")
+        (supertag-view-style-mode 1)
+        (font-lock-ensure)
+        (goto-char (point-min))
+        (search-forward "#emacs")
+        (should (eq 'supertag-inline-face
+                    (get-text-property (- (point) (length "#emacs")) 'face)))
+        (search-forward "#nosuchtag")
+        (should (eq 'supertag-unresolved-tag-face
+                    (get-text-property (- (point) (length "#nosuchtag"))
+                                       'face)))))))

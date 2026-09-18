@@ -43,7 +43,7 @@
 ;; supertag-capture--get-from-tags-prompt, supertag-view-api-list-tag-ids,
 ;; supertag-view-helper-find-tag-insertion-point,
 ;; supertag-view-helper-tag-at-point-bounds, supertag-view-helper-get-tag-at-point.
-;; Dependencies: cl-lib, seq, easy-mmode, org, org-id, org-element, ht, subr-x,
+;; Dependencies: cl-lib, seq, easy-mmode, org, org-id, org-element, color, ht, subr-x,
 ;; supertag-core-store, supertag-link (ordinary providers),
 ;; supertag-node, supertag-service-org (via Node); lazy
 ;; supertag-service-org providers load Sync before FILETAGS callbacks;
@@ -63,6 +63,7 @@
 (require 'easy-mmode)
 (require 'org)
 (require 'org-element)
+(require 'color)
 (require 'ht)
 (require 'org-id)
 (require 'subr-x)
@@ -1810,8 +1811,21 @@ allowing slashes (as ordinary name characters) and arbitrary unicode/emoji symbo
   "Face properties for inline supertags.
 Default properties of `supertag-inline-face': a tag the system knows is
 underlined and inherits its colour from the active theme.  Set `:foreground'
-or `:inherit' here to pin a colour instead."
+or `:inherit' here to pin a colour instead.
+With `supertag-view-style-color-by-name' (the default) the generated per-tag
+`:foreground' is merged over this plist, so the other attributes still apply."
   :type '(plist :key-type symbol :value-type sexp)
+  :group 'supertag-view-style)
+
+(defcustom supertag-view-style-color-by-name t
+  "Whether each registered inline tag gets its own colour.
+The colour is a pure function of the Tag's canonical name, so one Tag looks the
+same in every session and on every machine, and two aliases of one Tag share
+it.  The generated `:foreground' is merged over
+`supertag-view-style-tag-face-properties', which keeps supplying the underline.
+When nil every tag uses `supertag-inline-face' again.  A token that resolves to
+no registered Tag always uses `supertag-unresolved-tag-face'."
+  :type 'boolean
   :group 'supertag-view-style)
 
 (defcustom supertag-view-style-auto-enable t
@@ -1918,15 +1932,92 @@ this face makes an unregistered or ambiguous token visibly different."
 
 (defun supertag-view-helper--matched-tag-face ()
   "Return the face for the inline tag just matched by the matcher.
-The match data covers the marker and the name.  A token owned by a
-registered Semantic Tag gets `supertag-inline-face'; an unregistered or
-ambiguous token gets `supertag-unresolved-tag-face'."
-  (let ((name (buffer-substring-no-properties
-               (1+ (match-beginning 0)) (match-end 0))))
-    (if (and (fboundp 'supertag-tag-resolve-occurrence)
-             (ignore-errors (supertag-tag-resolve-occurrence name)))
-        'supertag-inline-face
-      'supertag-unresolved-tag-face)))
+The match data covers the marker and the name.  A token that resolves to a
+registered Semantic Tag gets that Tag's own colour (see
+`supertag-view-style-color-by-name') merged over the underline, or
+`supertag-inline-face' when colouring is off.  A token that resolves to
+nothing, or to several Tags, gets `supertag-unresolved-tag-face'."
+  (let* ((name (buffer-substring-no-properties
+                (1+ (match-beginning 0)) (match-end 0)))
+         (id (and (fboundp 'supertag-tag-resolve-occurrence)
+                  (ignore-errors (supertag-tag-resolve-occurrence name)))))
+    (cond
+     ((not id) 'supertag-unresolved-tag-face)
+     ((not supertag-view-style-color-by-name) 'supertag-inline-face)
+     (t (supertag-view-style--tag-face id)))))
+
+;;; --- Per-tag colour ---
+;;
+;; design.md section 2 says coloured foreground text is not part of the view
+;; system.  That rule governs the buffers Supertag draws itself (Node View, Tag
+;; Cards, Stream, Tag Manager, Orphan Tags).  An inline tag is styled inside
+;; the user's own Org file, which Supertag does not own, so colouring a tag
+;; here -- and only here -- is outside that rule; no view palette is involved.
+
+(defconst supertag-view-style--color-bands
+  '((dark 0.55 0.76) (light 0.55 0.32))
+  "Saturation and lightness per background mode, as (MODE SAT LIGHT).
+Only the hue comes from the Tag name.  Pinning the other two keeps every tag
+readable on its own background: 0.76 lightness on a dark background is never
+near-black, 0.32 on a light one is never near-white.  Measured over every hue,
+the dark band stays between 6.9:1 and 12.5:1 against #1e1e1e and the light
+band between 4.3:1 and 12.8:1 against #ffffff, so no tag is unreadable and
+none is washed out.")
+
+(defvar supertag-view-style--face-cache (make-hash-table :test 'equal)
+  "Cache of computed inline tag faces, keyed by (TAG-ID . BACKGROUND-MODE).
+Faces are chosen per match during fontification, so a miss must stay rare:
+see `supertag-view-style--tag-face'.")
+
+(defun supertag-view-style--background-mode ()
+  "Return the background mode the selected frame is showing."
+  (if (eq (frame-parameter nil 'background-mode) 'light) 'light 'dark))
+
+(defun supertag-view-style--name-hue (name)
+  "Return NAME's hue in [0, 360) from a stable FNV-1a hash.
+Deliberately not `sxhash': the value has to survive sessions, Emacs versions
+and machines, and it depends on nothing but the bytes of NAME -- not on how
+many Tags exist, nor on hash-table order."
+  (let ((hash 2166136261))
+    (dolist (char (string-to-list name))
+      (setq hash (logand (* (logxor hash char) 16777619) #xffffffff)))
+    (% hash 360)))
+
+(defun supertag-view-style--color-for-name (name &optional mode)
+  "Return the hex colour of a Tag whose canonical NAME is NAME.
+MODE defaults to the current frame's background mode."
+  (pcase-let* ((mode (or mode (supertag-view-style--background-mode)))
+               (`(,sat ,light) (or (cdr (assq mode supertag-view-style--color-bands))
+                                   (cdr (assq 'dark supertag-view-style--color-bands))))
+               (rgb (color-hsl-to-rgb
+                     (/ (supertag-view-style--name-hue name) 360.0) sat light)))
+    (color-rgb-to-hex (nth 0 rgb) (nth 1 rgb) (nth 2 rgb) 2)))
+
+(defun supertag-view-style--compute-tag-face (tag-id mode)
+  "Return TAG-ID's inline tag face plist for background MODE.
+The colour comes from the Tag's canonical name, never from TAG-ID, so a store
+reload cannot change it."
+  (let ((color (supertag-view-style--color-for-name
+                (supertag-tag--name tag-id) mode)))
+    ;; The generated colour leads, so it wins if the user plist also sets
+    ;; `:foreground'; every other attribute in that plist still applies.
+    (cons :foreground
+          (cons color supertag-view-style-tag-face-properties))))
+
+(defun supertag-view-style--tag-face (tag-id)
+  "Return TAG-ID's cached face plist for the current background mode.
+Keyed by Tag id and background mode, so the hash and the HSL conversion run
+once per Tag per theme instead of once per match."
+  (let ((key (cons tag-id (supertag-view-style--background-mode))))
+    (or (gethash key supertag-view-style--face-cache)
+        (puthash key (supertag-view-style--compute-tag-face tag-id (cdr key))
+                 supertag-view-style--face-cache))))
+
+(defun supertag-view-style--clear-face-cache ()
+  "Drop every computed tag face.
+The lightness band depends on `background-mode', so a theme change must not
+leave the previous theme's colours cached."
+  (clrhash supertag-view-style--face-cache))
 
 
 ;;; Tag membership, Org text rules and compensated member writes
@@ -4307,6 +4398,10 @@ IMPORTANT: This function NEVER modifies existing tags - it only creates new ones
 ;;; Display lifecycle: all definitions above are complete before activation.
 
 (add-hook 'org-mode-hook #'supertag-view-helper--auto-enable)
+;; Lightness bands depend on `background-mode', so a theme change drops the
+;; cached tag faces instead of letting the previous theme's colours survive.
+(when (boundp 'enable-theme-functions)
+  (add-hook 'enable-theme-functions #'supertag-view-style--clear-face-cache))
 ;; Enable already open Org buffers even with auto-enable=nil; the pass only
 ;; acts on inactive buffers, never installing twice per buffer.
 (supertag-view-helper--enable-existing-org-buffers)

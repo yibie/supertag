@@ -137,16 +137,62 @@
       (should (equal after-external-change (supertag-tag-change-test--snapshot (list file plain)))))))
 
 (ert-deftest supertag-tag-change-preview-keeps-not-changed-shapes ()
+  "A keyword line and a src block are listed as not changed, byte for byte."
   (supertag-tag-change-test--vault
     (with-current-buffer (find-file-noselect plain)
       (goto-char (point-min)) (search-forward "Alias body")
-      (replace-match "#+BEGIN_SRC text\nMETA #alias\n#+END_SRC\nPROSE #alias"))
+      ;; The `#+CAPTION:' is the last line here, so Org parses it as a plain
+      ;; `keyword' and its `#alias' is not an occurrence at all; see
+      ;; `supertag-tag-change-caption-affiliation-decides-acceptance' for the
+      ;; shape where the line is an affiliated keyword of a paragraph.
+      (replace-match (concat "#+BEGIN_SRC text\nMETA #alias\n#+END_SRC\n"
+                             "PROSE #alias\n#+CAPTION: META #alias")))
     (let ((before (supertag-tag-change-test--snapshot (list file plain))))
       (supertag-tag-change-preview "old" "new")
       (with-current-buffer "*Supertag Tag Change*"
         (should (string-match-p "PROSE #alias" (buffer-string)))
-        (should (string-match-p "not a Tag: src or example block" (buffer-string))))
+        (should (string-match-p "not a Tag: src or example block" (buffer-string)))
+        (should (string-match-p "not a Tag: keyword line" (buffer-string)))
+        ;; The metadata line is listed as NOT CHANGED and never as a change.
+        (let* ((text (buffer-string))
+               (split (string-match-p "NOT CHANGED:" text)))
+          (should split)
+          (should-not (string-match-p "CAPTION" (substring text 0 split)))
+          (should (string-match-p "CAPTION" (substring text split)))))
       (should (equal before (supertag-tag-change-test--snapshot (list file plain)))))))
+
+(ert-deftest supertag-tag-change-caption-affiliation-decides-acceptance ()
+  "Pin how Org's parse decides whether a `#+CAPTION:' token is an occurrence.
+Measured with the shared predicate (`supertag-view-helper--inline-tag-range-at'
+over `org-element-context'):
+
+  * H
+  #+CAPTION: META #alias        <- last line: `keyword', rejected
+
+  * H
+  #+CAPTION: META #alias
+  PROSE #alias                   <- CAPTION affiliates to the paragraph,
+                                    `org-element-context' reports paragraph,
+                                    accepted, so rename/delete rewrite it
+
+This is the open question recorded in doc/report-rename-merge-text.md (a rule
+fix would make metadata lines never rewrite and must update this test)."
+  (supertag-tag-change-test--vault
+    (let ((standalone (concat "* H\n:PROPERTIES:\n:ID: shape\n:END:\n"
+                              "Prose line\n#+CAPTION: META #alias\n"))
+          (affiliated (concat "* H\n:PROPERTIES:\n:ID: shape\n:END:\n"
+                              "#+CAPTION: META #alias\nPROSE #alias\n")))
+      (dolist (case (list (cons 'standalone standalone) (cons 'affiliated affiliated)))
+        (with-current-buffer (find-file-noselect file)
+          (erase-buffer)
+          (insert (cdr case))
+          (save-buffer))
+        (let ((captions (cl-some (lambda (record)
+                                   (string-match-p "CAPTION" (plist-get record :line-text)))
+                                 (supertag-tag-change--collect "old"))))
+          (if (eq (car case) 'standalone)
+              (should-not captions)
+            (should captions)))))))
 
 
 (ert-deftest supertag-tag-change-old-writers-absent ()

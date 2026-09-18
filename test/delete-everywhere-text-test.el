@@ -185,8 +185,8 @@ change to exercise the rescan guard."
       (should (equal (supertag-report-orphan-tag-occurrences)
                      (get-buffer "*Supertag Orphan Tags*")))
       (let ((report (supertag-delete-everywhere-test--report-text)))
-        (should (string-match-p "#never: 2" report))
-        (should (string-match-p "nothing is cleaned by default" report)))
+        (should (string-match-p "\\* #never   2 occurrence(s)" report))
+        (should (string-match-p "All tokens start marked" report)))
       ;; The report writes nothing at all.
       (should (equal before (list (supertag-document-test-disk file)
                                   (prin1-to-string supertag--store)))))

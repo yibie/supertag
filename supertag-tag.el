@@ -22,7 +22,11 @@
 ;; supertag-delete-tag-everywhere,
 ;; supertag-cleanup-orphaned-tags,
 ;; supertag-report-orphan-tag-occurrences,
-;; supertag-cleanup-orphan-tag-occurrences.
+;; supertag-cleanup-orphan-tag-occurrences, supertag-orphan-tags-mode,
+;; supertag-orphan-tags-mark, supertag-orphan-tags-unmark,
+;; supertag-orphan-tags-mark-all, supertag-orphan-tags-unmark-all,
+;; supertag-orphan-tags-remove, supertag-orphan-tags-refresh,
+;; supertag-orphan-tags-visit.
 ;; Hooks: org-mode-hook, enable-theme-functions (when available).
 ;; Entry points: supertag--normalize-tag-id, supertag--create-tag-entities,
 ;; supertag-find-tag-descendants, supertag-query-tag-children,
@@ -4170,101 +4174,407 @@ When SKIP-CONFIRM is non-nil, the caller already showed the text preview."
     (when id
       (supertag-tag--text-delete-tag id (or name id) skip-confirm))))
 
-(defun supertag-report-orphan-tag-occurrences ()
-  "Report `#token' text whose Tag entity does not exist.  Read-only.
-Occurrences come from Org text, so an unregistered token the user typed is
-reported too; nothing here decides that an orphan is garbage."
-  (interactive)
-  (let* ((records (supertag-tag--text-scan (supertag-tag--text-scope-files)))
-         (orphans (supertag-tag--text-orphan-records records))
-         (ambiguous (supertag-tag--text-ambiguous-records records))
-         (tokens (delete-dups (mapcar (lambda (record) (plist-get record :token))
-                                      orphans)))
-         (buffer (get-buffer-create "*Supertag Orphan Tags*")))
-    (with-current-buffer buffer
-      (let ((inhibit-read-only t))
-        (erase-buffer)
-        (insert (format "Orphan Tag occurrences: %d token(s) / %d occurrence(s)\n"
-                        (length tokens) (length orphans)))
-        (insert "These tokens have no Tag entity.  Nothing is cleaned by default;\n")
-        (insert "use `supertag-cleanup-orphan-tag-occurrences' to pick one.\n\n")
-        (dolist (token (sort tokens #'string<))
-          (let ((selected (cl-remove-if-not
-                           (lambda (record) (equal token (plist-get record :token)))
-                           orphans)))
-            (insert (format "#%s: %d\n" token (length selected)))
-            (dolist (group (supertag-tag--text-group-by-file selected))
-              (insert (format "  %s\n" (car group)))
-              (dolist (record (cdr group))
-                (insert (format "    %d  [%s]  %s\n"
-                                (plist-get record :line)
-                                (supertag-tag--text-context-label record)
-                                (plist-get record :line-text)))))
-            (insert "\n")))
-        (when ambiguous
-          (insert (format "Ambiguous tokens (not orphans): %d occurrence(s)\n"
-                          (length ambiguous)))
-          (dolist (token (sort (delete-dups
-                                (mapcar (lambda (record) (plist-get record :token))
-                                        ambiguous))
-                               #'string<))
-            (insert (format "  #%s\n" token)))))
-      (special-mode)
-      (goto-char (point-min)))
-    (pop-to-buffer buffer)
-    (message "%d orphan token(s) / %d occurrence(s); %d ambiguous occurrence(s)"
-             (length tokens) (length orphans) (length ambiguous))
-    buffer))
+;;; Orphan Tag occurrences: actionable report and bulk cleanup
 
-(defun supertag-cleanup-orphan-tag-occurrences (&optional token)
-  "Preview and remove one orphan token's occurrences from Org text.
-The user picks the token; nothing is cleaned by default.  This never touches
-tokens that resolve to a Tag entity, not even ambiguous ones."
+(defun supertag-orphan-tags--stem (token)
+  "Return TOKEN without its trailing ASCII punctuation.
+The occurrence model keeps punctuation inside a token, so `seo' and `seo,'
+are different tokens of one stem; the report sorts and labels by stem so a
+variant is never silently missed.  The tokenizer itself is untouched."
+  (if (string-match "[[:punct:]]+\\'" token)
+      (substring token 0 (match-beginning 0))
+    token))
+
+(defvar-local supertag-orphan-tags--scan nil
+  "The candidate scan the report was built from.")
+
+(defvar-local supertag-orphan-tags--records nil
+  "Orphan occurrence records shown in this report.")
+
+(defvar-local supertag-orphan-tags--marked-tokens nil
+  "Token names marked for the bulk cleanup.  Every token starts marked.")
+
+(defvar-local supertag-orphan-tags--unmarked-occurrences nil
+  "Occurrence keys individually unmarked inside a marked token.")
+
+(defun supertag-orphan-tags--occurrence-key (record)
+  "Return RECORD's identity inside the report."
+  (list (plist-get record :file) (plist-get record :begin)
+        (plist-get record :end) (plist-get record :token)))
+
+(defun supertag-orphan-tags--tokens ()
+  "Return every token shown in this report."
+  (delete-dups (mapcar (lambda (record) (plist-get record :token))
+                       supertag-orphan-tags--records)))
+
+(defun supertag-orphan-tags--records-for-token (token)
+  "Return every reported occurrence of TOKEN, marked or not."
+  (cl-remove-if-not (lambda (record) (equal token (plist-get record :token)))
+                    supertag-orphan-tags--records))
+
+(defun supertag-orphan-tags--select (records tokens skipped)
+  "Return RECORDS whose token is in TOKENS and whose key is not in SKIPPED."
+  (cl-remove-if-not
+   (lambda (record)
+     (and (member (plist-get record :token) tokens)
+          (not (member (supertag-orphan-tags--occurrence-key record) skipped))))
+   records))
+
+(defun supertag-orphan-tags--marked-records ()
+  "Return the occurrence records the bulk command would remove."
+  (supertag-orphan-tags--select supertag-orphan-tags--records
+                                supertag-orphan-tags--marked-tokens
+                                supertag-orphan-tags--unmarked-occurrences))
+
+(defun supertag-orphan-tags--sorted-tokens ()
+  "Return the report's tokens sorted by stem so punctuation variants adjoin."
+  (sort (copy-sequence (supertag-orphan-tags--tokens))
+        (lambda (a b)
+          (let ((stem-a (supertag-orphan-tags--stem a))
+                (stem-b (supertag-orphan-tags--stem b)))
+            (if (equal stem-a stem-b) (string< a b) (string< stem-a stem-b))))))
+
+(defun supertag-orphan-tags--insert-row (kind key text &optional token)
+  "Insert one report row of KIND with KEY and TEXT.
+A token row toggles the token mark; an occurrence row toggles that one
+occurrence.  Both carry a two-character mark prefix like the Tag Manager."
+  (let ((start (point)))
+    (if (eq kind 'token)
+        (insert (propertize (if (member key supertag-orphan-tags--marked-tokens)
+                                "* " "  ")
+                            'face 'supertag-view-accent)
+                text)
+      (insert "    "
+              (propertize (if (and (member token supertag-orphan-tags--marked-tokens)
+                                   (not (member key supertag-orphan-tags--unmarked-occurrences)))
+                              "* " "  ")
+                          'face 'supertag-view-accent)
+              text))
+    (insert "\n")
+    (add-text-properties start (point)
+                         (if (eq kind 'token)
+                             (list 'supertag-orphan-tags--row-token key)
+                           (list 'supertag-orphan-tags--occurrence-key key
+                                 'supertag-orphan-tags--row-token token)))))
+
+(defun supertag-orphan-tags--render ()
+  "Redraw the orphan report from its records and mark state.
+Rendering writes no Org text and no Store entity."
+  (let ((inhibit-read-only t)
+        (line (line-number-at-pos)))
+    (erase-buffer)
+    (insert (format "Orphan Tag occurrences: %d token(s) / %d occurrence(s)\n"
+                    (length (supertag-orphan-tags--tokens))
+                    (length supertag-orphan-tags--records)))
+    (insert "All tokens start marked.  D removes the marked occurrences after one preview;\n")
+    (insert "m mark  u unmark  M mark all  U unmark all  RET visit  g refresh.\n")
+    (insert "ASCII punctuation belongs to the token, so #seo and #seo, are variants of one\n")
+    (insert "stem; variants stay adjacent and are labelled with that stem.\n\n")
+    (dolist (token (supertag-orphan-tags--sorted-tokens))
+      (let* ((records (supertag-orphan-tags--records-for-token token))
+             (stem (supertag-orphan-tags--stem token)))
+        (supertag-orphan-tags--insert-row
+         'token token
+         (concat (format "#%s   %d occurrence(s)" token (length records))
+                 (unless (equal stem token) (format "   [stem #%s]" stem))))
+        (dolist (record records)
+          (supertag-orphan-tags--insert-row
+           'occurrence (supertag-orphan-tags--occurrence-key record)
+           (format "%d  %s   [%s]   %s"
+                   (plist-get record :line)
+                   (plist-get record :file)
+                   (supertag-tag--text-context-label record)
+                   (plist-get record :line-text))
+           token))))
+    (let ((ambiguous (supertag-tag--text-ambiguous-records supertag-orphan-tags--scan)))
+      (when ambiguous
+        (insert (format "\nNot orphans (ambiguous tokens): %d occurrence(s)\n"
+                        (length ambiguous)))
+        (dolist (token (sort (delete-dups
+                              (mapcar (lambda (record) (plist-get record :token))
+                                      ambiguous))
+                             #'string<))
+          (insert (format "  #%s\n" token)))))
+    (setq header-line-format
+          (format " Orphan Tags   %d token(s) / %d occurrence(s)   %d token(s) marked, %d occurrence(s) selected "
+                  (length (supertag-orphan-tags--tokens))
+                  (length supertag-orphan-tags--records)
+                  (length supertag-orphan-tags--marked-tokens)
+                  (length (supertag-orphan-tags--marked-records))))
+    (goto-char (point-min))
+    (forward-line (1- (max 1 line)))))
+
+(defun supertag-orphan-tags--at-point (property)
+  "Return PROPERTY's value on the report row at point.
+The row's own character carries it; the preceding character is consulted
+only on a row's newline, so a token row never inherits the occurrence row
+that ends on the line above."
+  (let* ((position (if (and (eobp) (> (point) (point-min)))
+                       (1- (point))
+                     (point)))
+         (value (get-text-property position property)))
+    (or value
+        (when (and (> position (point-min))
+                   (eq ?\n (char-after position)))
+          (get-text-property (1- position) property)))))
+
+(defun supertag-orphan-tags--redraw-keeping-line (&optional advance)
+  "Redraw the report holding point's line, optionally moving ADVANCE lines."
+  (let ((line (line-number-at-pos)))
+    (supertag-orphan-tags--render)
+    (goto-char (point-min))
+    (forward-line (1- (max 1 line)))
+    (when advance (forward-line 1))
+    (beginning-of-line)))
+
+(defun supertag-orphan-tags-refresh ()
+  "Rescan the scope and redraw, keeping every mark the user set.
+Tokens that vanished lose their mark; a token that appeared since is left
+unmarked so a deliberate unmark is never undone by a refresh."
   (interactive)
-  (let* ((records (supertag-tag--text-scan (supertag-tag--text-scope-files)))
-         (orphans (supertag-tag--text-orphan-records records))
-         (tokens (sort (delete-dups
-                        (mapcar (lambda (record) (plist-get record :token)) orphans))
-                       #'string<))
-         (name (cond
-                ((null tokens) (message "No orphan Tag occurrences found.") nil)
-                ((and token (member token tokens)) token)
-                (token (user-error "'%s' has no orphan occurrence" token))
-                (t (completing-read "Orphan token to remove: " tokens nil t)))))
-    (when name
-      (let* ((selected (supertag-tag--text-records-for-token name records))
-             (near (supertag-tag--text-near-misses-for-token name records))
-             (file-count (length (supertag-tag--text-group-by-file selected))))
-        (supertag-tag--text-preview
-         (format "Remove orphan '#%s'" name)
-         (list (cons "WILL CHANGE" selected)
-               (cons "NOT CHANGED" near))
-         (format "%d orphan occurrence(s) / %d file(s); %d candidate(s) will not be touched"
-                 (length selected) file-count (length near)))
-        (when (yes-or-no-p
-               (format "Remove %d orphan '#%s' occurrence(s) in %d file(s)? "
-                       (length selected) name file-count))
-          (let* ((result (supertag-tag--text-write
-                          selected
-                          (lambda ()
-                            (supertag-tag--text-records-for-token
-                             name (supertag-tag--text-scan-current-buffer)))
-                          (lambda (candidate) (equal candidate name))))
-                 (remaining (supertag-tag--text-records-for-token
-                             name (supertag-tag--text-scan (supertag-tag--text-scope-files))))
-                 (aborted (plist-get result :aborted)))
-            (if (or remaining aborted)
-                (progn
-                  (supertag-tag--text-preview
-                   (format "Not removed for '#%s'" name)
-                   (list (cons "NOT REMOVED" remaining)
-                         (cons "NOT CHANGED" near))
-                   (format "%d occurrence(s) remain; %d file(s) left untouched"
-                           (length remaining) (length aborted)))
-                  (message "Orphan '#%s': %d occurrence(s) remain" name (length remaining)))
-              (message "Removed orphan '#%s': %d occurrence(s) in %d file(s)"
-                       name (plist-get result :occurrences) (plist-get result :files)))
-            t))))))
+  (let ((marked supertag-orphan-tags--marked-tokens))
+    (setq supertag-orphan-tags--scan
+          (supertag-tag--text-scan (supertag-tag--text-scope-files))
+          supertag-orphan-tags--records
+          (supertag-tag--text-orphan-records supertag-orphan-tags--scan))
+    (let ((tokens (supertag-orphan-tags--tokens))
+          (keys (mapcar #'supertag-orphan-tags--occurrence-key
+                        supertag-orphan-tags--records)))
+      (setq supertag-orphan-tags--marked-tokens
+            (cl-intersection marked tokens :test #'equal)
+            supertag-orphan-tags--unmarked-occurrences
+            (cl-intersection supertag-orphan-tags--unmarked-occurrences keys
+                             :test #'equal))
+      (supertag-orphan-tags--redraw-keeping-line))))
+
+(defun supertag-orphan-tags-mark ()
+  "Toggle the mark on the token or occurrence at point, then move down."
+  (interactive)
+  (let ((key (supertag-orphan-tags--at-point 'supertag-orphan-tags--occurrence-key))
+        (token (supertag-orphan-tags--at-point 'supertag-orphan-tags--row-token)))
+    (cond
+     (key
+      (if (member key supertag-orphan-tags--unmarked-occurrences)
+          (progn
+            (setq supertag-orphan-tags--unmarked-occurrences
+                  (delete key supertag-orphan-tags--unmarked-occurrences))
+            ;; Marking one occurrence keeps its token selected.
+            (cl-pushnew token supertag-orphan-tags--marked-tokens :test #'equal))
+        (push key supertag-orphan-tags--unmarked-occurrences)))
+     (token
+      (if (member token supertag-orphan-tags--marked-tokens)
+          (setq supertag-orphan-tags--marked-tokens
+                (delete token supertag-orphan-tags--marked-tokens))
+        (push token supertag-orphan-tags--marked-tokens)
+        ;; Re-marking a token selects all of its occurrences again.
+        (setq supertag-orphan-tags--unmarked-occurrences
+              (cl-delete-if (lambda (skipped) (equal token (nth 3 skipped)))
+                            supertag-orphan-tags--unmarked-occurrences))))
+     (t (user-error "No orphan row at point")))
+    (supertag-orphan-tags--redraw-keeping-line t)))
+
+(defun supertag-orphan-tags-unmark ()
+  "Unmark the token or occurrence at point, then move down."
+  (interactive)
+  (let ((key (supertag-orphan-tags--at-point 'supertag-orphan-tags--occurrence-key))
+        (token (supertag-orphan-tags--at-point 'supertag-orphan-tags--row-token)))
+    (cond
+     (key
+      (unless (member key supertag-orphan-tags--unmarked-occurrences)
+        (push key supertag-orphan-tags--unmarked-occurrences)))
+     (token
+      (setq supertag-orphan-tags--marked-tokens
+            (delete token supertag-orphan-tags--marked-tokens)
+            supertag-orphan-tags--unmarked-occurrences
+            (cl-delete-if (lambda (skipped) (equal token (nth 3 skipped)))
+                          supertag-orphan-tags--unmarked-occurrences)))
+     (t (user-error "No orphan row at point")))
+    (supertag-orphan-tags--redraw-keeping-line t)))
+
+(defun supertag-orphan-tags-mark-all ()
+  "Mark every orphan token and clear the per-occurrence exceptions."
+  (interactive)
+  (setq supertag-orphan-tags--marked-tokens (supertag-orphan-tags--tokens)
+        supertag-orphan-tags--unmarked-occurrences nil)
+  (supertag-orphan-tags--redraw-keeping-line))
+
+(defun supertag-orphan-tags-unmark-all ()
+  "Clear every orphan mark."
+  (interactive)
+  (setq supertag-orphan-tags--marked-tokens nil
+        supertag-orphan-tags--unmarked-occurrences nil)
+  (supertag-orphan-tags--redraw-keeping-line))
+
+(defun supertag-orphan-tags-remove ()
+  "Remove every marked orphan occurrence: one preview, one confirmation."
+  (interactive)
+  (let ((report (current-buffer))
+        (records (supertag-orphan-tags--marked-records)))
+    (if (null records)
+        (message "No orphan occurrence is marked.")
+      (let* ((tokens (delete-dups (mapcar (lambda (record) (plist-get record :token))
+                                         records)))
+             (skipped (copy-sequence supertag-orphan-tags--unmarked-occurrences))
+             (near (apply #'append
+                          (mapcar (lambda (token)
+                                    (supertag-tag--text-near-misses-for-token
+                                     token supertag-orphan-tags--scan))
+                                  tokens))))
+        (when (supertag-tag--orphan-remove
+               records near
+               (lambda ()
+                 (supertag-orphan-tags--select
+                  (supertag-tag--text-orphan-records
+                   (supertag-tag--text-scan-current-buffer))
+                  tokens skipped))
+               tokens nil)
+          ;; The preview popped to its own buffer; refresh the report itself.
+          (with-current-buffer report (supertag-orphan-tags-refresh)))))))
+
+(defun supertag-orphan-tags-visit ()
+  "Visit the file and line of the orphan occurrence at point."
+  (interactive)
+  (let* ((key (supertag-orphan-tags--at-point 'supertag-orphan-tags--occurrence-key))
+         (token (supertag-orphan-tags--at-point 'supertag-orphan-tags--row-token))
+         (record (cond
+                  (key (cl-find key supertag-orphan-tags--records
+                                :key #'supertag-orphan-tags--occurrence-key
+                                :test #'equal))
+                  (token (car (supertag-orphan-tags--records-for-token token))))))
+    (unless record (user-error "No orphan occurrence at point"))
+    (find-file (plist-get record :file))
+    (goto-char (point-min))
+    (forward-line (1- (plist-get record :line)))))
+
+(defun supertag-tag--orphan-remove (records near rescan-fn tokens skip-confirm)
+  "Preview and remove orphan RECORDS in one preview and one confirmation.
+NEAR lists the not-changed candidates to show.  RESCAN-FN re-reads the same
+selection from the current buffer for the per-file guard.  TOKENS names the
+selection and decides which `#+FILETAGS:' entries are dropped.
+SKIP-CONFIRM means the caller already showed this preview.
+Returns t when the write ran, nil when the user cancelled."
+  (let* ((file-count (length (supertag-tag--text-group-by-file records)))
+         (label (if (= 1 (length tokens))
+                    (format "'#%s'" (car tokens))
+                  (format "%d orphan token(s)" (length tokens)))))
+    (supertag-tag--text-preview
+     (format "Remove %s" label)
+     (list (cons "WILL CHANGE" records)
+           (cons "NOT CHANGED" near))
+     (format "%d orphan occurrence(s) / %d file(s); %d candidate(s) will not be touched"
+             (length records) file-count (length near)))
+    (when (or skip-confirm
+              (yes-or-no-p (format "Remove %d orphan occurrence(s) in %d file(s)? "
+                                   (length records) file-count)))
+      (let* ((result (supertag-tag--text-write
+                      records rescan-fn
+                      (lambda (candidate) (member candidate tokens))))
+             (remaining (supertag-tag--text-orphan-records
+                         (supertag-tag--text-scan (supertag-tag--text-scope-files))))
+             (leftover (supertag-orphan-tags--select remaining tokens nil))
+             (aborted (plist-get result :aborted)))
+        (if (or leftover aborted)
+            (progn
+              (supertag-tag--text-preview
+               (format "Not removed: %s" label)
+               (list (cons "NOT REMOVED" leftover)
+                     (cons "NOT CHANGED" near))
+               (format "%d occurrence(s) remain; %d file(s) left untouched"
+                       (length leftover) (length aborted)))
+              (message "Orphan cleanup for %s: %d occurrence(s) remain%s"
+                       label (length leftover)
+                       (if aborted
+                           (format " (%d file(s) changed since the preview; preview again)"
+                                   (length aborted))
+                         "")))
+          (message "Removed %d orphan occurrence(s) in %d file(s)"
+                   (plist-get result :occurrences) (plist-get result :files)))
+        t))))
+
+(defun supertag-cleanup-orphan-tag-occurrences (&optional tokens skip-confirm)
+  "Remove orphan `#token' occurrences after one preview and one confirmation.
+TOKENS is a token name, a list of token names, or nil for every orphan token,
+so a caller can clear the whole set without any minibuffer.  An explicit name
+that resolves to a Tag entity (or to several) is refused, and the deleted set
+stays exactly what the view layer highlights.
+SKIP-CONFIRM means the caller already showed this preview."
+  (interactive)
+  (let* ((scan (supertag-tag--text-scan (supertag-tag--text-scope-files)))
+         (orphans (supertag-tag--text-orphan-records scan))
+         (known (delete-dups (mapcar (lambda (record) (plist-get record :token))
+                                     orphans)))
+         (wanted (cond ((null tokens) known)
+                       ((stringp tokens) (list tokens))
+                       (t (copy-sequence tokens))))
+         (unknown (cl-set-difference wanted known :test #'equal)))
+    (cond
+     ((null orphans)
+      (message "No orphan Tag occurrences found.")
+      nil)
+     ((and tokens unknown)
+      (user-error "'%s' has no orphan occurrence" (car unknown)))
+     (t
+      (let* ((selected (supertag-orphan-tags--select orphans wanted nil))
+             (near (apply #'append
+                          (mapcar (lambda (token)
+                                    (supertag-tag--text-near-misses-for-token
+                                     token scan))
+                                  wanted))))
+        (supertag-tag--orphan-remove
+         selected near
+         (lambda ()
+           (supertag-orphan-tags--select
+            (supertag-tag--text-orphan-records
+             (supertag-tag--text-scan-current-buffer))
+            wanted nil))
+         wanted skip-confirm))))))
+
+(defvar supertag-orphan-tags-mode-map
+  (let ((map (make-sparse-keymap)))
+    (define-key map (kbd "RET") #'supertag-orphan-tags-visit)
+    (define-key map (kbd "D") #'supertag-orphan-tags-remove)
+    (define-key map (kbd "m") #'supertag-orphan-tags-mark)
+    (define-key map (kbd "u") #'supertag-orphan-tags-unmark)
+    (define-key map (kbd "M") #'supertag-orphan-tags-mark-all)
+    (define-key map (kbd "U") #'supertag-orphan-tags-unmark-all)
+    (define-key map (kbd "n") #'next-line)
+    (define-key map (kbd "p") #'previous-line)
+    (define-key map (kbd "g") #'supertag-orphan-tags-refresh)
+    (define-key map (kbd "h") #'describe-mode)
+    map)
+  "Keymap for `supertag-orphan-tags-mode', mirroring the Tag Manager.")
+
+(define-derived-mode supertag-orphan-tags-mode special-mode "Supertag-Orphans"
+  "Major mode for the actionable orphan Tag report.
+Marks are per token and per occurrence, the Tag Manager's idiom: `m' toggles,
+`u' unmarks, `M' marks all, `U' unmarks all, `D' removes the marked set after
+one preview.  The report never edits Org text by itself.")
+
+(defun supertag-report-orphan-tag-occurrences ()
+  "Open an actionable report of `#token' text whose Tag entity does not exist.
+Occurrences come from Org text, so an unregistered token the user typed is
+reported too; being orphaned is not by itself a verdict.  Every token starts
+marked, so `D' clears the whole set after one preview and one confirmation
+while a token the user means to keep is simply unmarked first.  The report
+itself writes nothing."
+  (interactive)
+  ;; lazy-require: only the report needs the view layer's accent mark face.
+  (require 'supertag-view-framework)
+  (let ((buffer (get-buffer-create "*Supertag Orphan Tags*")))
+    (with-current-buffer buffer
+      (supertag-orphan-tags-mode)
+      (setq supertag-orphan-tags--scan
+            (supertag-tag--text-scan (supertag-tag--text-scope-files))
+            supertag-orphan-tags--records
+            (supertag-tag--text-orphan-records supertag-orphan-tags--scan)
+            supertag-orphan-tags--marked-tokens (supertag-orphan-tags--tokens)
+            supertag-orphan-tags--unmarked-occurrences nil)
+      (supertag-orphan-tags--render))
+    (pop-to-buffer buffer)
+    (message "%d orphan token(s) / %d occurrence(s); all marked for removal with D"
+             (length supertag-orphan-tags--marked-tokens)
+             (length supertag-orphan-tags--records))
+    buffer))
 
 ;;;###autoload
 (defun supertag-cleanup-orphaned-tags ()

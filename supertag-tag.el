@@ -3461,91 +3461,48 @@ after filtering — i.e. exactly what the popup should display."
   :group 'supertag)
 
 (defun supertag-tag-change--collect (tag-id)
-  "Read TAG-ID's live occurrences, grouped as (FILE ENTRIES).
-Each entry is (NODE-ID TITLE TOKENS LINE-TEXT).  Empty TOKENS denotes a
-Store membership whose source requires explicit save/projection repair."
-  (let (groups)
-    (dolist (pair (supertag-find-nodes-by-tag tag-id))
-      (let* ((id (car pair)) (node (cdr pair))
-             (file (plist-get node :file))
-             (entry
-              (supertag-service-org--with-node-buffer
-               id
-               (lambda ()
-                 (let* ((file-node (zerop (or (plist-get node :level) 1)))
-                        (tokens
-                         (cl-remove-if-not
-                          (lambda (token)
-                            (supertag-service-org--token-identifies-p token tag-id))
-                          (save-excursion
-                            (if file-node (supertag-service-org--filetags)
-                              (supertag-node-tag-occurrences-at-point))))))
-                   (list
-                    id (or (plist-get node :title) id) tokens
-                    (if file-node
-                        (progn
-                          (let ((case-fold-search t))
-                            (re-search-forward "^#\\+FILETAGS:" nil t))
-                          (buffer-substring-no-properties
-                           (line-beginning-position) (line-end-position)))
-                      (let ((limit (save-excursion
-                                     (forward-line 1)
-                                     (if (re-search-forward org-outline-regexp-bol nil t)
-                                         (match-beginning 0) (point-max))))
-                            lines)
-                        (while (supertag-view-helper--font-lock-matcher limit)
-                          (when (and (member (substring (match-string-no-properties 0) 1) tokens)
-                                     (not (save-excursion
-                                            (beginning-of-line)
-                                            (looking-at-p "^[ \t]*#\\+"))))
-                            (push (buffer-substring-no-properties
-                                   (line-beginning-position) (line-end-position)) lines)))
-                        (string-join (delete-dups (nreverse lines)) "\n    "))))))))
-             (group (assoc file groups)))
-        (unless group
-          (setq group (list file nil))
-          (push group groups))
-        (setcar (cdr group) (cons entry (cadr group)))))
-    (dolist (group groups)
-      (setcar (cdr group)
-              (sort (cadr group) (lambda (a b) (string< (car a) (car b))))))
-    (sort groups (lambda (a b) (string< (car a) (car b))))))
+  "Return TAG-ID's live Org-text occurrences as range records.
+Reads the shared text enumerator, so a heading without `:ID:', a duplicate-ID
+copy and a `#+FILETAGS:' entry are included; nothing is written.  An unknown
+TAG-ID returns nil, which is what a completed rename leaves behind."
+  (when (supertag-tag-get tag-id)
+    (supertag-tag--text-records-for-tag
+     tag-id (supertag-tag--text-scan (supertag-tag--text-files-for-tag tag-id)))))
 
 (defun supertag-tag-change-preview (tag-id &optional new-name display heading)
-  "Preview TAG-ID's live occurrences without changing Org or its projection.
+  "Preview TAG-ID's live Org-text occurrences without changing anything.
 NEW-NAME is the rename token, or nil for deletion.  DISPLAY shows the preview.
 HEADING is an optional first line describing an existing merge target.
-Return the grouped collection used to render the preview."
-  (let ((groups (supertag-tag-change--collect tag-id))
-        (buffer (get-buffer-create "*Supertag Tag Change*"))
-        (token-count 0) (node-count 0) (pending-count 0))
-    (with-current-buffer buffer
-      (let ((inhibit-read-only t))
-        (erase-buffer)
-        (when heading (insert heading "\n\n"))
-        (dolist (group groups)
-          (insert (format "%s\n" (car group)))
-          (dolist (entry (cadr group))
-            (cl-incf node-count)
-            (cl-incf token-count (length (nth 2 entry)))
-            (unless (nth 2 entry) (cl-incf pending-count))
-            (insert (format "  %s [%s]：%s → %s\n    %s\n"
-                            (nth 1 entry) (car entry)
-                            (if (nth 2 entry) (string-join (nth 2 entry) ", ")
-                              "待保存/待投影")
-                            (or new-name "删除") (nth 3 entry))))
-          (insert "\n"))
-        (insert (format "%d 个 token / %d 节点 / %d 文件；待保存/待投影 %d\n"
-                        token-count node-count (length groups) pending-count)))
-      (special-mode)
-      (goto-char (point-min)))
-    (when display (pop-to-buffer buffer))
-    groups))
+The listing is file -> line with each occurrence's context and a NOT CHANGED
+section for text that only looks like the tag; nothing is written.
+Return the records the preview was built from, or nil when TAG-ID is unknown."
+  (when (supertag-tag-get tag-id)
+    (let* ((files (supertag-tag--text-files-for-tag tag-id))
+           (scan (supertag-tag--text-scan files))
+           (records (supertag-tag--text-records-for-tag tag-id scan))
+           (near (supertag-tag--text-near-misses-for-tag tag-id scan))
+           (file-count (length (supertag-tag--text-group-by-file records))))
+      (supertag-tag--text-preview
+       (or heading (format "Tag %s" tag-id))
+       (list (cons "WILL CHANGE" records)
+             (cons "NOT CHANGED" near))
+       (format "%d occurrence(s) / %d file(s) -> %s; %d candidate(s) will not be touched"
+               (length records) file-count (or new-name "deleted") (length near))
+       display)
+      records)))
 
 (defun supertag-tag-rename (&optional old-id new-name)
-  "Preview and confirm renaming OLD-ID in Org, then update its projection.
+  "Preview and confirm renaming OLD-ID in Org text, then update its projection.
+Occurrences come from Org text through the same enumerator
+`supertag-delete-tag-everywhere' uses, so a heading without `:ID:', a
+heading's body prose, a duplicate-ID copy and a `#+FILETAGS:' entry are all
+renamed, and text that only looks like a tag is listed as not changed.
 NEW-NAME supplies the proposed name; confirmation is still required.
-On failure, earlier nodes remain committed; preview and confirm again to resume.
+When NEW-NAME resolves to an existing Tag this is a merge: every occurrence is
+rewritten to that Tag's canonical token and the nodes' membership is
+derived from the rewritten text, so a node that carried both Tags ends up
+with the target once, never twice.
+On failure, earlier files remain committed; preview and confirm again to resume.
 Preview is always shown before confirmation, whatever the caller."
   (interactive)
   (let* ((old (or old-id (supertag-ui-read-tag
@@ -3560,30 +3517,68 @@ Preview is always shown before confirmation, whatever the caller."
              (_ (when (equal target-id old-id)
                   (user-error "'%s' already names tag '%s'" name old-id)))
              (actual (if target-id (supertag-service-org--tag-token target-id) token))
-             (groups (supertag-tag-change-preview
-                      old-id actual t
-                      (and target-id
-                           (format "并入已有标签 %s（token %s）" target-id actual))))
-             (count (apply #'+ (mapcar (lambda (group) (length (cadr group))) groups))))
+             (files (supertag-tag--text-files-for-tag old-id))
+             (scan (supertag-tag--text-scan files))
+             (records (supertag-tag--text-records-for-tag old-id scan))
+             (near (supertag-tag--text-near-misses-for-tag old-id scan))
+             (file-count (length (supertag-tag--text-group-by-file records))))
+        (supertag-tag--text-preview
+         (if target-id
+             (format "Merge '%s' into existing Tag '%s' (token '%s')"
+                     old target-id actual)
+           (format "Rename '%s' to '%s'" old actual))
+         (list (cons "WILL CHANGE" records)
+               (cons "NOT CHANGED" near))
+         (format "%d occurrence(s) / %d file(s); %d candidate(s) will not be touched"
+                 (length records) file-count (length near))
+         t)
         (when (yes-or-no-p
                (if target-id
-                   (format "Merge '%s' into existing tag '%s' (token '%s') in %d nodes / %d files? "
-                           old target-id actual count (length groups))
-                 (format "Rename '%s' to '%s' in %d nodes / %d files? "
-                         old actual count (length groups))))
+                   (format "Merge '%s' into existing tag '%s' (token '%s') in %d occurrence(s) / %d file(s)? "
+                           old target-id actual (length records) file-count)
+                 (format "Rename '%s' to '%s' in %d occurrence(s) / %d file(s)? "
+                         old actual (length records) file-count)))
           (unless (and (equal target-id (supertag-tag-resolve-occurrence token))
                        (or (null target-id)
                            (equal actual (supertag-service-org--tag-token target-id))))
             (user-error "Tag resolution changed; preview again"))
-          (let ((new-id (or target-id (supertag-tag-ensure token))))
-            (dolist (group groups)
-              (dolist (entry (cadr group))
-                (supertag-service-org-replace-tag
-                 (car entry) old-id new-id (null (nth 2 entry)))))
-            (when (and (not (equal old-id new-id))
-                       (not (supertag-find-nodes-by-tag old-id)))
-              (supertag-tag-delete old-id))
-            new-id))))))
+          (let* ((new-id (or target-id (supertag-tag-ensure token)))
+                 (result (supertag-tag--text-write
+                          records
+                          (lambda ()
+                            (supertag-tag--text-records-for-tag
+                             old-id (supertag-tag--text-scan-current-buffer)))
+                          (lambda (candidate)
+                            (supertag-service-org--token-identifies-p candidate old-id))
+                          actual))
+                 (after (supertag-tag--text-scan files))
+                 (remaining (supertag-tag--text-records-for-tag old-id after))
+                 (aborted (plist-get result :aborted)))
+            ;; A node whose text no longer carries the old name has a stale
+            ;; membership; refresh it rather than leaving the old Tag attached.
+            (supertag-tag--text-repair-owners old-id after)
+            (if (or remaining aborted)
+                (progn
+                  (supertag-tag--text-preview
+                   (format "Not renamed: '%s' to '%s'" old actual)
+                   (list (cons "NOT RENAMED" remaining)
+                         (cons "NOT CHANGED" near))
+                   (format "Tag '%s' kept: %d occurrence(s) still name it; %d file(s) left untouched"
+                           old (length remaining) (length aborted))
+                   t)
+                  (message "Tag '%s' kept: %d occurrence(s) still name it%s"
+                           old (length remaining)
+                           (if aborted
+                               (format " (%d file(s) changed since the preview; preview again)"
+                                       (length aborted))
+                             ""))
+                  new-id)
+              (when (and (not (equal old-id new-id))
+                         (not (supertag-find-nodes-by-tag old-id)))
+                (supertag-tag-delete old-id))
+              (message "Renamed '%s' to '%s': rewrote %d occurrence(s) in %d file(s)"
+                       old actual (plist-get result :occurrences) (plist-get result :files))
+              new-id)))))))
 
 (cl-defun supertag-tag-set-parent
     (&optional (tag-id nil tag-id-supplied-p) (parent-ids nil parent-ids-supplied-p))
@@ -3927,11 +3922,12 @@ silently leave the Tag's own text behind."
 
 (defun supertag-tag--text-tokens-for-tag (tag-id)
   "Return the token strings that name TAG-ID in Org text."
-  (let ((entity (supertag-tag-get tag-id)))
+  (let ((entity (supertag--ensure-plist (supertag-tag-get tag-id))))
     ;; Non-destructive: the entity's own alias list must stay untouched.
     (cl-remove-duplicates
      (delq nil (append (list (plist-get entity :name)
-                             (supertag-sanitize-tag-name (plist-get entity :name))
+                             (and (plist-get entity :name)
+                                  (supertag-sanitize-tag-name (plist-get entity :name)))
                              (supertag-service-org--tag-token tag-id))
                        (plist-get entity :aliases)))
      :test #'equal)))
@@ -4031,9 +4027,11 @@ trailing punctuation run, but never an alphanumeric or CJK continuation."
         (:id (format "heading :ID: %s" (plist-get record :node-id)))
         (context (format "%s" context)))))
 
-(defun supertag-tag--text-preview (title sections summary)
+(defun supertag-tag--text-preview (title sections summary &optional display)
   "Render the text preview in `*Supertag Tag Change*' and return it.
-SECTIONS is a list of (LABEL . RECORDS).  Nothing is written here."
+SECTIONS is a list of (LABEL . RECORDS).  DISPLAY non-nil pops to the buffer;
+nil leaves it unshown for a caller that inspects it programmatically.  Nothing
+is written here."
   (let ((buffer (get-buffer-create "*Supertag Tag Change*")))
     (with-current-buffer buffer
       (let ((inhibit-read-only t))
@@ -4052,7 +4050,7 @@ SECTIONS is a list of (LABEL . RECORDS).  Nothing is written here."
               (insert "\n")))))
       (special-mode)
       (goto-char (point-min)))
-    (pop-to-buffer buffer)
+    (when display (pop-to-buffer buffer))
     buffer))
 
 (defun supertag-tag--text-signature (records)
@@ -4087,22 +4085,35 @@ Groups come back back-to-front so deleting one cannot shift the next."
                (apply #'max (mapcar (lambda (record) (plist-get record :begin))
                                     (cdr b))))))))
 
-(defun supertag-tag--text-delete-records (records drop-p)
-  "Delete RECORDS in the current buffer, highest position first.
-DROP-P decides which `#+FILETAGS' tokens go; inline ranges are deleted as
-recorded."
+(defun supertag-tag--text-edit-records (records drop-p new-token)
+  "Rewrite RECORDS in the current buffer, highest position first.
+DROP-P decides which occurrences of the current file match (inline tokens
+resolve through the same rule the scan used; `#+FILETAGS:' tokens through
+their own).  A matching inline range becomes `#NEW-TOKEN', a matching
+FILETAGS token becomes NEW-TOKEN, and nil NEW-TOKEN deletes both.  Editing
+from the end is what keeps the remaining recorded ranges valid when the
+replacement changes the byte length."
   (dolist (record (sort (copy-sequence records)
                         (lambda (a b) (> (plist-get a :begin) (plist-get b :begin)))))
     (if (eq (plist-get record :kind) :filetags)
         (supertag-service-org--set-filetags
-         (cl-remove-if drop-p (supertag-service-org--filetags)))
-      (delete-region (plist-get record :begin) (plist-get record :end)))))
+         ;; `delete-dups' also folds a merge onto a token the line already
+         ;; carries, so FILETAGS never grows a duplicate.
+         (delete-dups
+          (delq nil (mapcar (lambda (token)
+                              (if (funcall drop-p token) new-token token))
+                            (supertag-service-org--filetags)))))
+      (goto-char (plist-get record :begin))
+      (delete-region (point) (plist-get record :end))
+      (when new-token (insert "#" new-token)))))
 
-(defun supertag-tag--text-write (records rescan-fn drop-p)
-  "Delete RECORDS from Org text, file by file, back to front.
+(defun supertag-tag--text-write (records rescan-fn drop-p &optional new-token)
+  "Rewrite RECORDS in Org text, file by file, back to front.
 RESCAN-FN re-reads the same selection from the current buffer; when it
 differs from the planned records, that file is left untouched and reported.
-DROP-P decides which `#+FILETAGS' tokens are removed.
+DROP-P decides which occurrences match.  NEW-TOKEN renames them (the caller
+passes the target's canonical token and the inline `#' is added here); nil
+NEW-TOKEN deletes them.
 Returns a plist (:occurrences N :files N :aborted ((FILE . REASON) ...))."
   (let ((planned (supertag-tag--text-group-by-file records))
         (written 0) (files 0) aborted)
@@ -4122,9 +4133,11 @@ Returns a plist (:occurrences N :files N :aborted ((FILE . REASON) ...))."
                       (supertag-service-org--update-buffer-and-resync
                        node-id
                        (lambda ()
-                         (supertag-tag--text-delete-records owner-records drop-p)))
+                         (supertag-tag--text-edit-records
+                          owner-records drop-p new-token)))
                     (progn
-                      (supertag-tag--text-delete-records owner-records drop-p)
+                      (supertag-tag--text-edit-records
+                       owner-records drop-p new-token)
                       (supertag-service-org--save-current-buffer)))))
               (cl-incf files)
               (cl-incf written (length group-records)))))))
@@ -4161,7 +4174,7 @@ showed this text preview.  SCAN may supply the enumeration."
      (list (cons "WILL CHANGE" records)
            (cons "NOT CHANGED" near))
      (format "%d occurrence(s) / %d file(s); %d candidate(s) will not be touched"
-             (length records) file-count (length near)))
+             (length records) file-count (length near)) t)
     (when (or skip-confirm
               (yes-or-no-p (format "Delete '%s': rewrite %d occurrence(s) in %d file(s)? "
                                    display (length records) file-count)))
@@ -4184,7 +4197,8 @@ showed this text preview.  SCAN may supply the enumeration."
                  (list (cons "NOT REMOVED" remaining)
                        (cons "NOT CHANGED" near))
                  (format "Tag kept: %d occurrence(s) and %d node(s) still name it; %d file(s) left untouched"
-                         (length remaining) (length owners) (length aborted)))
+                         (length remaining) (length owners) (length aborted))
+                 t)
                 (message "Tag '%s' kept: %d occurrence(s) / %d node(s) remain%s"
                          display (length remaining) (length owners)
                          (if aborted
@@ -4504,7 +4518,7 @@ Returns t when the write ran, nil when the user cancelled."
      (list (cons "WILL CHANGE" records)
            (cons "NOT CHANGED" near))
      (format "%d orphan occurrence(s) / %d file(s); %d candidate(s) will not be touched"
-             (length records) file-count (length near)))
+             (length records) file-count (length near)) t)
     (when (or skip-confirm
               (yes-or-no-p (format "Remove %d orphan occurrence(s) in %d file(s)? "
                                    (length records) file-count)))
@@ -4522,7 +4536,7 @@ Returns t when the write ran, nil when the user cancelled."
                (list (cons "NOT REMOVED" leftover)
                      (cons "NOT CHANGED" near))
                (format "%d occurrence(s) remain; %d file(s) left untouched"
-                       (length leftover) (length aborted)))
+                       (length leftover) (length aborted)) t)
               (message "Orphan cleanup for %s: %d occurrence(s) remain%s"
                        label (length leftover)
                        (if aborted

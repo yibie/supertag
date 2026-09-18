@@ -33,12 +33,16 @@
       (goto-char (point-max)) (insert "Draft"))
     (let* ((before (supertag-tag-change-test--snapshot (list file plain)))
            (report (supertag-tag-change-preview "old" "new")))
-      (should (= 2 (length report)))
-      (should (= 3 (apply #'+ (mapcar (lambda (group) (length (cadr group))) report))))
+      ;; The text enumerator returns one record per occurrence.
+      (should (= 3 (length report)))
+      (should (equal '("alias" "emacs/package" "old")
+                     (sort (mapcar (lambda (record) (plist-get record :token)) report)
+                           #'string<)))
       (with-current-buffer "*Supertag Tag Change*"
         (should (derived-mode-p 'special-mode))
-        (should (string-match-p "3 个 token / 3 节点 / 2 文件" (buffer-string)))
-        (should (string-match-p "待保存/待投影 0" (buffer-string)))
+        (should (string-match-p "WILL CHANGE: 3" (buffer-string)))
+        (should (string-match-p "3 occurrence(s) / 2 file(s)" (buffer-string)))
+        (should (string-match-p "FILETAGS" (buffer-string)))
         (should (string-match-p "emacs/package" (buffer-string)))
         (should (string-match-p "Alias body #alias" (buffer-string))))
       (should (equal before (supertag-tag-change-test--snapshot (list file plain)))))))
@@ -93,8 +97,9 @@
         (should-not (supertag-tag-rename "old")))
       (dolist (part '("Merge" "other" "Canonical")) (should (string-match-p part prompt)))
       (with-current-buffer "*Supertag Tag Change*"
-        (should (string-prefix-p "并入已有标签 other（token Canonical）" (buffer-string)))
-        (should (= 3 (how-many "→ Canonical" (point-min) (point-max)))))
+        (should (string-prefix-p "Merge 'old' into existing Tag 'other' (token 'Canonical')"
+                                 (buffer-string)))
+        (should (string-match-p "3 occurrence(s) / 2 file(s)" (buffer-string))))
       (should (equal before (supertag-tag-change-test--snapshot (list file plain))))
       (cl-letf (((symbol-function 'read-string) (lambda (&rest _) "destination"))
                 ((symbol-function 'yes-or-no-p) (lambda (&rest _) t)))
@@ -131,16 +136,16 @@
       ;; The simulated external creation is preserved; this command adds no writes.
       (should (equal after-external-change (supertag-tag-change-test--snapshot (list file plain)))))))
 
-(ert-deftest supertag-tag-change-preview-skips-metadata-lines ()
+(ert-deftest supertag-tag-change-preview-keeps-not-changed-shapes ()
   (supertag-tag-change-test--vault
     (with-current-buffer (find-file-noselect plain)
       (goto-char (point-min)) (search-forward "Alias body")
-      (replace-match "#+CAPTION: META #alias\nPROSE #alias"))
+      (replace-match "#+BEGIN_SRC text\nMETA #alias\n#+END_SRC\nPROSE #alias"))
     (let ((before (supertag-tag-change-test--snapshot (list file plain))))
       (supertag-tag-change-preview "old" "new")
       (with-current-buffer "*Supertag Tag Change*"
         (should (string-match-p "PROSE #alias" (buffer-string)))
-        (should-not (string-match-p "CAPTION" (buffer-string))))
+        (should (string-match-p "not a Tag: src or example block" (buffer-string))))
       (should (equal before (supertag-tag-change-test--snapshot (list file plain)))))))
 
 
@@ -240,7 +245,9 @@
             (should (member "old" (plist-get (supertag-node-get "alias-node") :tags)))
             (supertag-tag-change-preview "old" (and (eq operation 'rename) "new"))
             (with-current-buffer "*Supertag Tag Change*"
-              (should (string-match-p "待保存/待投影 1" (buffer-string))))
+              ;; The text preview reports the occurrence that is still on disk;
+              ;; the old node-based preview reported it as 待保存/待投影 instead.
+              (should (string-match-p "WILL CHANGE: 1" (buffer-string))))
             (run)
             (should-not (supertag-tag-get "old"))
             (should-not (supertag-find-nodes-by-tag "old"))
@@ -252,8 +259,9 @@
                 (should-not (buffer-modified-p))
                 (should (equal (buffer-string) (supertag-document-test-disk path)))))
             (should-not (supertag-tag-change-preview "old"))
-            (with-current-buffer "*Supertag Tag Change*"
-              (should (string-match-p "待保存/待投影 0" (buffer-string))))))))))
+            ;; No occurrence of the old token survives in the text.
+            (should-not (supertag-tag--text-records-for-tag
+                         "old" (supertag-tag--text-scan (list file plain))))))))))
 
 (ert-deftest supertag-tag-change-unrelated-draft-does-not-request-repair ()
   "A normal token requests no repair, even when the buffer has an unrelated draft."

@@ -68,26 +68,25 @@ preview and the write."
           (confirmations 0)
           (state (cons nil nil)))
       (with-current-buffer buffer
-        (should (eq 'supertag-orphan-tags-mode major-mode))
-        (should (equal (sort (copy-sequence supertag-orphan-tags--marked-tokens)
+        (should (eq 'supertag-view-orphan-tags-mode major-mode))
+        (should (equal (sort (copy-sequence supertag-view-orphan-tags--marked-tokens)
                              #'string<)
                        '("seo" "word")))
-        (should (= 6 (length supertag-orphan-tags--records)))
+        (should (= 6 (length supertag-view-orphan-tags--records)))
         (should (string-match-p "2 token(s) marked, 6 occurrence(s) selected"
                                 header-line-format))
         (let ((report (buffer-string)))
           ;; `#seo,' is the sentence-final occurrence of `seo', not a token of
-          ;; its own, so one row holds all four of its occurrences.
-          (should (string-match-p "^\\* #seo   4 occurrence(s)" report))
-          (should-not (string-match-p "^\\* #seo," report))
-          (should (string-match-p "9  /.*node\\.org   \\[heading :ID: hashed\\]   Body #seo and #seo, and #old"
+          ;; its own, so one card holds all four of its occurrences.
+          (should (string-match-p "\\* #seo" report))
+          (should (string-match-p "→ [0-9]+  node\\.org  \\[heading :ID: hashed\\]  Body #seo and #seo, and #old"
                                   report))))
       (cl-letf (((symbol-function 'yes-or-no-p)
                  (lambda (prompt) (cl-incf confirmations)
                    (funcall (supertag-orphan-tags-test--confirm-capture state)
                             prompt))))
         (with-current-buffer buffer
-          (call-interactively #'supertag-orphan-tags-remove)))
+          (call-interactively #'supertag-view-orphan-tags-remove)))
       (should (= 1 confirmations))
       (should (string-match-p (regexp-quote "Remove 6 orphan occurrence(s) in 2 file(s)?")
                               (car state)))
@@ -119,8 +118,8 @@ preview and the write."
       (should-not (supertag-tag-resolve-occurrence "seo"))
       ;; The report refreshes itself to what is left.
       (with-current-buffer buffer
-        (should-not (supertag-orphan-tags--tokens))
-        (should-not supertag-orphan-tags--records)
+        (should-not (supertag-view-orphan-tags--tokens))
+        (should-not supertag-view-orphan-tags--records)
         (should (string-match-p "0 token(s) marked" header-line-format))))))
 
 (ert-deftest supertag-orphan-tags-unmarked-token-survives ()
@@ -131,17 +130,19 @@ preview and the write."
         (goto-char (point-min))
         (search-forward "#word")
         (beginning-of-line)
-        (call-interactively #'supertag-orphan-tags-unmark)
-        (should (equal (sort (copy-sequence supertag-orphan-tags--marked-tokens)
+        (call-interactively #'supertag-view-orphan-tags-unmark)
+        (should (equal (sort (copy-sequence supertag-view-orphan-tags--marked-tokens)
                              #'string<)
                        '("seo")))
-        (should (= 4 (length (supertag-orphan-tags--marked-records))))
-        ;; The unmarked token and its occurrences are visibly unmarked.
-        (should (string-match-p "^  #word" (buffer-string)))
-        (should (string-match-p "^      [0-9]+  .*Prose #word" (buffer-string))))
+        (should (= 4 (length (supertag-view-orphan-tags--marked-records))))
+        ;; The unmarked token shows no mark prefix, and its occurrence rows are
+        ;; still the exact lines the page lists.
+        (should-not (string-match-p "\\* #word" (buffer-string)))
+        (should (string-match-p "→ [0-9]+  node\\.org  \\[heading without :ID:\\]  Prose #word"
+                                (buffer-string))))
       (cl-letf (((symbol-function 'yes-or-no-p) (lambda (&rest _) t)))
         (with-current-buffer buffer
-          (call-interactively #'supertag-orphan-tags-remove)))
+          (call-interactively #'supertag-view-orphan-tags-remove)))
       (let ((main (supertag-document-test-disk file))
             (copy (supertag-document-test-disk plain)))
         (should (string-match-p "Prose #word" main))
@@ -150,25 +151,25 @@ preview and the write."
         (should-not (string-match-p "\\* No ID #seo" main))
         (should-not (string-match-p "and #seo," main)))
       (with-current-buffer buffer
-        (should (equal (supertag-orphan-tags--tokens) '("word")))))))
+        (should (equal (supertag-view-orphan-tags--tokens) '("word")))))))
 
-(ert-deftest supertag-orphan-tags-mark-all-and-unmark-all ()
+(ert-deftest supertag-view-orphan-tags-mark-all-and-unmark-all ()
   "`M' and `U' drive the whole mark set."
   (supertag-orphan-tags-test--vault
     (let ((buffer (supertag-report-orphan-tag-occurrences)))
       (with-current-buffer buffer
-        (call-interactively #'supertag-orphan-tags-unmark-all)
-        (should-not supertag-orphan-tags--marked-tokens)
-        (should-not (supertag-orphan-tags--marked-records))
+        (call-interactively #'supertag-view-orphan-tags-unmark-all)
+        (should-not supertag-view-orphan-tags--marked-tokens)
+        (should-not (supertag-view-orphan-tags--marked-records))
         (should (string-match-p "0 token(s) marked, 0 occurrence(s) selected"
                                 header-line-format))
-        (call-interactively #'supertag-orphan-tags-mark-all)
-        (should (= 2 (length supertag-orphan-tags--marked-tokens)))
-        (should (= 6 (length (supertag-orphan-tags--marked-records))))
+        (call-interactively #'supertag-view-orphan-tags-mark-all)
+        (should (= 2 (length supertag-view-orphan-tags--marked-tokens)))
+        (should (= 6 (length (supertag-view-orphan-tags--marked-records))))
         (should (string-match-p "2 token(s) marked, 6 occurrence(s) selected"
                                 header-line-format))))))
 
-(ert-deftest supertag-orphan-tags-visit-opens-the-occurrence-line ()
+(ert-deftest supertag-view-orphan-tags-visit-opens-the-occurrence-line ()
   "RET visits the file and line of the occurrence at point."
   (supertag-orphan-tags-test--vault
     (let ((buffer (supertag-report-orphan-tag-occurrences))
@@ -177,14 +178,14 @@ preview and the write."
         (goto-char (point-min))
         (search-forward "Body #seo and #seo, and #old")
         (beginning-of-line)
-        (let* ((key (get-text-property (point) 'supertag-orphan-tags--occurrence-key))
-               (record (and key (cl-find key supertag-orphan-tags--records
-                                         :key #'supertag-orphan-tags--occurrence-key
+        (let* ((key (get-text-property (point) 'supertag-view-orphan-tags--occurrence-key))
+               (record (and key (cl-find key supertag-view-orphan-tags--records
+                                         :key #'supertag-view-orphan-tags--occurrence-key
                                          :test #'equal))))
           (should record)
           (setq expected-file (plist-get record :file)
                 expected-line (plist-get record :line)))
-        (call-interactively #'supertag-orphan-tags-visit)
+        (call-interactively #'supertag-view-orphan-tags-visit)
         ;; Still inside the report's `with-current-buffer': the visit switched buffers.
         (should (equal (file-truename (buffer-file-name)) expected-file))
         (should (= expected-line (line-number-at-pos)))
@@ -240,7 +241,7 @@ preview and the write."
                       (end-of-line)
                       (insert "\nLate #seo"))))))
         (with-current-buffer buffer
-          (call-interactively #'supertag-orphan-tags-remove)))
+          (call-interactively #'supertag-view-orphan-tags-remove)))
       ;; node.org changed after the preview: untouched, user's edit preserved.
       (with-current-buffer (find-file-noselect file)
         (should (buffer-modified-p))
@@ -254,20 +255,20 @@ preview and the write."
         (should (string-match-p "WILL CHANGE: 6" shown))
         (should (string-match-p "\\* Other #word" shown))))))
 
-(ert-deftest supertag-orphan-tags-refresh-keeps-deliberate-unmarks ()
+(ert-deftest supertag-view-orphan-tags-refresh-keeps-deliberate-unmarks ()
   "`g' re-reads the scope without undoing the marks the user set."
   (supertag-orphan-tags-test--vault
     (let ((buffer (supertag-report-orphan-tag-occurrences)))
       (with-current-buffer buffer
-        (call-interactively #'supertag-orphan-tags-unmark-all)
+        (call-interactively #'supertag-view-orphan-tags-unmark-all)
         (goto-char (point-min))
-        (re-search-forward "^  #seo " nil t)
+        (re-search-forward "#seo" nil t)
         (beginning-of-line)
-        (call-interactively #'supertag-orphan-tags-mark)
-        (should (equal supertag-orphan-tags--marked-tokens '("seo")))
-        (call-interactively #'supertag-orphan-tags-refresh)
-        (should (equal supertag-orphan-tags--marked-tokens '("seo")))
-        (should (= 4 (length (supertag-orphan-tags--marked-records))))
-        (should (= 6 (length supertag-orphan-tags--records)))))))
+        (call-interactively #'supertag-view-orphan-tags-mark)
+        (should (equal supertag-view-orphan-tags--marked-tokens '("seo")))
+        (call-interactively #'supertag-view-refresh)
+        (should (equal supertag-view-orphan-tags--marked-tokens '("seo")))
+        (should (= 4 (length (supertag-view-orphan-tags--marked-records))))
+        (should (= 6 (length supertag-view-orphan-tags--records)))))))
 
 ;;; orphan-bulk-cleanup-test.el ends here

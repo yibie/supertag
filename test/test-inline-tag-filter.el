@@ -71,12 +71,5 @@
   (cl-assert (equal (supertag-completion--get-all-tags) '("tools"))
              nil "Completion exposed a function-quote artifact"))
 
-(cl-letf (((symbol-function 'supertag-svg-tag--char-height) (lambda () 20))
-          ((symbol-function 'supertag-svg-tag--char-width) (lambda () 10)))
-  (let* ((image (supertag-svg-tag--make-svg "#tools" "tools"))
-         (xml (plist-get (cdr image) :data)))
-    (cl-assert (string-match-p "font-size=\"14\"" xml)
-               nil "SVG tag font is not the expected 14px: %s" xml)))
-
 (message "OK inline tag filter accepts prose tokens and rejects Org objects.")
 (kill-emacs 0)

@@ -275,17 +275,7 @@
             (should-not supertag-view-style-mode))
           (supertag-view-helper--enable-existing-org-buffers)
           (with-current-buffer org-buffer
-            (should supertag-view-style-mode)
-            (insert "plain #tag")
-            (cl-letf (((symbol-function 'display-graphic-p)
-                       (lambda (&optional _frame) t))
-                      ((symbol-function 'supertag-svg-tag--get-cached)
-                       (lambda (_tag) '(image :type svg :data "dummy"))))
-              (supertag-svg-tag--refresh-all-buffers)
-              (font-lock-ensure))
-            (goto-char (point-min))
-            (search-forward "#")
-            (should (get-text-property (1- (point)) 'display)))
+            (should supertag-view-style-mode))
           (with-current-buffer text-buffer
             (should-not supertag-view-style-mode)))
       (kill-buffer org-buffer)
@@ -293,8 +283,7 @@
 
 (ert-deftest test-view-style-face-stops-before-adjacent-org-link ()
   "Face font-lock must style only the range-aware Tag token."
-  (let ((supertag-view-style-auto-enable nil)
-        (supertag-svg-tag-enable nil))
+  (let ((supertag-view-style-auto-enable nil))
     (with-temp-buffer
       (org-mode)
       (insert "* T #outer[[id:n][label]]\n")
@@ -317,29 +306,24 @@
                           '(supertag-inline-face
                             supertag-unresolved-tag-face)))))))
 
-(ert-deftest test-view-style-svg-stops-before-adjacent-org-link ()
-  "SVG font-lock must not replace the Org link following a Tag token."
+(ert-deftest test-view-style-mode-leaves-no-keywords-behind ()
+  "Toggling the mode installs and removes exactly its own keywords."
   (let ((supertag-view-style-auto-enable nil)
-        (supertag-svg-tag-enable t))
+        (keyword (car supertag-view-helper--font-lock-keywords)))
     (with-temp-buffer
       (org-mode)
-      (insert "* T #outer[[id:n][label]]\n")
-      (cl-letf (((symbol-function 'display-graphic-p)
-                 (lambda (&optional _frame) t))
-                ((symbol-function 'supertag-svg-tag--get-cached)
-                 (lambda (_tag) '(image :type svg :data "dummy"))))
-        (supertag-view-style-mode 1)
-        (font-lock-ensure))
-      (goto-char (point-min))
-      (search-forward "#outer")
-      (let ((tag-start (- (point) (length "#outer")))
-            (link-start (point))
-            (label-start (progn (search-forward "label")
-                                (- (point) (length "label")))))
-        (should (equal (get-text-property tag-start 'display)
-                       '(image :type svg :data "dummy")))
-        (should-not (get-text-property link-start 'display))
-        (should-not (get-text-property label-start 'display))))))
+      (supertag-view-style-mode 1)
+      (should (memq keyword font-lock-keywords))
+      (insert "#unknown\n")
+      (font-lock-ensure)
+      (should (memq (get-text-property 1 'face)
+                    '(supertag-inline-face supertag-unresolved-tag-face)))
+      (supertag-view-style-mode -1)
+      (should-not (memq keyword font-lock-keywords))
+      (font-lock-ensure)
+      (should-not (memq (get-text-property 1 'face)
+                        '(supertag-inline-face
+                          supertag-unresolved-tag-face))))))
 
 (provide 'view-framework-test)
 
@@ -1214,3 +1198,31 @@
   (should (equal "plain" (supertag-view-helper-file-display-name "plain.org")))
   (should-not (supertag-view-helper-file-display-name nil))
   (should-not (supertag-view-helper-file-display-name "")))
+
+;;; Inline tag rendering: underline means the token is a registered Tag.
+(ert-deftest test-view-style-underlines-known-tags-and-dims-unknown-ones ()
+  "A registered tag is underlined; an unknown token is only dimmed."
+  (supertag-document-test-with-vault
+    (supertag-tag-create '(:id "known" :name "known"))
+    (let ((supertag-view-style-auto-enable nil))
+      (with-temp-buffer
+        (org-mode)
+        (insert "Body #known and #unknown.\n")
+        (supertag-view-style-mode 1)
+        (font-lock-ensure)
+        (goto-char (point-min))
+        (search-forward "#known")
+        (let ((known-start (- (point) (length "#known"))))
+          (search-forward "#unknown")
+          (let ((unknown-start (- (point) (length "#unknown"))))
+            (should (eq 'supertag-inline-face
+                        (get-text-property known-start 'face)))
+            (should (eq 'supertag-unresolved-tag-face
+                        (get-text-property unknown-start 'face)))
+            ;; No image is attached any more: no tag carries `display'.
+            (should-not (get-text-property known-start 'display))
+            (should-not (get-text-property unknown-start 'display))))
+        (should (eq t (face-attribute 'supertag-inline-face :underline nil t)))
+        (should (eq 'unspecified
+                    (face-attribute 'supertag-unresolved-tag-face
+                                    :underline nil t)))))))

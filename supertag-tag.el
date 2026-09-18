@@ -6,7 +6,7 @@
 ;; Org write formats, stable token merging and membership reads share this owner.
 ;; Entity operations, indexes, hierarchy rules, merge and rename share
 ;; this feature, including their Org text rewrite and snapshot recovery code.
-;; Ordinary face styling and SVG rendering share this feature and parser.
+;; Ordinary face styling shares this feature and parser.
 ;; Canonical Tag input, Org placement and the raw-membership node selector
 ;; share this feature. Add/remove use shared Node location helpers from a
 ;; supertag-node provider.
@@ -16,7 +16,7 @@
 ;; Loading installs display hooks and reconciles already open Org buffers;
 ;; it does not edit Org text or persist Store facts.
 ;;
-;; Commands: supertag-view-style-mode, supertag-toggle-tag-style,
+;; Commands: supertag-view-style-mode,
 ;; supertag-ui-completion-mode, global-supertag-ui-completion-mode,
 ;; supertag-add-tag, supertag-remove-tag-from-node, supertag-tag-rename,
 ;; supertag-delete-tag-everywhere,
@@ -43,7 +43,7 @@
 ;; supertag-capture--get-from-tags-prompt, supertag-view-api-list-tag-ids,
 ;; supertag-view-helper-find-tag-insertion-point,
 ;; supertag-view-helper-tag-at-point-bounds, supertag-view-helper-get-tag-at-point.
-;; Dependencies: cl-lib, seq, easy-mmode, org, org-id, org-element, svg, color, ht, subr-x,
+;; Dependencies: cl-lib, seq, easy-mmode, org, org-id, org-element, ht, subr-x,
 ;; supertag-core-store, supertag-link (ordinary providers),
 ;; supertag-node, supertag-service-org (via Node); lazy
 ;; supertag-service-org providers load Sync before FILETAGS callbacks;
@@ -63,8 +63,6 @@
 (require 'easy-mmode)
 (require 'org)
 (require 'org-element)
-(require 'svg)
-(require 'color)
 (require 'ht)
 (require 'org-id)
 (require 'subr-x)
@@ -1780,17 +1778,12 @@ are restored from snapshots if any later step fails."
       (unless keep-snapshot
         (supertag-tag-merge--delete-snapshot snapshot)))))
 
-;;; Tag display: plain faces and SVG
+;;; Tag display: plain faces
 
 (defvar supertag-view-helper--font-lock-keywords
   '((supertag-view-helper--font-lock-matcher
      (0 (supertag-view-helper--matched-tag-face) t)))
   "Font-lock keywords for highlighting inline tags.")
-
-(defvar supertag-view-svg-tag--font-lock-keywords
-  '((supertag-view-helper--font-lock-matcher
-     (0 (supertag-svg-tag--match-handler) t)))
-  "Font-lock keywords for SVG tag rendering.")
 
 ;;;----------------------------------------------------------------------
 ;;; Constants and Configuration
@@ -1813,9 +1806,11 @@ allowing slashes (as ordinary name characters) and arbitrary unicode/emoji symbo
   :group 'supertag)
 
 (defcustom supertag-view-style-tag-face-properties
-  '(:foreground "snow3")
+  '(:underline t)
   "Face properties for inline supertags.
-This should be a plist of face attributes."
+Default properties of `supertag-inline-face': a tag the system knows is
+underlined and inherits its colour from the active theme.  Set `:foreground'
+or `:inherit' here to pin a colour instead."
   :type '(plist :key-type symbol :value-type sexp)
   :group 'supertag-view-style)
 
@@ -1861,30 +1856,21 @@ This should be a plist of face attributes."
 (define-minor-mode supertag-view-style-mode
   "Minor mode for styling supertag inline tags.
 
-When `supertag-svg-tag-enable' is non-nil, uses SVG pill badges.
-Otherwise uses face-based rendering via `supertag-inline-face'."
+A token owned by a registered Semantic Tag renders with
+`supertag-inline-face' (underlined); a token that resolves to no registered
+tag renders with `supertag-unresolved-tag-face' (dimmed, not underlined)."
   :lighter " Tag-Style"
   :group 'supertag-view-style
   (if supertag-view-style-mode
       (progn
-        ;; Allow font-lock to manage the `display' property for SVG rendering
-        (make-local-variable 'font-lock-extra-managed-props)
-        (cl-pushnew 'display font-lock-extra-managed-props)
         (font-lock-add-keywords nil (supertag-view-helper--get-font-lock-keywords) t)
         (supertag-view-helper--refresh-fontification))
     (font-lock-remove-keywords nil supertag-view-helper--font-lock-keywords)
-    (when (bound-and-true-p supertag-view-svg-tag--font-lock-keywords)
-      (font-lock-remove-keywords nil supertag-view-svg-tag--font-lock-keywords))
     (supertag-view-helper--refresh-fontification)))
 
 (defun supertag-view-helper--get-font-lock-keywords ()
-  "Return the appropriate font-lock keywords based on current config.
-Prefers SVG keywords when `supertag-svg-tag-enable' is non-nil."
-  (if (and (bound-and-true-p supertag-svg-tag-enable)
-           (bound-and-true-p supertag-view-svg-tag--font-lock-keywords)
-           (fboundp 'svg-create))
-      supertag-view-svg-tag--font-lock-keywords
-    supertag-view-helper--font-lock-keywords))
+  "Return the font-lock keywords that style inline tags."
+  supertag-view-helper--font-lock-keywords)
 
 (defun supertag-view-helper--refresh-fontification ()
   "Refresh font-lock fontification in the current buffer."
@@ -1915,9 +1901,11 @@ Prefers SVG keywords when `supertag-svg-tag-enable' is non-nil."
   :group 'supertag-view-style)
 
 (defcustom supertag-view-style-unresolved-tag-face-properties
-  '(:inherit shadow :underline t)
+  '(:inherit shadow)
   "Face properties for inline tag tokens with no registered tag.
-This should be a plist of face attributes."
+Default properties of `supertag-unresolved-tag-face': a token the system does
+not know is dimmed, not underlined.  The underline marks a tag that resolves
+to a registered Semantic Tag."
   :type '(plist :key-type symbol :value-type sexp)
   :group 'supertag-view-style)
 
@@ -1940,315 +1928,6 @@ ambiguous token gets `supertag-unresolved-tag-face'."
         'supertag-inline-face
       'supertag-unresolved-tag-face)))
 
-
-;;;----------------------------------------------------------------------
-;;; Customization
-;;;----------------------------------------------------------------------
-
-(defgroup supertag-view-svg-tag nil
-  "SVG tag rendering for supertag inline #tags."
-  :group 'supertag)
-
-(defcustom supertag-svg-tag-enable t
-  "When non-nil, render #tags as SVG pill badges.
-When nil, falls back to face-based rendering via `supertag-inline-face'."
-  :type 'boolean
-  :group 'supertag-view-svg-tag)
-
-(defcustom supertag-svg-tag-style 'colored
-  "Visual style of SVG tags.
-`colored' uses a deterministic pastel color per tag name.
-`neutral' uses a subtle gray pill like typical note apps."
-  :type '(choice (const :tag "Colored per-tag" colored)
-                 (const :tag "Neutral gray pill" neutral))
-  :group 'supertag-view-svg-tag)
-
-(defcustom supertag-svg-tag-padding-x 8
-  "Horizontal padding (px) inside the SVG tag."
-  :type 'integer
-  :group 'supertag-view-svg-tag)
-
-(defcustom supertag-svg-tag-radius 100
-  "Corner radius (px) of SVG tag badges.
-Values larger than half the badge height are capped, so the default
-creates a fully rounded pill."
-  :type 'integer
-  :group 'supertag-view-svg-tag)
-
-(defcustom supertag-svg-tag-stroke-width 0
-  "Stroke width for SVG tag borders.
-Set to 0 to draw no border."
-  :type 'number
-  :group 'supertag-view-svg-tag)
-
-(defcustom supertag-svg-tag-font-scale 0.68
-  "Font size scale factor relative to the frame character height."
-  :type 'number
-  :group 'supertag-view-svg-tag)
-
-(defcustom supertag-svg-tag-font-family nil
-  "Explicit SVG font family, or nil to use the default face family.
-Pin a single-width family when librsvg/pango selects a different face
-from Emacs for the default family."
-  :type '(choice (const :tag "Default face family" nil) string)
-  :group 'supertag-view-svg-tag)
-
-(defcustom supertag-svg-tag-min-column-em 0.6
-  "Minimum width per display column, in units of the SVG font size.
-Pango-CoreText family lookup in librsvg can select a 0.6 em extended
-face from a super TTC such as Iosevka, while Emacs measures 0.5 em.
-The 0.6 floor covers common monospaced families such as Menlo, DejaVu
-and Iosevka Extended; CJK uses two columns (1.2 em, at least 1 em).
-Set nil to disable the floor, for example when Emacs was started with
-PANGOCAIRO_BACKEND=fc.  Nonpositive values also disable it.
-This is a bounded fallback for common monospaced fonts and the current
-samples, not a renderer measurement.  Fonts wider than 0.6 em per column
-(such as SF Mono at 0.615 em) rely on side padding for the excess; very
-long tags may still clip.  Increase this value or pin a single-width
-family with `supertag-svg-tag-font-family' in that case."
-  :type '(choice (const :tag "No floor" nil) number)
-  :group 'supertag-view-svg-tag)
-
-(defcustom supertag-svg-tag-show-hash nil
-  "When non-nil, include the leading '#' in the SVG badge.
-When nil, only the tag name is shown."
-  :type 'boolean
-  :group 'supertag-view-svg-tag)
-
-(defcustom supertag-svg-tag-font-weight "500"
-  "Font weight used inside SVG tags (e.g. \"normal\", \"500\", \"bold\")."
-  :type 'string
-  :group 'supertag-view-svg-tag)
-
-(defcustom supertag-svg-tag-color-alpha 1.0
-  "Opacity of the colored style background (0 = invisible, 1 = opaque)."
-  :type 'number
-  :group 'supertag-view-svg-tag)
-
-;;;----------------------------------------------------------------------
-;;; Color generation
-;;;----------------------------------------------------------------------
-
-(defun supertag-svg-tag--is-light-theme-p ()
-  "Return non-nil if the current frame has a light background."
-  (eq (frame-parameter nil 'background-mode) 'light))
-
-(defun supertag-svg-tag--hash-to-index (str max)
-  "Hash STR to an integer in [0, MAX)."
-  (mod (abs (sxhash str)) max))
-
-(defun supertag-svg-tag--hsl-color (hue saturation lightness)
-  "Return a #rrggbb string from HUE (0-360), SATURATION and LIGHTNESS (0-1)."
-  (apply #'color-rgb-to-hex
-         (append (color-hsl-to-rgb (/ hue 360.0) saturation lightness)
-                 '(2))))
-
-(defun supertag-svg-tag--hsl-rgba (hue saturation lightness alpha)
-  "Return an rgba(...) string from HUE, SATURATION, LIGHTNESS and ALPHA."
-  (let ((rgb (color-hsl-to-rgb (/ hue 360.0) saturation lightness)))
-    (format "rgba(%d,%d,%d,%s)"
-            (round (* (nth 0 rgb) 255))
-            (round (* (nth 1 rgb) 255))
-            (round (* (nth 2 rgb) 255))
-            alpha)))
-
-(defun supertag-svg-tag--neutral-colors ()
-  "Return (bg border fg) for the neutral gray style."
-  (if (supertag-svg-tag--is-light-theme-p)
-      (list "#f3f4f6" "#f3f4f6" "#374151")
-    (list "#374151" "#374151" "#f3f4f6")))
-
-(defun supertag-svg-tag--colored-colors (tag-name)
-  "Return (bg border fg) for the colored style based on TAG-NAME."
-  (let* ((idx (supertag-svg-tag--hash-to-index tag-name 20))
-         (hue (* idx 18))
-         (light-p (supertag-svg-tag--is-light-theme-p))
-         (sat (if light-p 0.78 0.65))
-         (lit (if light-p 0.82 0.40))
-         (bg (supertag-svg-tag--hsl-rgba hue sat lit supertag-svg-tag-color-alpha))
-         (border (supertag-svg-tag--hsl-color hue 0.65 (if light-p 0.68 0.48)))
-         (fg (if light-p "#1e293b" "#f8fafc")))
-    (list bg border fg)))
-
-(defun supertag-svg-tag--get-colors (tag-name)
-  "Return (bg border fg) color triple for TAG-NAME."
-  (if (eq supertag-svg-tag-style 'neutral)
-      (supertag-svg-tag--neutral-colors)
-    (supertag-svg-tag--colored-colors tag-name)))
-
-;;;----------------------------------------------------------------------
-;;; SVG tag builder
-;;;----------------------------------------------------------------------
-
-(defvar supertag-svg-tag--cache (make-hash-table :test 'equal)
-  "Cache of SVG images keyed by their visual inputs.")
-
-(defun supertag-svg-tag--char-width ()
-  "Return a usable character width in pixels."
-  (if (display-graphic-p)
-      (max 1 (frame-char-width))
-    8))
-
-(defun supertag-svg-tag--char-height ()
-  "Return a usable character height in pixels."
-  (if (display-graphic-p)
-      (max 1 (frame-char-height))
-    16))
-
-(defun supertag-svg-tag--font-size-px ()
-  "Return the pixel font size used for SVG tag text."
-  (round (* (supertag-svg-tag--char-height) supertag-svg-tag-font-scale)))
-
-(defun supertag-svg-tag--base-font-px ()
-  "Return the default GUI font's positive pixel size, or nil."
-  (when (display-graphic-p)
-    (let ((size (ignore-errors (aref (font-info (face-font 'default)) 2))))
-      (when (and (integerp size) (> size 0)) size))))
-
-(defun supertag-svg-tag--text-pixel-width (text)
-  "Estimate TEXT width using the SVG/default font pixel size ratio.
-Accounts for CJK/double-width characters via `string-width'."
-  (let ((font-size-px (supertag-svg-tag--font-size-px))
-        (base-px (or (supertag-svg-tag--base-font-px)
-                     (supertag-svg-tag--char-height))))
-    (max 1 (ceiling (* (string-width text)
-                       (supertag-svg-tag--char-width)
-                       (/ (float font-size-px) base-px)))
-         (if (and (numberp supertag-svg-tag-min-column-em)
-                  (> supertag-svg-tag-min-column-em 0))
-             (ceiling (* (string-width text) font-size-px
-                         supertag-svg-tag-min-column-em))
-           0))))
-
-(defun supertag-svg-tag--default-font-family ()
-  "Return the best available font family string for SVG."
-  (if (and (stringp supertag-svg-tag-font-family)
-           (> (length supertag-svg-tag-font-family) 0))
-      supertag-svg-tag-font-family
-    (let ((family (face-attribute 'default :family nil 'default)))
-      (if (or (not family) (eq family 'unspecified))
-          "sans-serif"
-        family))))
-
-(defun supertag-svg-tag--make-svg (text display-text)
-  "Create an SVG image for tag TEXT, showing DISPLAY-TEXT.
-Returns an Emacs image object suitable for the `display' text property."
-  (let* ((char-h (supertag-svg-tag--char-height))
-         (font-size-px (supertag-svg-tag--font-size-px))
-         (text-w (supertag-svg-tag--text-pixel-width display-text))
-         (pad-x supertag-svg-tag-padding-x)
-         (img-h (max char-h (round (* char-h 1.15))))
-         (img-w (+ text-w (* 2 pad-x)))
-         (radius (min supertag-svg-tag-radius (/ img-h 2)))
-         (colors (supertag-svg-tag--get-colors text))
-         (bg (nth 0 colors))
-         (border-clr (nth 1 colors))
-         (fg (nth 2 colors))
-         (svg (svg-create img-w img-h)))
-    ;; Pill/capsule background
-    (svg-rectangle svg 0 0 img-w img-h
-                   :rx radius :ry radius
-                   :fill bg
-                   :stroke border-clr
-                   :stroke-width supertag-svg-tag-stroke-width)
-    ;; Vertically centered label
-    (svg-text svg display-text
-              :x (/ img-w 2)
-              :y (/ img-h 2)
-              :font-family (supertag-svg-tag--default-font-family)
-              :font-size font-size-px
-              :fill fg
-              :text-anchor "middle"
-              :dominant-baseline "central"
-              :font-weight supertag-svg-tag-font-weight)
-    (svg-image svg :scale 1 :ascent 'center)))
-
-(defun supertag-svg-tag--get-cached (tag-name)
-  "Get or create a cached SVG image for TAG-NAME."
-  (let* ((display-text (if supertag-svg-tag-show-hash
-                           tag-name
-                         (if (string-prefix-p "#" tag-name)
-                             (substring tag-name 1)
-                           tag-name)))
-         (key (list display-text
-                    (supertag-svg-tag--default-font-family)
-                    supertag-svg-tag-min-column-em
-                    supertag-svg-tag-padding-x
-                    supertag-svg-tag-font-weight
-                    (supertag-svg-tag--base-font-px)
-                    (supertag-svg-tag--char-width)
-                    (supertag-svg-tag--char-height)
-                    supertag-svg-tag-font-scale
-                    supertag-svg-tag-style
-                    (frame-parameter nil 'background-mode)
-                    supertag-svg-tag-color-alpha)))
-    (or (gethash key supertag-svg-tag--cache)
-        (let ((img (supertag-svg-tag--make-svg tag-name display-text)))
-          (puthash key img supertag-svg-tag--cache)
-          img))))
-
-(defun supertag-svg-tag--clear-cache ()
-  "Clear the SVG image cache (call after theme changes)."
-  (clrhash supertag-svg-tag--cache)
-  (message "SVG tag cache cleared"))
-
-;;;----------------------------------------------------------------------
-;;; Font-lock integration
-;;;----------------------------------------------------------------------
-
-(defun supertag-svg-tag--match-handler ()
-  "Font-lock match handler for #tag patterns.
-Returns the appropriate display spec for the matched tag."
-  (let ((tag (match-string 0)))
-    (if (and supertag-svg-tag-enable
-             (display-graphic-p)
-             (fboundp 'svg-create))
-        `(face nil display ,(supertag-svg-tag--get-cached tag))
-      'supertag-inline-face)))
-
-
-;;;----------------------------------------------------------------------
-;;; Theme change hook
-;;;----------------------------------------------------------------------
-
-(defun supertag-svg-tag--on-theme-change (&rest _)
-  "Clear SVG cache and refresh font-lock on theme change."
-  (supertag-svg-tag--clear-cache)
-  (dolist (buf (buffer-list))
-    (with-current-buffer buf
-      (when supertag-view-style-mode
-        (supertag-view-helper--refresh-fontification)))))
-
-(defun supertag-svg-tag--enable ()
-  "Enable SVG tag rendering for supertag."
-  (setq supertag-svg-tag-enable t)
-  (supertag-svg-tag--refresh-all-buffers)
-  (message "SVG tag rendering enabled"))
-
-(defun supertag-svg-tag--disable ()
-  "Disable SVG tag rendering, revert to face-based."
-  (setq supertag-svg-tag-enable nil)
-  (supertag-svg-tag--refresh-all-buffers)
-  (message "SVG tag rendering disabled"))
-
-;;;###autoload
-(defun supertag-toggle-tag-style ()
-  "Toggle SVG tag rendering on/off."
-  (interactive)
-  (if supertag-svg-tag-enable
-      (supertag-svg-tag--disable)
-    (supertag-svg-tag--enable)))
-
-(defun supertag-svg-tag--refresh-all-buffers ()
-  "Toggle between SVG and face keywords in all active mode buffers."
-  (dolist (buf (buffer-list))
-    (with-current-buffer buf
-      (when supertag-view-style-mode
-        ;; Remove both keyword sets, then add back the right one
-        (font-lock-remove-keywords nil supertag-view-helper--font-lock-keywords)
-        (font-lock-remove-keywords nil supertag-view-svg-tag--font-lock-keywords)
-        (font-lock-add-keywords nil (supertag-view-helper--get-font-lock-keywords) t)
-        (supertag-view-helper--refresh-fontification)))))
 
 ;;; Tag membership, Org text rules and compensated member writes
 
@@ -4628,11 +4307,8 @@ IMPORTANT: This function NEVER modifies existing tags - it only creates new ones
 ;;; Display lifecycle: all definitions above are complete before activation.
 
 (add-hook 'org-mode-hook #'supertag-view-helper--auto-enable)
-(when (boundp 'enable-theme-functions)
-  (add-hook 'enable-theme-functions #'supertag-svg-tag--on-theme-change))
-;; Refresh manually enabled buffers even with auto-enable=nil.  The second
-;; pass only enables inactive Org buffers, never installing twice per buffer.
-(supertag-svg-tag--refresh-all-buffers)
+;; Enable already open Org buffers even with auto-enable=nil; the pass only
+;; acts on inactive buffers, never installing twice per buffer.
 (supertag-view-helper--enable-existing-org-buffers)
 
 (provide 'supertag-tag)

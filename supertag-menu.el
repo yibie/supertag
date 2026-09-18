@@ -244,10 +244,6 @@ errors propagate unchanged. DOC is the generated wrapper's docstring."
   supertag-automation supertag-automation-list-templates
   "List the available automation templates.")
 
-(supertag-menu--defwrapper supertag-menu--toggle-svg-tags
-  supertag-tag supertag-toggle-tag-style
-  "Toggle SVG rendering for inline tags.")
-
 (supertag-menu--defwrapper supertag-menu--toggle-concept-links
   supertag-concept supertag-concept-link-mode
   "Toggle dynamic concept-mention highlighting.")
@@ -295,7 +291,6 @@ errors propagate unchanged. DOC is the generated wrapper's docstring."
    ["Additional views"
     ("s" "Stream view"                 supertag-menu--view-stream)]
    ["Display"
-    ("t" "Toggle SVG tags"      supertag-menu--toggle-svg-tags)
     ("c" "Toggle concept links" supertag-menu--toggle-concept-links)]
    ])
 

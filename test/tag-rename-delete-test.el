@@ -161,23 +161,21 @@
           (should (string-match-p "CAPTION" (substring text split)))))
       (should (equal before (supertag-tag-change-test--snapshot (list file plain)))))))
 
-(ert-deftest supertag-tag-change-caption-affiliation-decides-acceptance ()
-  "Pin how Org's parse decides whether a `#+CAPTION:' token is an occurrence.
-Measured with the shared predicate (`supertag-view-helper--inline-tag-range-at'
-over `org-element-context'):
-
-  * H
-  #+CAPTION: META #alias        <- last line: `keyword', rejected
-
-  * H
-  #+CAPTION: META #alias
-  PROSE #alias                   <- CAPTION affiliates to the paragraph,
-                                    `org-element-context' reports paragraph,
-                                    accepted, so rename/delete rewrite it
-
-This is the open question recorded in doc/report-rename-merge-text.md (a rule
-fix would make metadata lines never rewrite and must update this test)."
+(ert-deftest supertag-tag-change-caption-affiliation-does-not-decide ()
+  "A `#+CAPTION:' occurrence is never a Tag, affiliated or not.
+Measured before the rule fix: the standalone shape was rejected while the
+same line with a paragraph after it was accepted, because
+`org-element-context' then reports that paragraph.  The rule now decides by
+the position's own line, so both shapes are rejected and only the
+paragraph's own occurrence is a Tag.  See
+doc/report-keyword-line-affiliation.md."
   (supertag-tag-change-test--vault
+    ;; Keep the vault's second file out of the scan: its own fixture
+    ;; occurrences are not what this test measures.
+    (with-current-buffer (find-file-noselect plain)
+      (erase-buffer)
+      (insert "* Empty\n")
+      (save-buffer))
     (let ((standalone (concat "* H\n:PROPERTIES:\n:ID: shape\n:END:\n"
                               "Prose line\n#+CAPTION: META #alias\n"))
           (affiliated (concat "* H\n:PROPERTIES:\n:ID: shape\n:END:\n"
@@ -187,12 +185,17 @@ fix would make metadata lines never rewrite and must update this test)."
           (erase-buffer)
           (insert (cdr case))
           (save-buffer))
-        (let ((captions (cl-some (lambda (record)
-                                   (string-match-p "CAPTION" (plist-get record :line-text)))
-                                 (supertag-tag-change--collect "old"))))
+        (let* ((records (supertag-tag-change--collect "old"))
+               (captions (cl-some (lambda (record)
+                                    (string-match-p "CAPTION" (plist-get record :line-text)))
+                                  records)))
+          (should-not captions)
+          ;; The paragraph under the keyword line keeps its own occurrence.
           (if (eq (car case) 'standalone)
-              (should-not captions)
-            (should captions)))))))
+              (should-not records)
+            (should (equal '("alias")
+                           (mapcar (lambda (record) (plist-get record :token))
+                                   records)))))))))
 
 
 (ert-deftest supertag-tag-change-old-writers-absent ()

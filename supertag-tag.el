@@ -293,6 +293,28 @@ occur later inside a Tag; other objects terminate it at their opening."
             (throw 'boundary object-begin))))
       end)))
 
+(defconst supertag-inline-tag-keyword-line-regexp
+  "[ \t]*#\\+"
+  "Regexp matching an Org keyword or block-directive line, from its start.
+No `\\=` anchor: callers use `looking-at-p' at the line beginning, and `\\`'
+would only match `point-min'.  Such a line is metadata: `#+CAPTION:',
+`#+NAME:', `#+ATTR_*:', `#+RESULTS:', `#+FILETAGS:' and the block delimiters all
+start this way.  Whether or not Org affiliates the line to the element that
+follows, an occurrence on it is never a Tag occurrence.  Measured against Org's
+own classification for `#+CAPTION: x', `#+caption: x', indented keywords,
+`#+FOO-BAR: x', `#+FOO_BAR: x' and the negative shapes (`#+ FOO: x', `#+: x',
+a full-width `＃+CAPTION:' line).")
+
+(defun supertag-transform--inline-tag-keyword-line-p (position)
+  "Return non-nil when POSITION sits on an Org keyword line.
+Decided by the position's own line rather than by the element Org reports:
+an affiliated keyword line (`#+CAPTION:' before a paragraph) is folded into
+that element, so the element type would otherwise look like its prose."
+  (save-excursion
+    (goto-char position)
+    (beginning-of-line)
+    (looking-at-p supertag-inline-tag-keyword-line-regexp)))
+
 (defun supertag-transform-inline-tag-matches-in-region
     (begin end &optional element restriction)
   "Return range-aware prose Tag matches between BEGIN and END.
@@ -325,7 +347,11 @@ region is parsed as secondary Org text using RESTRICTION."
                           (> tag-end name-begin)
                           (buffer-substring-no-properties name-begin tag-end))))
           (when (and name
-                     (supertag-transform-inline-tag-name-p name))
+                     (supertag-transform-inline-tag-name-p name)
+                     ;; A keyword line is metadata, even when Org affiliates
+                     ;; it to the element that follows.
+                     (not (supertag-transform--inline-tag-keyword-line-p
+                           tag-begin)))
             (push (list tag-begin tag-end name) matches))))
       (nreverse matches))))
 
@@ -2660,7 +2686,8 @@ This function works in any location within a node - heading or content area."
 
 (defun supertag-view-helper-remove-tag-text (tag-name)
   "Remove all occurrences of #TAG-NAME from the current node.
-TAG-NAME is the tag name to remove."
+TAG-NAME is the tag name to remove.  Keyword lines are metadata and are left
+alone, exactly as `supertag-view-helper-rename-tag-text-in-node' leaves them."
   (save-excursion
     (org-back-to-heading t)
     (let ((subtree-end (save-excursion
@@ -2669,7 +2696,9 @@ TAG-NAME is the tag name to remove."
           (removed-count 0))
       (beginning-of-line)
       (while (re-search-forward supertag-inline-tag-regexp subtree-end t)
-        (when (equal tag-name (match-string-no-properties 2))
+        (when (and (equal tag-name (match-string-no-properties 2))
+                   (not (supertag-transform--inline-tag-keyword-line-p
+                         (1- (match-beginning 2)))))
           (delete-region (1- (match-beginning 2)) (match-end 2))
           (setq subtree-end (- subtree-end (1+ (length tag-name))))
           (setq removed-count (1+ removed-count))))
@@ -3793,21 +3822,23 @@ NODE-ID is non-nil only when the Store projects this file for that heading."
 
 (defun supertag-tag--text-reject-reason ()
   "Explain why the candidate at point is not a Tag occurrence."
-  (let* ((context (org-element-context))
-         (type (org-element-type context))
-         (heading (org-element-lineage context '(headline) t)))
-    (cond
-     ((and heading (org-element-property :commentedp heading)) 'commented-heading)
-     ((org-element-lineage context '(drawer property-drawer) t) 'drawer)
-     ((eq type 'node-property) 'drawer)
-     ((or (eq type 'link) (org-element-lineage context '(link) t)) 'link)
-     ((eq type 'keyword) 'keyword)
-     ((memq type '(src-block example-block export-block comment comment-block
-                             fixed-width verse-block quote-block center-block
-                             special-block inline-src-block))
-      'block)
-     ((memq type '(headline paragraph)) 'prose-object)
-     (t (or type 'other)))))
+  (if (supertag-transform--inline-tag-keyword-line-p (point))
+      'keyword
+    (let* ((context (org-element-context))
+           (type (org-element-type context))
+           (heading (org-element-lineage context '(headline) t)))
+      (cond
+       ((and heading (org-element-property :commentedp heading)) 'commented-heading)
+       ((org-element-lineage context '(drawer property-drawer) t) 'drawer)
+       ((eq type 'node-property) 'drawer)
+       ((or (eq type 'link) (org-element-lineage context '(link) t)) 'link)
+       ((eq type 'keyword) 'keyword)
+       ((memq type '(src-block example-block export-block comment comment-block
+                               fixed-width verse-block quote-block center-block
+                               special-block inline-src-block))
+        'block)
+       ((memq type '(headline paragraph)) 'prose-object)
+       (t (or type 'other))))))
 
 (defun supertag-tag--text-filetags-records (file-key)
   "Return candidate records for the current buffer's #+FILETAGS tokens."

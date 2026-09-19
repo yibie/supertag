@@ -4028,8 +4028,12 @@ When SKIP-CONFIRM is non-nil, the caller already showed the text preview."
 
 ;; The orphan page is a view: `supertag-view-orphan-tags.el' owns the buffer,
 ;; its marks and its commands.  Load it only when the page is asked for.
-(autoload 'supertag-report-orphan-tag-occurrences "supertag-view-orphan-tags")
-(autoload 'supertag-view-orphan-tags "supertag-view-orphan-tags")
+;; The INTERACTIVE flag is what makes `M-x' offer these before the file is
+;; loaded; without it the page exists but cannot be reached by name.
+(autoload 'supertag-report-orphan-tag-occurrences "supertag-view-orphan-tags"
+  "Open the Orphan Tags page." t)
+(autoload 'supertag-view-orphan-tags "supertag-view-orphan-tags"
+  "Open the Orphan Tags page." t)
 
 (defun supertag-tag--orphan-select-records (records tokens skipped)
   "Return RECORDS whose token is in TOKENS and whose key is not in SKIPPED.

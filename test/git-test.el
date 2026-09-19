@@ -537,6 +537,117 @@
     (should-not supertag-git-sync--in-flight)))
 
 
+;;; A pull must not silently fail on saved-but-uncommitted Org edits.
+
+(defun supertag-git-dirty-merge--base (root)
+  "Write the shared base NOTE.ORG that both sides branch from."
+  (supertag-git-test-write
+   root "note.org"
+   (concat "* Property Node\n:PROPERTIES:\n:ID: document-node\n:END:\n"
+           "alpha line\n"
+           "middle one\nmiddle two\nmiddle three\nmiddle four\n"
+           "beta line\n")))
+
+(ert-deftest supertag-git-dirty-merge-commits-saved-edits-before-merging ()
+  "Saved-but-uncommitted Org edits are committed first, so the pull's merge
+is a real three-way merge instead of the refusal that used to be silent."
+  (supertag-git-test-with-vault
+    (let ((supertag-git-sync--merge-refused-warned nil))
+      (supertag-git-dirty-merge--base root)
+      (supertag-git-test-commit root) (supertag-git-test-run root "push")
+      (supertag-git-test-run peer "pull" "--no-edit")
+      (supertag-git-sync-mode 1)
+      ;; The peer moves one line and pushes it.
+      (supertag-git-test-write
+       peer "note.org"
+       (concat "* Property Node\n:PROPERTIES:\n:ID: document-node\n:END:\n"
+               "alpha peer\n"
+               "middle one\nmiddle two\nmiddle three\nmiddle four\n"
+               "beta line\n"))
+      (supertag-git-test-commit peer) (supertag-git-test-run peer "push")
+      ;; The user's edit to the other line is saved but not yet committed:
+      ;; exactly the auto-commit debounce window.
+      (supertag-git-test-write
+       root "note.org"
+       (concat "* Property Node\n:PROPERTIES:\n:ID: document-node\n:END:\n"
+               "alpha line\n"
+               "middle one\nmiddle two\nmiddle three\nmiddle four\n"
+               "beta local\n"))
+      (should (supertag-git-sync--owned-changes-p root))
+      (supertag-git-sync--pull)
+      (should-not supertag-git-sync--in-flight)
+      (should-not supertag-git--conflicted-files)
+      (should (equal "" (string-trim (supertag-git-test-run root "status" "--porcelain"))))
+      (should (= 0 (supertag-git-sync--rev-count root "@{upstream}..HEAD")))
+      (let ((head (supertag-git-test-run root "show" "HEAD:note.org")))
+        (should (string-match-p "alpha peer" head))
+        (should (string-match-p "beta local" head)))
+      (supertag-document-test-drain))))
+
+(ert-deftest supertag-git-dirty-merge-pauses-on-an-overlapping-edit ()
+  "With the local edit committed first, overlapping edits reach the normal
+conflict pause instead of a silent no-op."
+  (supertag-git-test-with-vault
+    (let ((supertag-git-sync--merge-refused-warned nil))
+      (supertag-git-dirty-merge--base root)
+      (supertag-git-test-commit root) (supertag-git-test-run root "push")
+      (supertag-git-test-run peer "pull" "--no-edit")
+      (supertag-git-sync-mode 1)
+      (supertag-git-test-write
+       peer "note.org"
+       (concat "* Property Node\n:PROPERTIES:\n:ID: document-node\n:END:\n"
+               "alpha peer\n"
+               "middle one\nmiddle two\nmiddle three\nmiddle four\n"
+               "beta line\n"))
+      (supertag-git-test-commit peer) (supertag-git-test-run peer "push")
+      (supertag-git-test-write
+       root "note.org"
+       (concat "* Property Node\n:PROPERTIES:\n:ID: document-node\n:END:\n"
+               "alpha local\n"
+               "middle one\nmiddle two\nmiddle three\nmiddle four\n"
+               "beta line\n"))
+      (supertag-git-sync--pull)
+      (should supertag-git--conflicted-files)
+      (should (member (file-truename file) supertag-git--conflicted-files))
+      (should (supertag-git-sync--live-conflicted-org-files root))
+      ;; The existing pause path, not a silent no-op: timers off, smerge on.
+      (should-not supertag-git-sync--pull-timer)
+      (should-not supertag-git-sync--commit-timer)
+      (with-current-buffer (get-file-buffer file) (should smerge-mode))
+      (should-not supertag-git-sync--in-flight))))
+
+(ert-deftest supertag-git-dirty-merge-reports-a-refused-merge-once ()
+  "A merge git refuses without unmerged paths is reported, once per episode,
+and still leaves `supertag-git-sync--in-flight' cleared."
+  (supertag-git-test-with-vault
+    (let ((supertag-git-sync--merge-refused-warned nil))
+      ;; A tracked non-Org file, dirty locally and changed upstream: outside
+      ;; auto-commit scope, so it must not be committed and git refuses.
+      (supertag-git-test-write root "notes.txt" "base\n")
+      (supertag-git-test-run root "add" "--" "notes.txt")
+      (supertag-git-test-run root "commit" "-m" "Tracked non-Org file")
+      (supertag-git-test-run root "push")
+      (supertag-git-test-run peer "pull" "--no-edit")
+      (supertag-git-test-write peer "notes.txt" "peer\n")
+      (supertag-git-test-run peer "add" "--" "notes.txt")
+      (supertag-git-test-run peer "commit" "-m" "Peer non-Org edit")
+      (supertag-git-test-run peer "push")
+      (supertag-git-sync-mode 1)
+      (supertag-git-test-write root "notes.txt" "local\n")
+      (should-not (supertag-git-sync--owned-changes-p root))
+      (let (messages)
+        (cl-letf (((symbol-function 'message)
+                   (lambda (fmt &rest args) (push (apply #'format fmt args) messages))))
+          (supertag-git-sync--pull)
+          (supertag-git-sync--pull))
+        (should (= 1 (cl-count-if (lambda (m) (string-match-p "git merge refused" m))
+                                  messages)))
+        (should (= 1 (cl-count-if (lambda (m) (string-match-p "No local data was discarded" m))
+                                  messages))))
+      (should-not supertag-git-sync--in-flight)
+      (should-not supertag-git--conflicted-files))))
+
+
 (ert-deftest supertag-git-r4b-setup-and-clone-ignore-literal-directory ()
   (dolist (clone '(nil t))
     (supertag-git-test-with-vault

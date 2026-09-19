@@ -400,6 +400,29 @@ exactly once per unresolved-conflict episode."
   (when supertag-git-sync--conflict-commit-warned
     (setq supertag-git-sync--conflict-commit-warned nil)))
 
+(defvar supertag-git-sync--merge-refused-warned nil
+  "Non-nil once an unsuccessful merge has been reported for the CURRENT
+episode.  Covers the merges that are neither a conflict to pause on nor a
+success: git refusing because a dirty tracked file is outside auto-commit
+scope (we do not own it, so we must not commit it), or a conflict that
+touched only out-of-scope paths.  Reset to nil the next time a merge
+succeeds or pauses on a real Org conflict, so the refusal is reported once
+per episode rather than once per pull tick -- the same
+one-message-per-state-change pattern as
+`supertag-git-sync--offline-warned'.")
+
+(defun supertag-git-sync--note-merge-refused (result)
+  "Report an unsuccessful merge that produced nothing to pause on,
+exactly once per episode.  RESULT is git's own output."
+  (unless supertag-git-sync--merge-refused-warned
+    (setq supertag-git-sync--merge-refused-warned t)
+    (supertag-git-sync--report-failure "git merge refused" result)))
+
+(defun supertag-git-sync--clear-merge-refused-warning ()
+  "Clear the one-shot merge refusal warning once a merge gets through."
+  (when supertag-git-sync--merge-refused-warned
+    (setq supertag-git-sync--merge-refused-warned nil)))
+
 (defun supertag-git-sync--schedule-commit ()
   "(Re)start the single debounce timer for the next auto-commit. Any
 already-pending timer is cancelled first, so the commit fires
@@ -447,9 +470,22 @@ in a previous commit's context lines is not a false positive."
       (unless (supertag-git--ok-p result) (user-error "%s" (cdr result)))
       (> (length (cdr result)) 0))))
 
+(defun supertag-git--editor-ephemera-path-p (path)
+  "Return non-nil for editor ephemera that must never be committed.
+Emacs lock files (\"`.#note.org'\"), auto-save files (\"`#note.org#'\") and
+backup files (\"`note.org~'\") are not Org text even when the name in the
+middle ends in `.org'.  An open buffer creates its lock file while the user
+is editing, so without this check a locked Org file looks like an owned
+change and gets committed."
+  (let ((name (file-name-nondirectory path)))
+    (or (string-prefix-p ".#" name)
+        (string-suffix-p "~" name)
+        (and (string-prefix-p "#" name) (string-suffix-p "#" name)))))
+
 (defun supertag-git-sync--auto-commit-path-p (root path)
   "Return non-nil when PATH is owned Org text, excluding local data."
   (and (not (supertag-git--local-data-path-p root path))
+       (not (supertag-git--editor-ephemera-path-p path))
        (or (string-suffix-p ".org" path) (equal path ".gitignore"))))
 
 (defun supertag-git--assert-no-staged-markers (root)
@@ -645,7 +681,24 @@ RECOVERY: a run of local commits made while the remote was unreachable
 this mode's offline handling) are not orphaned forever waiting for a new
 edit -- reconnecting means the very next timer tick's fetch succeeds,
 and `supertag-git-sync--maybe-push-after-cycle' then pushes everything
-that piled up, whether or not anything was behind to merge first."
+that piled up, whether or not anything was behind to merge first.
+
+A cycle whose working tree still holds SAVED BUT UNCOMMITTED owned Org
+edits is handed to `supertag-git-sync--fire-commit' first: auto-commit is
+debounced, so a pull tick landing inside that window would otherwise have
+git refuse the merge outright (\"Your local changes to the following files
+would be overwritten by merge\"), which is neither a conflict to pause on
+nor a success -- and used to be completely silent.  That is the same route
+`supertag-git-sync-now' takes (`supertag-git-sync--owned-changes-p' ->
+`supertag-git-sync--fire-commit'), so every guard it has -- index scope,
+staged markers, unmerged paths, `supertag-git-sync--in-flight'
+serialization -- applies unchanged, and its own push falls back to fetch +
+merge + retry once the remote has moved on, which is exactly the real
+three-way merge this cycle wanted."
+  (when (and supertag-git-sync--vault-root (not supertag-git--conflicted-files)
+             (not supertag-git-sync--in-flight)
+             (supertag-git-sync--owned-changes-p supertag-git-sync--vault-root))
+    (supertag-git-sync--fire-commit))
   (when (and supertag-git-sync--vault-root (not supertag-git--conflicted-files)
              (not supertag-git-sync--in-flight))
     (setq supertag-git-sync--in-flight t)
@@ -930,14 +983,24 @@ Disable rename detection so an old path always reaches orphan verification."
     (cons (nreverse changed) (nreverse deleted))))
 
 (defun supertag-git-sync--after-merge (result root)
-  "Pause for unresolved Org conflicts or queue the successful merge's exact delta."
+  "Pause for unresolved Org conflicts, queue a merge delta, or report a
+merge that got through neither way.  Never silently does nothing."
   (let ((conflicts (supertag-git-sync--live-conflicted-org-files root)))
-    (cond (conflicts (supertag-git--pause conflicts))
+    (cond (conflicts
+           (supertag-git-sync--clear-merge-refused-warning)
+           (supertag-git--pause conflicts))
           ((supertag-git--ok-p result)
+           (supertag-git-sync--clear-merge-refused-warning)
            (condition-case err
                (let ((delta (supertag-git--projection-delta root)))
                  (supertag-git--project-files root (car delta) (cdr delta)))
-             (error (message "Git projection deferred to periodic sync: %s" (error-message-string err))))))))
+             (error (message "Git projection deferred to periodic sync: %s" (error-message-string err)))))
+          (t
+           ;; git refused the merge (typically a dirty tracked file we do not
+           ;; own, changed on both sides) or left only out-of-scope conflicts:
+           ;; neither is something to pause on, and nothing was discarded --
+           ;; say so once per episode instead of falling through in silence.
+           (supertag-git-sync--note-merge-refused result)))))
 
 (defun supertag-git--continue-merge (root)
   "Finish a saved conflict resolution in ROOT.

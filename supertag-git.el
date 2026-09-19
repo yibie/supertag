@@ -611,20 +611,26 @@ treat as offline degradation. Always clears
               (progn (supertag-git-sync--note-offline
                       "push (fetch during retry)" root)
                      (setq supertag-git-sync--in-flight nil))
-            (supertag-git-sync--run-git
-             root (list "merge" "--no-edit" "@{upstream}")
-             (lambda (merge-result)
-               (supertag-git-sync--after-merge merge-result root)
-               (if (not (supertag-git--ok-p merge-result))
-                   (setq supertag-git-sync--in-flight nil)
-                 (supertag-git-sync--run-git
-                  root (list "push")
-                  (lambda (retry-result)
-                    (if (supertag-git--ok-p retry-result)
-                        (progn (setq supertag-git-sync--pending-push-count 0)
-                               (supertag-git-sync--clear-offline-warning))
-                      (supertag-git-sync--note-offline "push retry" root))
-                    (setq supertag-git-sync--in-flight nil))))))))))
+            (if (supertag-git-sync--merge-blocked-by-unsaved-p root)
+                ;; Postponed: the merge would replace a file under a modified
+                ;; buffer.  Keep the pending push pending (the lighter stays
+                ;; truthful) and let a later cycle retry it; this is not an
+                ;; offline failure.
+                (setq supertag-git-sync--in-flight nil)
+              (supertag-git-sync--run-git
+               root (list "merge" "--no-edit" "@{upstream}")
+               (lambda (merge-result)
+                 (supertag-git-sync--after-merge merge-result root)
+                 (if (not (supertag-git--ok-p merge-result))
+                     (setq supertag-git-sync--in-flight nil)
+                   (supertag-git-sync--run-git
+                    root (list "push")
+                    (lambda (retry-result)
+                      (if (supertag-git--ok-p retry-result)
+                          (progn (setq supertag-git-sync--pending-push-count 0)
+                                 (supertag-git-sync--clear-offline-warning))
+                        (supertag-git-sync--note-offline "push retry" root))
+                      (setq supertag-git-sync--in-flight nil)))))))))))
       (t
        (supertag-git-sync--note-offline "push" root)
        (setq supertag-git-sync--in-flight nil))))))
@@ -711,11 +717,17 @@ three-way merge this cycle wanted."
                     (setq supertag-git-sync--in-flight nil))
            (supertag-git-sync--clear-offline-warning)
            (if (supertag-git-sync--behind-p root)
-               (supertag-git-sync--run-git
-                root (list "merge" "--no-edit" "@{upstream}")
-                (lambda (merge-result)
-                  (supertag-git-sync--after-merge merge-result root)
-                  (supertag-git-sync--maybe-push-after-cycle root)))
+               (if (supertag-git-sync--merge-blocked-by-unsaved-p root)
+                   ;; Postponed for this cycle: no merge, so no push either
+                   ;; (pushing while behind would only be rejected again).
+                   ;; Timers stay up; the next tick retries once the named
+                   ;; buffers are saved.
+                   (setq supertag-git-sync--in-flight nil)
+                 (supertag-git-sync--run-git
+                  root (list "merge" "--no-edit" "@{upstream}")
+                  (lambda (merge-result)
+                    (supertag-git-sync--after-merge merge-result root)
+                    (supertag-git-sync--maybe-push-after-cycle root))))
              (supertag-git-sync--maybe-push-after-cycle root))))))))
 
 (defun supertag-git-sync--maybe-focus-pull ()
@@ -948,6 +960,52 @@ RETIRED paths have separately been confirmed for removal from tracking."
     (find-file (car files))
     (smerge-mode 1)))
 
+(defvar supertag-git-sync--unsaved-merge-warned nil
+  "Non-nil once a merge has been postponed for the CURRENT unsaved-buffer
+episode.  Reset to nil as soon as no file the merge would touch has a
+modified buffer, so holding the sync is reported once per episode rather
+than once per pull tick -- the same one-message-per-state-change pattern as
+`supertag-git-sync--offline-warned'.")
+
+(defun supertag-git-sync--unsaved-merge-files (root)
+  "Return the Org files a merge of `@{upstream}' would replace in ROOT
+that are currently visited by a modified buffer.
+`HEAD...@{upstream}' is the upstream side since the merge base -- exactly
+the set a merge would write -- so this names the buffers that must not be
+left to overwrite merged text on their next save.  Paths are absolute,
+truenamed, and match the ones `supertag-git--project-files' uses."
+  (let ((result (supertag-git--run root "diff" "--name-only" "-z"
+                                   "HEAD...@{upstream}" "--" "*.org")))
+    (when (supertag-git--ok-p result)
+      (let ((true-root (supertag-git--truename-dir root)) files)
+        (dolist (rel (split-string (cdr result) "\0" t))
+          (let ((file (file-truename (expand-file-name rel true-root))))
+            (when-let* ((buffer (get-file-buffer file)))
+              (when (buffer-modified-p buffer) (push file files)))))
+        (nreverse files)))))
+
+(defun supertag-git-sync--merge-blocked-by-unsaved-p (root)
+  "Return non-nil when ROOT must not merge yet.
+A merge replaces the files it touches on disk, so a modified buffer on one
+of them would be left one `save-buffer' away from silently overwriting the
+other machine's edits -- Emacs's file-changed prompt is the only
+protection.  Wait for the user instead: report once per episode which
+buffers hold the sync and that saving them lets it continue, clear that
+report as soon as none remains, and never touch the buffers themselves."
+  (let ((files (supertag-git-sync--unsaved-merge-files root)))
+    (if (not files)
+        (progn (setq supertag-git-sync--unsaved-merge-warned nil) nil)
+      (unless supertag-git-sync--unsaved-merge-warned
+        (setq supertag-git-sync--unsaved-merge-warned t)
+        (message
+         (concat "supertag-git-sync: merge postponed while %s %s unsaved Org "
+                 "edits. Save %s to let the merge continue; local text is kept.")
+         (mapconcat (lambda (f) (file-relative-name f (supertag-git--truename-dir root)))
+                    files ", ")
+         (if (cdr files) "have" "has")
+         (if (cdr files) "them" "it")))
+      t)))
+
 (defun supertag-git--project-files (root changed deleted)
   "Queue CHANGED Org paths and orphan nodes from DELETED paths under ROOT."
   (dolist (rel changed)
@@ -956,7 +1014,15 @@ RETIRED paths have separately been confirmed for removal from tracking."
                  (not (member file supertag-git--conflicted-files)))
         (when-let* ((buffer (get-file-buffer file)))
           (with-current-buffer buffer
-            (unless (buffer-modified-p) (revert-buffer t t t))))
+            (if (buffer-modified-p)
+                ;; The pre-merge check cannot see a buffer that became
+                ;; modified while the async merge ran: keep the buffer and
+                ;; name it, because a later save would overwrite the merged
+                ;; text.  Never revert, save, or kill it for the user.
+                (message (concat "supertag-git-sync: %s changed on disk while "
+                                 "its buffer had unsaved edits; save it to reconcile")
+                         (file-relative-name file root))
+              (revert-buffer t t t))))
         (supertag-async-enqueue file))))
   (when deleted
     (supertag-sync--snapshot-set (supertag-sync--snapshot-build))

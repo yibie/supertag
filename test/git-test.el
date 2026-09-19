@@ -133,6 +133,213 @@
     (should (supertag-node-get "added"))
     (should (equal "Stable" (plist-get (supertag-node-get "stable") :title)))))
 
+;;; An unsaved buffer must never be left to overwrite a merged file.
+;;; The merge waits for the user instead of relying on Emacs's
+;;; file-changed prompt to protect the other machine's edits.
+
+(defun supertag-git-test--messages (thunk)
+  "Run THUNK, returning the messages it emitted, oldest first."
+  (let (messages)
+    (cl-letf (((symbol-function 'message)
+               (lambda (fmt &rest args) (push (apply #'format fmt args) messages))))
+      (funcall thunk))
+    (nreverse messages)))
+
+(defun supertag-git-test--peer-note (peer text)
+  "Rewrite note.org on PEER with TEXT and push it."
+  (supertag-git-test-write peer "note.org" text)
+  (supertag-git-test-commit peer)
+  (supertag-git-test-run peer "push"))
+
+(defconst supertag-git-test--peer-note-remote
+  "* Changed\n:PROPERTIES:\n:ID: document-node\n:END:\nRemote body.\n"
+  "note.org text the peer pushes in the unsaved-buffer tests.")
+
+(defun supertag-git-test--disk (path)
+  "Return PATH's current disk text."
+  (with-temp-buffer (insert-file-contents path) (buffer-string)))
+
+(defun supertag-git-test--postponed-messages (messages)
+  "Return MESSAGES' merge-postponed lines, oldest first."
+  (cl-remove-if-not (lambda (m) (string-match-p "merge postponed" m)) messages))
+
+(defun supertag-git-test--commit-owned (root)
+  "Commit the Org edit a fixture or mode enable left in ROOT's worktree.
+Keeps these tests measuring the unsaved-buffer decision alone; the pull
+cycle itself commits saved edits before its merge decision anyway."
+  (when (supertag-git-sync--owned-changes-p root)
+    (supertag-git-test-run root "add" "-A" "--" "*.org")
+    (supertag-git-test-run root "commit" "-m" "Fixture normalization")))
+
+(ert-deftest supertag-git-unsaved-buffer-postpones-merge ()
+  "A merge waits while a file it would replace has a modified buffer."
+  (supertag-git-test-with-vault
+    (let ((supertag-git-sync--unsaved-merge-warned nil)
+          (disk (supertag-git-test--disk file)) buffer messages head)
+      (supertag-git-sync-mode 1)
+      ;; Mode enable may rewrite Org text; commit that first so the only
+      ;; thing between HEAD and the merge is the peer's commit.
+      (supertag-git-test--commit-owned root)
+      (setq head (supertag-git-test-run root "rev-parse" "HEAD"))
+      (supertag-git-test--peer-note peer supertag-git-test--peer-note-remote)
+      (unwind-protect
+          (progn
+            (setq buffer (find-file-noselect file))
+            (with-current-buffer buffer
+              (goto-char (point-max))
+              (insert "Local unsaved line.\n"))
+            (should (buffer-modified-p buffer))
+            ;; Two ticks: the hold must be reported once, not once per tick.
+            (setq messages
+                  (supertag-git-test--messages
+                   (lambda () (supertag-git-sync--pull) (supertag-git-sync--pull))))
+            ;; No merge: HEAD, the disk text and the buffer all stand still.
+            (should (equal head (supertag-git-test-run root "rev-parse" "HEAD")))
+            (should (equal disk (supertag-git-test--disk file)))
+            (with-current-buffer buffer
+              (should (buffer-modified-p))
+              (should (string-match-p "Local unsaved line" (buffer-string)))
+              (should-not (string-match-p "Remote body" (buffer-string))))
+            (should (= 1 (length (supertag-git-test--postponed-messages messages))))
+            (should (string-match-p "note\\.org"
+                                    (car (supertag-git-test--postponed-messages messages))))
+            ;; A hold is not an offline failure and pauses nothing.
+            (should-not supertag-git-sync--offline-warned)
+            (should-not supertag-git-sync--in-flight)
+            (should-not supertag-git--conflicted-files)
+            (should-not (supertag-git-sync--unmerged-paths root))
+            (should (timerp supertag-git-sync--pull-timer)))
+        (when (buffer-live-p buffer)
+          (with-current-buffer buffer (set-buffer-modified-p nil))
+          (kill-buffer buffer))))))
+
+(ert-deftest supertag-git-unsaved-buffer-save-then-merge-continues ()
+  "Saving the held buffer funnels the sync into the safe merge path again."
+  (supertag-git-test-with-vault
+    (let ((supertag-git-sync--unsaved-merge-warned nil) buffer messages)
+      (supertag-git-sync-mode 1)
+      (supertag-git-test--commit-owned root)
+      (supertag-git-test--peer-note peer supertag-git-test--peer-note-remote)
+      (unwind-protect
+          (progn
+            (setq buffer (find-file-noselect file))
+            ;; A local edit far from the peer's line, so the merge is clean.
+            (with-current-buffer buffer
+              (goto-char (point-min))
+              (insert "Local preamble line.\n"))
+            (supertag-git-sync--pull)
+            (should supertag-git-sync--unsaved-merge-warned)
+            (should-not (string-match-p "Remote body" (supertag-git-test--disk file)))
+            ;; Saving hands the file to the normal commit path; its push is
+            ;; rejected, and the retry's fetch + merge is no longer held.
+            ;; A merge that conflicts puts the file back on disk under this
+            ;; buffer, so suppress the reread prompt the way an interactive
+            ;; user answers it; the local text is already committed by then.
+            (with-current-buffer buffer (save-buffer))
+            (cl-letf (((symbol-function 'yes-or-no-p) (lambda (&rest _) t)))
+              (setq messages
+                    (supertag-git-test--messages (lambda () (supertag-git-sync-now)))))
+            (should-not supertag-git-sync--unsaved-merge-warned)
+            (should-not supertag-git-sync--in-flight)
+            (should (= 0 (length (supertag-git-test--postponed-messages messages))))
+            ;; Either the merge landed clean, or it paused on a real conflict
+            ;; for the user -- never the postponed state either way.
+            (if supertag-git--conflicted-files
+                (with-current-buffer (get-file-buffer file) (should smerge-mode))
+              (should (= 0 (supertag-git-sync--rev-count root "@{upstream}..HEAD")))
+              (should (string-match-p "Remote body" (supertag-git-test--disk file)))
+              (should (string-match-p "Local preamble line" (supertag-git-test--disk file)))))
+        (when (buffer-live-p buffer)
+          (with-current-buffer buffer (set-buffer-modified-p nil))
+          (kill-buffer buffer))))))
+
+(ert-deftest supertag-git-unsaved-buffer-unrelated-file-does-not-postpone ()
+  "An unsaved buffer on a file the merge does not touch holds nothing."
+  (supertag-git-test-with-vault
+    (let ((supertag-git-sync--unsaved-merge-warned nil)
+          (other (expand-file-name "unchanged.org" root)) buffer messages)
+      (supertag-git-sync-mode 1)
+      (supertag-git-test--commit-owned root)
+      (supertag-git-test--peer-note peer supertag-git-test--peer-note-remote)
+      (unwind-protect
+          (progn
+            (setq buffer (find-file-noselect other))
+            (with-current-buffer buffer
+              (goto-char (point-max))
+              (insert "Unsaved line in an untouched file.\n"))
+            (setq messages
+                  (supertag-git-test--messages (lambda () (supertag-git-sync--pull))))
+            (should-not supertag-git-sync--unsaved-merge-warned)
+            (should (= 0 (length (supertag-git-test--postponed-messages messages))))
+            (should-not supertag-git-sync--in-flight)
+            ;; The merge really happened, and the buffer was left alone.
+            (should (= 0 (supertag-git-sync--rev-count root "@{upstream}..HEAD")))
+            (should (string-match-p "Remote body" (supertag-git-test--disk file)))
+            (with-current-buffer buffer
+              (should (buffer-modified-p))
+              (should (string-match-p "Unsaved line in an untouched file" (buffer-string)))))
+        (when (buffer-live-p buffer)
+          (with-current-buffer buffer (set-buffer-modified-p nil))
+          (kill-buffer buffer))))))
+
+(ert-deftest supertag-git-unsaved-buffer-postpones-rejected-push-retry ()
+  "The rejected-push retry honours the same hold, without going offline."
+  (supertag-git-test-with-vault
+    (let ((supertag-git-sync--unsaved-merge-warned nil) buffer messages)
+      (supertag-git-sync-mode 1)
+      (supertag-git-test--commit-owned root)
+      (supertag-git-test--peer-note peer supertag-git-test--peer-note-remote)
+      (unwind-protect
+          (progn
+            ;; A saved local Org edit that the commit path must commit and
+            ;; then push, plus an unsaved buffer on the very file the peer's
+            ;; pushed commit touches.
+            (supertag-git-test-write root "local.org" "* Local\n")
+            (setq buffer (find-file-noselect file))
+            (with-current-buffer buffer
+              (goto-char (point-max))
+              (insert "Unsaved local line.\n"))
+            (setq messages
+                  (supertag-git-test--messages (lambda () (supertag-git-sync--fire-commit))))
+            (should (= 1 (length (supertag-git-test--postponed-messages messages))))
+            ;; Not an offline failure: the pending push stays pending and is
+            ;; retried on a later cycle, so the lighter stays truthful.
+            (should-not supertag-git-sync--offline-warned)
+            (should-not supertag-git-sync--in-flight)
+            (should (> supertag-git-sync--pending-push-count 0))
+            (should (> (supertag-git-sync--rev-count root "@{upstream}..HEAD") 0))
+            (should (string-match-p "Remote body"
+                                    (supertag-git-test-run root "show" "@{upstream}:note.org")))
+            (should-not (string-match-p "Remote body" (supertag-git-test--disk file)))
+            (with-current-buffer buffer (should (buffer-modified-p))))
+        (when (buffer-live-p buffer)
+          (with-current-buffer buffer (set-buffer-modified-p nil))
+          (kill-buffer buffer))))))
+
+(ert-deftest supertag-git-unsaved-buffer-residual-case-names-the-buffer ()
+  "A buffer modified after the pre-merge check is named, not left silent."
+  (supertag-git-test-with-vault
+    (let ((other (expand-file-name "unchanged.org" root)) buffer messages)
+      (unwind-protect
+          (progn
+            (setq buffer (find-file-noselect other))
+            (with-current-buffer buffer
+              (goto-char (point-max))
+              (insert "Typed while the merge ran.\n"))
+            (setq messages
+                  (supertag-git-test--messages
+                   (lambda () (supertag-git--project-files root (list "unchanged.org") nil))))
+            ;; The merged text is on disk, the buffer is kept as it is, and
+            ;; the user is told which buffer a save would overwrite it with.
+            (with-current-buffer buffer
+              (should (buffer-modified-p))
+              (should (string-match-p "Typed while the merge ran" (buffer-string))))
+            (should (= 1 (length (cl-remove-if-not
+                                 (lambda (m) (string-match-p "unsaved edits" m)) messages)))))
+        (when (buffer-live-p buffer)
+          (with-current-buffer buffer (set-buffer-modified-p nil))
+          (kill-buffer buffer))))))
+
 (defun supertag-git-test-conflict (root peer)
   (supertag-git-test-write root "note.org" "* Local\n:PROPERTIES:\n:ID: document-node\n:END:\nLocal.\n")
   (supertag-git-test-commit root)

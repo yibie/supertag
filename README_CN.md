@@ -1,4 +1,4 @@
-# Supertag：用 Emacs 和 Org 记笔记，事后整理
+# Supertag
 
 > English: [README.md](README.md)
 

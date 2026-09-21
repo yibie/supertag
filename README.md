@@ -1,4 +1,4 @@
-# Supertag: Write notes in Emacs and Org, organize them later
+# Supertag
 
 > 中文: [README_CN.md](README_CN.md)
 

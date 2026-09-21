@@ -1,5 +1,6 @@
 ;;; supertag-mention.el --- Mention feature -*- lexical-binding: t; -*-
-;; Commands: supertag-mention-link, supertag-mention-link-all-in-node
+;; Commands: none; candidate mutations are Node View actions.
+;; Node View actions link one mention or every mention in its source node.
 ;; Dependencies: button, cl-lib, org, org-id, org-element, subr-x, supertag-core-store, supertag-node, supertag-services-sync, supertag-link, supertag-view-framework
 
 ;;; Code:
@@ -451,7 +452,7 @@ records are copied so callers cannot mutate the cached read model."
                    supertag-mention-service--result-cache)
           results)))))
 
-;;; 命令
+;;; 候选操作
 
 (defun supertag-mention--source-buffer-and-position (candidate)
   "Return (BUFFER . POSITION) for CANDIDATE's source heading."
@@ -547,8 +548,9 @@ provided explicitly.  This preserves aliases and sentence wording."
   (supertag-ui--reproject-containing-node source-id))
 
 (defun supertag-mention-link (candidate)
-  "Convert one unlinked mention CANDIDATE into a canonical Org ID link."
-  (interactive)
+  "Convert one unlinked mention CANDIDATE into a canonical Org ID link.
+CANDIDATE is supplied by an Unlinked Mentions card in Node View; this is not
+a standalone interactive command."
   (let* ((live (supertag-mention--live-matches candidate))
          (matches (plist-get live :matches))
          (match (supertag-mention--find-live-match candidate matches))
@@ -564,8 +566,9 @@ provided explicitly.  This preserves aliases and sentence wording."
     (message "Linked mention to %s" title)))
 
 (defun supertag-mention-link-all-in-node (candidate)
-  "Link every mention of CANDIDATE's target in its source node."
-  (interactive)
+  "Link every mention of CANDIDATE's target in its source node.
+CANDIDATE is supplied by an Unlinked Mentions card in Node View; this is not
+a standalone interactive command."
   (let* ((live (supertag-mention--live-matches candidate))
          (matches (plist-get live :matches))
          (target-id (plist-get candidate :target-id))
@@ -633,7 +636,7 @@ provided explicitly.  This preserves aliases and sentence wording."
 (defun supertag-view-mention--insert-card (candidate &optional occurrences)
   "Insert one magazine-style unlinked mention CANDIDATE.
 OCCURRENCES is how many times its source mentions the target; the card
-links the first occurrence only."
+offers actions to link the first occurrence or every live occurrence."
   (let ((source-id (plist-get candidate :source-id))
         (source-title (or (plist-get candidate :source-title)
                           (plist-get candidate :source-id)))
@@ -653,6 +656,11 @@ links the first occurrence only."
     (supertag-view-helper-insert-action-button
      "[Link]" #'supertag-view-mention--link candidate
      "Turn this occurrence into a canonical Org ID link" 'supertag-mention)
+    (insert "  ")
+    (supertag-view-helper-insert-action-button
+     "[Link all]" #'supertag-view-mention--link-all candidate
+     "Link every live occurrence of this target in this source node"
+     'supertag-mention)
     (insert "  ")
     (supertag-view-helper-insert-action-button
      "[Ignore in node]" #'supertag-view-mention--ignore candidate

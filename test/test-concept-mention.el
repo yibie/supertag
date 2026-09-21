@@ -468,6 +468,13 @@
 
 ;;; Unlinked mentions: one card per source, capped per source, links excluded.
 
+(ert-deftest mention-candidate-actions-are-not-commands ()
+  "Candidate mutation functions are Node View actions, not M-x commands."
+  (dolist (function '(supertag-mention-link
+                      supertag-mention-link-all-in-node))
+    (should (functionp function))
+    (should-not (commandp function))))
+
 (defun concept-test--mention-node (tmp name id title body)
   "Write and project one identified source node to NAME under TMP."
   (let ((file (expand-file-name name tmp)))
@@ -514,6 +521,7 @@
       ;; The chip counts sources, not occurrences.
       (should (string-match-p " UNLINKED MENTIONS / 02 " text))
       (should (= 2 (concept-test--count "[Link]" text)))
+      (should (= 2 (concept-test--count "[Link all]" text)))
       (should (= 1 (concept-test--count "Many Src" text)))
       (should (= 1 (concept-test--count "+2 more" text)))
       (should (= 0 (concept-test--count "+1 more" text)))
@@ -542,6 +550,48 @@
         (should (string-match-p "第一处 \\[\\[id:pi\\]\\[Pi\\]\\] 出现" disk))
         (should (string-match-p "第二处 Pi" disk))
         (should (string-match-p "第三处 Pi" disk))))))
+
+(ert-deftest mention-grouped-card-link-all-button-links-every-occurrence ()
+  "[Link all] is wired to the grouped candidate and links all live matches."
+  (concept-test--with-env
+    (concept-test--mention-target tmp)
+    (let ((file (concept-test--mention-node
+                 tmp "a-many.org" "many-src" "Many Src"
+                 "第一处 Pi 出现。然后是第二处 Pi，还有第三处 Pi 在这里。")))
+      (supertag-mention-service-clear-cache)
+      (let ((supertag-view-helper-width-override 120))
+        (with-temp-buffer
+          (supertag-view-mention-insert-section "pi")
+          (goto-char (point-min))
+          (search-forward "[Link all]")
+          (let ((button (button-at (1- (point)))))
+            (should button)
+            (should (eq (button-get button 'action)
+                        #'supertag-view-mention--link-all))
+            (should (equal "many-src"
+                           (plist-get (button-get button 'supertag-mention)
+                                      :source-id)))
+            (button-activate button))))
+      (let ((disk (with-temp-buffer
+                    (insert-file-contents file)
+                    (buffer-string))))
+        (should (= 3 (concept-test--count "[[id:pi][Pi]]" disk)))
+        (should-not (string-match-p "处 Pi" disk))))))
+
+(ert-deftest mention-section-actions-fit-120-and-80-column-renders ()
+  "Unlinked Mention action rows stay within the required view widths."
+  (concept-test--with-env
+    (concept-test--mention-target tmp)
+    (concept-test--mention-node
+     tmp "source.org" "source" "Source"
+     "Pi appears here, and Pi appears again.")
+    (supertag-mention-service-clear-cache)
+    (dolist (width '(120 80))
+      (let ((text (concept-test--mention-text "pi" width)))
+        (should (string-match-p
+                 "\\[Link\\]  \\[Link all\\]  \\[Ignore in node\\]" text))
+        (dolist (line (split-string text "\n"))
+          (should (<= (string-width line) width)))))))
 
 (ert-deftest mention-cap-counts-distinct-sources ()
   "The cap admits whole sources instead of hiding later ones."

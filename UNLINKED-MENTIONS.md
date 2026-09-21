@@ -19,14 +19,16 @@ longer hide other sources.
 Each candidate provides:
 
 - **Link** — replace the card's first occurrence with a canonical Org ID link;
-- **Link all in node** — replace all live occurrences in that source node;
+- **Link all** — replace all live occurrences in that source node;
 - **Ignore in node** — store a source-owned `SUPERTAG_IGNORE_MENTIONS` Org
   property on the source heading.
 
 Candidates are disposable read models.  There is no `:unlinked-mentions`
 collection and no second Backlink database.  Only an accepted Org link becomes
 a reference fact through the existing document projection pipeline.
+The candidate-taking mutation functions are internal Node View actions, not
+standalone `M-x` commands.
 
 Discovery uses a small non-persistent Org parse cache and a cheap text prefilter.
-The cache can be cleared with `M-x supertag-mention-service-clear-cache` and is
-never saved.
+The cache is managed automatically and can be cleared programmatically with
+`supertag-mention-service-clear-cache`; it is never saved.

@@ -256,7 +256,7 @@ Node View 现在分别显示当前节点的 **References** 与 **Backlinks**。�
 
 ### 未链接提及（Unlinked Mentions）
 
-Node View 还会在其他来源节点的普通正文中查找当前节点的 title 与 alias。每个来源节点只显示一张卡片：首处出现的片段，以及其余出现次数的灰色 `+N more`。未链接提及只是候选，不会落库；只有用户执行 **Link** 或 **Link all in node** 后，才会写成规范 Org ID Link，并沿既有投影流程成为 Backlink。已有 Org Link 与 literal/code
+Node View 还会在其他来源节点的普通正文中查找当前节点的 title 与 alias。每个来源节点只显示一张卡片：首处出现的片段，以及其余出现次数的灰色 `+N more`。未链接提及只是候选，不会落库；只有用户执行 **Link** 或 **Link all** 后，才会写成规范 Org ID Link，并沿既有投影流程成为 Backlink。已有 Org Link 与 literal/code
 区域不会重复匹配，已经链接该目标（无论链接在正文还是标题）的来源节点根本不列出；中文匹配也不会套用错误的 ASCII 词边界。
 
 **Ignore in node** 会把 `SUPERTAG_IGNORE_MENTIONS` 写到来源 heading，因此忽略决定是可检查、可同步的 Org 数据，而不是隐藏缓存。发现过程只使用小型、不可持久化的解析缓存。完整边界见 `UNLINKED-MENTIONS.md`。

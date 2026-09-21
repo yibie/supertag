@@ -293,7 +293,7 @@ aliases in other source nodes. One card is shown per source node, with the
 first occurrence's excerpt and a muted `+N more` note for the rest. An unlinked
 mention is only a candidate: it is
 not persisted and does not become a Backlink until you choose **Link** or
-**Link all in node**. Existing Org links and literal/code regions are excluded,
+**Link all**. Existing Org links and literal/code regions are excluded,
 and a source node that already links the target (in its body or its heading) is
 not listed at all. Chinese text is matched without imposing incorrect ASCII
 word boundaries.

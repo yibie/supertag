@@ -34,6 +34,16 @@ and whether to create a node right now. Now I drop it first and decide while org
 ways work; they differ only in when the decision happens — classify first or write first. The
 latter suits me better.
 
+**Completion.** Type `#` in an Org note to complete an existing tag; keep typing a new name
+and select `[New]` to create it in place. Type `[[` to complete an existing note title or
+create a new note from the same list. What remains in the file is still an ordinary `#tag`
+or Org ID link.
+
+**Nested tags.** Type a path such as `#emacs/package/elpa`, and completion builds the
+`emacs › package › elpa` hierarchy. The source receives the leaf tag `#elpa`, while
+Supertag records the parent relationships. A Stream or descendant query for `emacs` can then
+include notes under `package` and `elpa` as well.
+
 One thing to be clear about: this is not zero initial configuration. Your `org-capture`
 template still has to name a target file; you also set the sync directory in init before
 `(require 'supertag)` and run the first scan once. That is done once, and the template is in

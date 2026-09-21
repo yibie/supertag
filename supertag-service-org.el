@@ -296,6 +296,34 @@ keeps the search going."
           (point-min)))
     (supertag-node-location--heading-position node-id)))
 
+(defun supertag-node-location--projected-position (node-id level link-type
+                                                           projected-position)
+  "Validate and return NODE-ID's PROJECTED-POSITION in the current buffer.
+
+For a file node, the projection is valid only at `point-min' and only when the
+file identity matches NODE-ID according to LINK-TYPE.  For a heading node, the
+projected character must be the start of a real Org heading whose local ID is
+NODE-ID.  Return nil without scanning the rest of the file when validation
+fails."
+  (when (and (derived-mode-p 'org-mode)
+             (integerp projected-position))
+    (save-excursion
+      (save-restriction
+        (widen)
+        (let ((position projected-position))
+          (when (and position
+                     (<= (point-min) position)
+                     (<= position (point-max)))
+            (goto-char position)
+            (if (zerop (or level 1))
+                (when (and (= position (point-min))
+                           (supertag-node-location--file-identity-matches-p
+                            node-id link-type))
+                  (point-min))
+              (when (and (org-at-heading-p)
+                         (equal node-id (org-entry-get nil "ID" nil)))
+                (point)))))))))
+
 (defun supertag-node-location-goto-current-buffer (node-id)
   "Move point to NODE-ID's heading in the current Org buffer.
 
@@ -320,13 +348,17 @@ failure."
          (file (and (listp node) (plist-get node :file)))
          (level (and (listp node) (plist-get node :level)))
          (link-type (and (listp node) (plist-get node :link-type)))
+         (projected-position
+          (and (listp node) (plist-get node :position)))
          (buffer (and (stringp file)
                       (file-exists-p file)
                       (find-file-noselect file)))
          (position (and buffer
                         (with-current-buffer buffer
-                          (supertag-node-location--position
-                           node-id level link-type)))))
+                          (or (supertag-node-location--projected-position
+                               node-id level link-type projected-position)
+                              (supertag-node-location--position
+                               node-id level link-type))))))
     (when position
       (with-current-buffer buffer
         (copy-marker position)))))

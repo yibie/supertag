@@ -296,6 +296,97 @@
             (should (equal "Node"
                            (org-get-heading t t t t)))))))))
 
+(ert-deftest node-location-valid-store-position-avoids-file-scan ()
+  "A validated heading position returns without invoking the file scanner."
+  (node-identity-test--with-clean-env
+    (let ((file (expand-file-name "fast.org" tmp)))
+      (with-temp-file file
+        (insert "* Fast\n:PROPERTIES:\n:ID: fast-id\n:END:\n"))
+      (supertag-store-put-entity
+       :nodes "fast-id"
+       `(:id "fast-id" :title "Fast" :file ,file :position 1 :level 1))
+      (cl-letf (((symbol-function 'supertag-node-location--heading-position)
+                 (lambda (&rest _)
+                   (ert-fail "Valid projected position invoked file scan"))))
+        (let ((marker (supertag-node-location-find "fast-id")))
+          (should (markerp marker))
+          (should (= 1 (marker-position marker))))))))
+
+(ert-deftest node-location-stale-store-position-recovers-by-file-scan ()
+  "A stale projected position falls back to scanning only its known file."
+  (node-identity-test--with-clean-env
+    (let ((file (expand-file-name "stale.org" tmp))
+          (scan-count 0)
+          (real-scan (symbol-function
+                      'supertag-node-location--heading-position)))
+      (with-temp-file file
+        (insert "* Other\n:PROPERTIES:\n:ID: other-id\n:END:\n"
+                "* Target\n:PROPERTIES:\n:ID: target-id\n:END:\n"))
+      (supertag-store-put-entity
+       :nodes "target-id"
+       `(:id "target-id" :title "Target" :file ,file :position 1 :level 1))
+      (cl-letf (((symbol-function 'supertag-node-location--heading-position)
+                 (lambda (node-id)
+                   (cl-incf scan-count)
+                   (funcall real-scan node-id)))
+                ((symbol-function 'org-id-find)
+                 (lambda (&rest _)
+                   (ert-fail "Known Store node consulted global Org ID data"))))
+        (let ((marker (supertag-node-location-find "target-id")))
+          (should (markerp marker))
+          (should (= 1 scan-count))
+          (with-current-buffer (marker-buffer marker)
+            (goto-char marker)
+            (should (equal "Target" (org-get-heading t t t t)))))))))
+
+(ert-deftest node-location-wrong-or-missing-id-fails-closed ()
+  "A projected heading must have the expected local ID or resolve in-file."
+  (node-identity-test--with-clean-env
+    (let ((file (expand-file-name "wrong-id.org" tmp))
+          (org-fallback-used nil))
+      (with-temp-file file
+        (insert "* Wrong\n:PROPERTIES:\n:ID: wrong-id\n:END:\n"
+                "* Missing\nBody\n"))
+      (dolist (position '(1 50))
+        (supertag-store-put-entity
+         :nodes "expected-id"
+         `(:id "expected-id" :title "Expected" :file ,file
+           :position ,position :level 1))
+        (cl-letf (((symbol-function 'org-id-find)
+                   (lambda (&rest _)
+                     (setq org-fallback-used t)
+                     (point-marker))))
+          (should-not (supertag-node-location-find "expected-id"))))
+      (should-not org-fallback-used))))
+
+(ert-deftest node-identity-org-id-find-advice-uses-store-without-original ()
+  "The Org compatibility advice returns a projected node before ORIG-FN."
+  (node-identity-test--with-clean-env
+    (let ((file (expand-file-name "advice-fast.org" tmp))
+          (supertag-org-id-find-auto-enable t)
+          (had-init (boundp 'supertag--initialized))
+          (prior-init (and (boundp 'supertag--initialized)
+                           supertag--initialized)))
+      (with-temp-file file
+        (insert "* Advice\n:PROPERTIES:\n:ID: advice-id\n:END:\n"))
+      (supertag-store-put-entity
+       :nodes "advice-id"
+       `(:id "advice-id" :title "Advice" :file ,file :position 1 :level 1))
+      (unwind-protect
+          (progn
+            (setq supertag--initialized t)
+            (let ((marker
+                   (supertag-service-org--org-id-find-advice
+                    (lambda (&rest _)
+                      (ert-fail "Store-backed advice invoked original org-id-find"))
+                    "advice-id" 'marker)))
+              (should (markerp marker))
+              (should (= 1 (marker-position marker)))
+              (should (equal file
+                             (buffer-file-name (marker-buffer marker))))))
+        (if had-init (setq supertag--initialized prior-init)
+          (makunbound 'supertag--initialized))))))
+
 (ert-deftest node-identity-org-id-find-advice-answers-from-store-before-rescan ()
   "The `org-id-find' advice resolves a projected node without a full rescan.
 
@@ -346,10 +437,13 @@ the advice was in place."
         (insert ":PROPERTIES:\n:ID:       file-id\n:END:\n#+TITLE: File\n"))
       (supertag-store-put-entity
        :nodes "file-id"
-       `(:id "file-id" :title "File" :file ,file :position 99999 :level 0))
-      (let ((marker (supertag-node-location-find "file-id")))
-        (should (markerp marker))
-        (should (= (marker-position marker) 1))))))
+       `(:id "file-id" :title "File" :file ,file :position 1 :level 0))
+      (cl-letf (((symbol-function 'supertag-node-location--position)
+                 (lambda (&rest _)
+                   (ert-fail "Valid file-node position invoked file scan"))))
+        (let ((marker (supertag-node-location-find "file-id")))
+          (should (markerp marker))
+          (should (= (marker-position marker) 1)))))))
 
 (ert-deftest node-location-navigates-file-node-identities-with-empty-cache ()
   "Org-ID and Denote file nodes share Store-first navigation."

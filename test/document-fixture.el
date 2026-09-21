@@ -1,0 +1,83 @@
+;;; document-fixture.el --- Real isolated document input -*- lexical-binding: t; -*-
+(require 'ert)
+(require 'cl-lib)
+(require 'supertag-services-sync)
+;; Late-loaded lifecycle/Automation settings must also bind dynamically when
+;; fixture users are independently compiled before those modules are loaded.
+(defvar supertag--base-data-directory nil)
+(defvar supertag-active-sync-directory nil)
+(defvar supertag-automation--enabled nil)
+(defvar supertag-automation-sync--enabled nil)
+
+(defmacro supertag-document-test-with-vault (&rest body)
+  "Run BODY with saved Org FILE and ID-less PLAIN, without legacy seeds."
+  (declare (indent 0) (debug t))
+  `(let* ((tmp (file-name-as-directory (file-truename (make-temp-file "supertag-document-" t))))
+          (file (expand-file-name "node.org" tmp))
+          (plain (expand-file-name "plain.org" tmp))
+          (supertag-data-directory (expand-file-name "data/" tmp))
+          (supertag--base-data-directory supertag-data-directory)
+          (supertag-db-file (expand-file-name "store.el" supertag-data-directory))
+          (supertag-db-backup-directory (expand-file-name "backups/" supertag-data-directory))
+          (supertag-sync-directories (list tmp))
+          (supertag-active-sync-directory tmp)
+          (supertag--store nil)
+          (supertag--store-origin nil)
+          (supertag--subscribers (make-hash-table :test 'equal))
+          (supertag-sync--state (list :sync-state (make-hash-table :test 'equal)))
+          (supertag-sync--state-source (expand-file-name "sync-state.el" tmp))
+          (supertag-sync-state-file (expand-file-name "sync-state.el" tmp))
+          (supertag-sync--deferred-files (make-hash-table :test 'equal))
+          (supertag-sync--internal-modifications (make-hash-table :test 'equal))
+          (supertag-async--queue nil)
+          (supertag-async--failed-items nil)
+          (supertag-async--timer nil)
+          (supertag-async--processor-fn #'supertag-sync--async-processor)
+          (supertag-automation--enabled nil)
+          (supertag-automation-sync--enabled nil)
+          (org-id-locations nil)
+          (org-id-locations-file (expand-file-name "ids" tmp))
+          (org-id-track-globally nil)
+          (make-backup-files nil)
+          (auto-save-default nil))
+     (save-window-excursion
+       (unwind-protect
+           (cl-letf (((symbol-function 'supertag-async--ensure-timer) #'ignore))
+             (with-temp-file file
+               (insert "* Property Node\n:PROPERTIES:\n:ID: document-node\n:ZETA: last\n:EMPTY:\n:ALPHA: first\n:END:\nBody.\n"))
+             (with-temp-file plain (insert "* Ordinary writing\nNo identity needed.\n"))
+             (supertag--ensure-store)
+             (should (eq 'complete (plist-get (supertag-reindex-org) :status)))
+             (setq supertag-async--queue nil)
+             (clrhash supertag-sync--internal-modifications)
+             ,@body)
+         (when (get-buffer "*Supertag Node*")
+           (kill-buffer "*Supertag Node*"))
+         (dolist (buffer (buffer-list))
+           (when-let* ((path (buffer-file-name buffer)))
+             (when (file-in-directory-p path tmp)
+               (with-current-buffer buffer (set-buffer-modified-p nil))
+               (kill-buffer buffer))))
+         (when (timerp supertag-async--timer) (cancel-timer supertag-async--timer))
+         (delete-directory tmp t)))))
+
+(defun supertag-document-test-disk (file)
+  "Return exact saved FILE text."
+  (with-temp-buffer (insert-file-contents file) (buffer-string)))
+
+(defun supertag-document-test-save-property (file name value)
+  "Edit NAME to VALUE in FILE and enqueue through the real native save hook."
+  (with-current-buffer (find-file-noselect file)
+    (goto-char (point-min))
+    (if value (org-entry-put nil name value) (org-entry-delete nil name))
+    (setq-local after-save-hook nil)
+    (supertag-sync-setup-realtime-hooks)
+    (save-buffer))
+  (should (member (file-truename file) supertag-async--queue)))
+
+(defun supertag-document-test-drain ()
+  "Execute the real file queue synchronously without idle timing."
+  (while supertag-async--queue (supertag-async--worker))
+  (should-not supertag-async--failed-items))
+
+(provide 'document-fixture)

@@ -1,0 +1,1760 @@
+* Changelog
+* [Unreleased]
+** Setup wizard retired
+- Removed =supertag-setup= and its private wizard helpers, its autoload, the
+  menu wrapper/entry, and the wizard-specific child-process tests (VAULT-E).
+  Vault management, the config guard, =supertag-setup-all-timers= and the
+  automation template wizard are unchanged.
+- Configure by setting =supertag-sync-directories= before =(require 'supertag)=,
+  then run =supertag-sync-full-rescan= once; see =doc/GETTING-STARTED_CN.md=.
+  =supertag-file-id-source= is optional and not guard-protected.  The config
+  guard still protects the sync directory variables, so they are set before loading.
+** Smooth Node View following
+- Node View follow no longer rebuilds the side pane synchronously inside
+  =post-command-hook= whenever point crosses an Org heading. It coalesces
+  cursor motion and refreshes after a short idle delay instead.
+- Pending follow timers are cancelled when a local follow subscription is
+  cleaned up or auto-show is disabled.
+
+** Reference completion in Org capture
+- Accept file-backed Org capture indirect buffers for =[[= and =【【=
+  reference completion. Replace the candidate with an Org ID link without
+  prematurely saving, synchronizing or creating an ID for the capture source.
+- Capture finalize/abort retains control of the draft. Ordinary file-buffer
+  references keep their existing save-and-project behavior.
+
+** Query and Automation property terminology
+- Renamed =supertag-query-fields= to =supertag-query-properties= and
+  =supertag-view-api-node-field-in-tag= to =supertag-view-api-node-property=
+  (now NODE-ID and PROPERTY-NAME only); no Lisp compatibility aliases.
+- Removed =supertag-query-resolved-fields= and =supertag-query-field-value=;
+  use =supertag-query-node-properties= and =supertag-query-property-value=.
+- Query builders, help and documentation now say property. =(field ...)=
+  remains a permanent query input alias; capture =:field= remains accepted.
+- Repaired the property-change/update-property and property-equals/move-node
+  templates; all nine templates have event-to-effect regression tests.
+- Rule creation rejects unknown triggers and action types, including nested
+  case actions. Property read/write ownership and matching are unchanged.
+
+** Field-value provenance and plain-data agent API
+- Field values can carry a provenance record in the new =:field-provenance=
+  Store collection (node -> field -> plist): =:origin= (=:agent= or
+  =:human=), =:at=, =:model=, =:source-hash= (the node text hash the value was
+  derived from) and =:note=. Values stay scalar in =:field-values=; provenance
+  never changes a value. =supertag-field-set= takes an optional PROVENANCE
+  argument; a writer that passes none drops an earlier record when it changes
+  the value and keeps it otherwise. Added =supertag-field-provenance=,
+  =supertag-field-confirm= (upgrade to =:human=), =supertag-field-stale-p=
+  (agent value whose =:source-hash= no longer matches the node =:hash=);
+  =supertag-field-set-many= accepts =:provenance=. Field removal, node
+  deletion, global-field pruning, transaction rollback, canonical persistence,
+  and conflict resolution cover the sidecar.
+- Node View shows agent-written values with an =⟨AI⟩= badge (=⟨AI · outdated⟩=
+  when stale) and =c= confirms the value at point; Table View marks such cells
+  =⟨AI⟩= / =⟨AI?⟩=. Values edited in Node View, Table View, or Kanban are
+  recorded as =:human=.
+- Added =supertag-api.el=, loaded by =supertag.el=: six plain-data functions
+  for an agent host (=supertag-api-query=, =-node=, =-schema=, =-set-field=,
+  =-link=, =-add-field=), =supertag-api-catalog= declaring each function's
+  effect (=:read= / =:write=) and parameters, and =supertag-api-json=. Writes
+  go through the existing Ops functions, validation, and transactions;
+  =set-field= records agent provenance bound to the node's current hash;
+  =link= creates typed Links only, never document references.
+- Tests: =tests/supertag-field-provenance-test.el=, =tests/supertag-api-test.el=,
+  =tests/supertag-view-provenance-test.el=.
+
+** Runtime verification and fixes
+- Executed every ERT suite under =tests/= on Emacs 31 for the first time
+  (12 suites, 225 tests) and fixed the runtime defects this exposed:
+  =supertag-ontology-model= used a bare =nil= pcase pattern that stopped
+  =(require 'supertag)= on Emacs 31; =supertag-ontology-apply= referenced an
+  undeclared dynamic variable; =supertag-with-transaction= captured a body
+  variable named =result=, so migration =transform-field= wrote =nil= into
+  every field; =:options= values were normalized into lists that
+  =supertag-field-validate= then rejected, and boolean =false= was rejected;
+  =json-parse-string= was called with an invalid =:array-type=.
+- Deployed Ontology Types answer to their declaration key as a Tag alias
+  (=#project= binds to =(type project :label "Project")=) and =type= accepts
+  =:aliases=. Aliases are a diffed SAFE =update-type= slot; user-added aliases
+  are preserved. Field =:type= changes are classified DESTRUCTIVE.
+- Migration preview reports a =:transform-clears-value= warning and a
+  =cleared= count when a transform maps existing values to =nil=, and accepts
+  unregistered normalized migrations in tests.
+- Create-or-link accepts =【【= as well as =[[= through
+  =supertag-reference-shorthand-openers=; an auto-paired closer is consumed.
+- Node View shows Tag display names, wraps Unlinked Mention excerpts like
+  reference cards, and Action proposals show planned values. LLM tool
+  descriptions are joined as sentences (catalog hash changes; tool names and
+  fingerprints do not).
+- Validator reports =:invalid-fields=, =:invalid-aliases=, =:alias-collision=,
+  and =:incompatible-precondition-argument= for =options= parameters.
+
+** Ontology LLM Tool Generation v12
+- Added explicit =:llm-tool t= exposure metadata for deployed Function and
+  Action contracts, with optional stable base name and description. Tool
+  metadata participates in behavioral planning and contract hashes.
+- Added a transient provider-neutral catalog with JSON Schema for subject Type,
+  ordered parameters, defaults, options, lists, nullable values, node
+  references, and sensitive/write-only inputs. No tool registry is persisted.
+- Action tools are generated strictly from the =:llm= Policy decision:
+  =allow= executes, =confirm= requires an out-of-band one-use capability,
+  =propose-only= never executes, and =deny= is omitted.
+- Generated names include Function/Action and Policy contract fingerprints;
+  stale catalogs fail closed after any executable or authorization change.
+- Added typed JSON invocation with distinct missing, =false=, =null=, and empty
+  array semantics; confirmation and execution share the same conversion path.
+- Added read-only catalog UI and provider-neutral JSON export. v12 deliberately
+  includes no provider SDK, network transport, MCP server, or arbitrary =defun=
+  scanning.
+- Added focused ERT source and =tests/run-ontology-tool-tests.sh=; runtime ERT
+  execution remains reported separately when Emacs is unavailable.
+
+** Ontology Policy v11
+- Added one fail-closed Policy per Action with complete actor-class coverage for
+  =interactive-user=, =automation=, =llm=, and =external=.
+- Added the closed decisions =allow=, =deny=, =confirm=, and =propose-only=.
+  Proposal-only actors may inspect a transient Action proposal but cannot be
+  elevated to execution by a confirmation token.
+- Added one-use, expiring, memory-only confirmation capabilities bound to the
+  Action contract, Policy contract, subject, actor, normalized arguments, and
+  exact planned effects.
+- Function, Action, and Policy changes are classified as behavioral and require
+  explicit deployment approval; safe auto-apply no longer deploys executable
+  contracts.
+- Corrected Action atomicity: preconditions/effects are replanned inside the
+  Action-owned transaction, Field/Link Ops notifications are deferred until
+  outer commit, and rollback discards those notifications.
+- Added recursive defensive copying, true missing-vs-nil argument semantics,
+  subject-anchored Link effects, deployment-time Action contract proof,
+  bounded/redacted audit, and isolated post-commit hooks.
+- Added Policy-aware Node View Action rows and =M-x supertag-action-run=.
+- Added focused Policy/Action ERT source and static/package reproducibility
+  checks. Runtime ERT execution remains reported separately when Emacs is not
+  available.
+
+** Ontology Migration DSL v8
+- Added a registration-only =supertag-defmigration= DSL and a read-only planner
+  that requires exact coverage for every destructive live Ontology operation.
+- Migration DSL v1 supports =transform-field=, =detach-field=, and
+  =tighten-link=. Type/global-Field deletion, parent or Link-endpoint changes,
+  optional-to-required Field tightening, and logical/runtime rebinding remain
+  explicitly unsupported rather than hidden behind a force flag.
+- Added stale Schema/data detection, deterministic Link conflict resolvers,
+  target Field normalization, and source-node/relation revalidation immediately
+  before mutation.
+- Migration callbacks run behind a read-only transaction check. Canonical Store
+  writes during Preview are rolled back and reported, and Apply also rejects a
+  plan when either its migration declaration or desired Ontology changed.
+- Data actions, destructive Schema deployment, derived Field-Reference
+  reconciliation, module provenance, and the applied-migration ledger commit in
+  one existing Store transaction. Applied records live in
+  =:ontology-migrations= and follow normal persistence, backup, restore, and
+  sync lifecycles.
+- Split migration responsibilities across model, registry, validator, coverage,
+  Field planner, Link planner, orchestrator, runtime ledger, deployer, and View
+  modules. Existing =supertag-embed= remains the sole Transclusion boundary.
+- Added focused ERT source and =tests/run-ontology-migration-tests.sh=; runtime
+  execution remains reported separately from static/package validation.
+
+** Unlinked Mentions v8
+- Node View now discovers title/alias occurrences in direct source-node content
+  as disposable candidates, without adding a persisted mention collection or a
+  second Backlink database.
+- Added exact single-occurrence linking, source-node-wide linking, and
+  source-owned ignore decisions through =SUPERTAG_IGNORE_MENTIONS=.
+- Existing Org links and literal/code regions are protected; ASCII identifiers
+  use boundaries while Chinese and other non-ASCII terms avoid incorrect ASCII
+  word-boundary assumptions. Longer overlapping terms win deterministically.
+- Added separate service, UI, and View modules plus focused ERT source.
+
+** Contextual Reference Workflow v6
+- Added Roam-like create-or-link completion after an unmatched =[[=. Existing
+  node titles and aliases are completion targets; a new concept is created only
+  through an explicit =[Create new concept]= candidate.
+- Create-or-link writes one canonical physical Org link in the source document
+  and then uses the existing document projector. It does not create reciprocal
+  text or a second Backlink owner.
+- New concepts use a configurable, non-interactive target policy by default.
+  The active vault or matching sync root wins, and a prefix argument keeps an
+  explicit destination chooser available.
+- Node View now renders contextual outgoing References and incoming Backlinks
+  with file/outline location, relation-kind summary, and excerpts derived from
+  existing node content. Multiple relation kinds for one endpoint are grouped
+  into one card.
+- Added =supertag-services-reference.el=, =supertag-ui-reference.el=, and
+  =supertag-view-reference.el= without adding a durable collection or cache.
+- Added focused ERT source and =tests/run-contextual-reference-tests.sh=; the
+  release artifact records separately whether an Emacs process executed it.
+
+** Ontology Links v3
+- Added durable Link Definitions in =:link-definitions=; concrete Link instances
+  remain Semantic Edges in =:relations=.
+- Added Ontology-as-Code =(link ...)= declarations with source/target Semantic
+  Tag constraints, endpoint cardinalities, and an optional reverse display name.
+- Added =supertag-link-create=, =supertag-link-find=, =supertag-link-targets=,
+  =supertag-link-sources=, and =supertag-link-delete=.
+- Link creation validates endpoint types (including subtype membership) and both
+  cardinality directions before mutation. Link Definition identity participates
+  in deterministic Relation identity, so different definitions may connect the
+  same two nodes without collapsing.
+- Structural changes and deletion are blocked when instances would require a
+  migration. Endpoint Tags cannot be deleted while a Link Definition depends on
+  them. Ontology-managed Link Definitions reject interactive structural edits.
+- Stable Semantic Tag ID migration now audits and atomically rewrites Link
+  Definition endpoint Tag IDs together with the rest of the semantic graph.
+- Added focused ERT test source and =tests/run-link-tests.sh=. The release
+  artifact records whether those tests were actually executed.
+
+** Breaking: project renamed from Org-Supertag to Supertag
+- The repository, package entry, feature, current Lisp interfaces,
+  Customization group, and documentation now use =supertag= exclusively.
+- Removed =org-supertag.el=, compatibility aliases, and the old Babel language
+  names. Load the package with =(require 'supertag)= and use
+  =supertag-query-block=.
+- The default data directory is now =~/.emacs.d/supertag/=. It is not moved
+  automatically: startup refuses the retired default path or an ambiguous pair
+  of old/new paths before creating or loading a database.
+- See =doc/MIGRATING-TO-SUPERTAG.md= for the explicit upgrade checklist.
+
+** Data safety
+- New references now write one forward Org link in the source node only.
+  Backlinks in Node/Table views are derived from the relation index; relation
+  and node-reference field operations never insert reciprocal text into target
+  files.
+- Existing ambiguous reciprocal links now have a confirmation-only migration:
+  read-only preview, exact occurrence selection, a second confirmation, adjacent
+  file snapshots, and automatic file/Store restoration on projection failure.
+  Nothing is selected or deleted by default.
+*** Breaking: database format version bump 5.0.0 -> 6.0.0
+- =supertag-data-version= is now =6.0.0=. A review of the git-sync S2
+  canonical (line-per-entity) serialization found its "old versions can
+  read the new format" claim false: a 5.9.x (or earlier) build's loader
+  does exactly one =read= of the database file, so against the
+  line-per-entity format it only ever sees the first line and silently
+  ends up with an empty-looking store -- not a parse error. The format
+  itself is unchanged (still frozen for git merging); this is an honest
+  acknowledgment that reading it requires >= 6.0.0.
+- New one-time snapshot: the first canonical save over a still
+  legacy-format on-disk database is preserved to
+  =backups/supertag-db-preformat6-<timestamp>.el= before the atomic
+  rename, covering the case a stale =:version= alone would miss (format
+  changed on disk without the stored version being out of date). Like
+  =premigrate= snapshots, never touched by daily-backup cleanup.
+- Every canonical save's root line now also carries =:supertag-format= and
+  a plain-language =:incompatible-notice= sentinel, and the format header
+  comment embeds the current data version -- so a raw glance at the file
+  (or an old build's own inspection tooling) has a chance of surfacing
+  what happened instead of an inert, silently-empty plist.
+- =M-x supertag-doctor= now reports the on-disk format (legacy vs.
+  canonical) and counts both snapshot kinds.
+- See README "Data storage" / "Migration from older versions" for the
+  user-facing upgrade/downgrade notes.
+
+** View framework
+- Stream nodes are now grouped under one creation-day heading instead of
+  repeating a timestamp on every row.  Rows remain =title  #tags= summaries
+  with no body, file path, companion index, or underlined buttons.
+- Stream title navigation now preserves natural window scrolling instead of
+  pinning every selected row to the top.  The =e= edit buffer explicitly
+  expands the source title and body; =C-c C-c= confirms the edit and
+  =C-c C-k= restores the pre-edit text and aborts.
+- Source-backed node upserts now preserve an existing =:created-at= value, so
+  editing a Stream node cannot silently move it to the end of creation order.
+- Added =M-x supertag-view-stream=: choose a tag to browse its nodes and all
+  transitive =:extends= descendants as a creation-ordered, single-column title
+  stream.  =n=/=p= navigate, =e= opens the complete source-backed narrowed
+  node, and =v= opens Node View for field changes.  The View Runtime remains
+  unchanged and no dependency or persistence format was added.
+- Progress Dashboard, Effort Distribution, and Priority Matrix now use the
+  same View Runtime as Search, Table, Kanban, Node, and the Widget DSL.
+- The Widget DSL is now a production renderer backend with dynamic render
+  trees, stable keyed selection, native text buttons/links, editable fields,
+  and layout-safe interaction inside columns and cards. The three built-in
+  dashboards now use this backend and no longer keep separate buffer renderer
+  functions. No external package dependency was added.
+- Removed the legacy developer lifecycle (=define-supertag-view=,
+  =supertag-view--with-buffer=, and =supertag-view-render=). Custom views now
+  register with =supertag-view-register= and open through
+  =supertag-view-open=; refresh has one Runtime-only path.
+
+** Bug fixes
+- Tag completion now shows full parent paths such as =diary/happy= in the
+  candidate column, so every row shares the same left edge.  Selecting the
+  display path still inserts and stores the real Tag ID.
+- Fixed inline =#tag= completion waiting for Corfu's generic two-character
+  prefix threshold in normal Org buffers.  Once the leading =#= identifies
+  the Tag CAPF context, existing candidates can now appear immediately
+  without changing the user's global completion threshold.
+- Fixed background sync storing custom Org TODO keywords such as =DOING= in
+  node titles. The shared current-buffer parser now initializes Org before
+  parsing, and =supertag-sync-full-rescan= reparses unchanged files so existing
+  bad =:title=, =:todo=, and =:olp= values can be rebuilt.
+- Fixed recurring =org-element--cache= parser warnings after embed sync. The
+  embed writer now disables stale-cache reads while replacing node content,
+  resets the target buffer's cache even when the write fails, and no longer
+  leaks suppressed modification hooks into global save callbacks or other
+  open Org buffers.
+- Fixed =supertag-sync-validate-nodes= mass-orphaning legacy file nodes that
+  predate persisted identity metadata. Current file nodes are validated by
+  their own link type: Org-ID nodes match the top-level =:ID:= and Denote
+  nodes match =#+IDENTIFIER:=. Legacy nodes without =:link-type= fall back to
+  file existence, while deleted files and missing headings are still
+  orphaned. Identity changes now retire the old file node instead of leaving
+  two nodes pointing at one file.
+- Fixed =Symbol's value as variable is void: --cl-block-...--= errors
+  (seen from the async sync worker when destructive sync is disallowed):
+  eight functions used =cl-return-from= inside a plain =defun=, which
+  lacks the implicit =cl-block= — now =cl-defun=. Affected:
+  =supertag-sync--verify-file-nodes=, =supertag-sync--check-and-sync-legacy=,
+  =supertag-sync--check-and-sync-guarded=, =supertag-sync-full-rescan=,
+  =supertag-field-rename=, =supertag-field-remove=,
+  =supertag-schema--cleanup-inherited-field-associations=, and the
+  =restore-heading-ids= script. A byte-compiled behavioral regression
+  test locks down the guarded sync-worker path.
+- Fixed heading deletion cleanup being lost across restart when the same
+  file also updated another node: deferred cleanup now leaves both the
+  old content hash and mtime intact until destructive sync is allowed.
+- Fixed deferred cleanup becoming permanently stuck after an async worker
+  error: complete snapshots re-enqueue deferred files and rely on the
+  async queue's existing deduplication instead of a stale =:queued= marker.
+- Fixed =test/aggregate-test.el= being unloadable: a stray paren
+  closed =test-aggregate-column-all-functions= early, leaving
+  unbalanced top-level forms. The repaired tests now run in the default
+  suite.
+
+* [5.9.0] - 2026-07-12
+** Data safety (highlights)
+*** Atomic database saves
+- =supertag-save-store= now writes to a same-directory temp file,
+  optionally verifies it re-reads with the expected node count (new
+  option =supertag-db-verify-after-save=, default =t=), then renames
+  over the target. A crash mid-save can no longer truncate the
+  database.
+- Fixed a defun-boundary bug that made the legacy field migration run
+  at load (=require=) time.
+
+*** Multi-instance protection
+- Revision-stamped saves detect newer on-disk database revisions without a session-long advisory lock.
+
+*** Automatic migration on load
+- New option =supertag-db-auto-migrate= (default =t=): out-of-date
+  databases are migrated automatically after load, preceded by a
+  timestamped =supertag-db-premigrate-*= snapshot that daily-backup
+  retention never deletes. Read-only (locked) sessions skip migration.
+- Fixed version-only migrations never being persisted (they re-ran on
+  every load).
+
+*** Health check
+- New command =M-x supertag-doctor=: one-stop report over database
+  files, guards, lock, version, integrity, and backups, with optional
+  guided repairs.
+
+** Discoverability
+- New command =M-x supertag-menu= (transient): all major commands
+  grouped and keyed in one place.
+- New command =M-x supertag-setup=: first-run wizard for sync
+  directories, file-ID source, persistence, and the initial scan.
+- New command =M-x supertag-automation-insert-template=: nine
+  ready-made automation rule templates with guided parameters.
+
+** Query language
+- Dynamic query blocks: =#+BEGIN: supertag-query :query "..."= re-render
+  on =C-c C-c= / =org-dblock-update=. New command
+  =supertag-insert-query-dblock=.
+- Both block forms honor =:sort=, =:order=, =:limit=, =:columns=.
+- New =supertag-query-library=: save/run/insert named queries, a
+  guided query builder (=supertag-query-build=), and
+  =supertag-query-describe-syntax=. Full reference in =doc/QUERY.md=.
+- Implemented =recent-days= / =in-month= / =in-year= operators that
+  older docs advertised but the parser never supported.
+- Fixed absolute dates (=YYYY-MM-DD=) signaling "Invalid time
+  specification" in =after= / =before= / =between=.
+
+** Fixes
+- =cl-return-from= inside plain =defun= in three supertag-ops-tag.el
+  functions signaled void-variable on their early-exit paths.
+- Auto-migration whose save is deferred by a guard no longer re-runs
+  and overwrites its premigrate snapshot on the next load.
+
+** Engineering
+- GitHub Actions CI (Emacs 28.2 / 29.4) running the full ERT suite;
+  tests grew from 81 to 110.
+- All root-level test scratch files moved under =test/=; fixed a bare
+  =test/= .gitignore rule that had kept four suite files untracked.
+- Removed the unused =gptel= dependency and the abandoned =archive/=
+  code; renamed =supertag-test.el= to =supertag-diagnostics.el=.
+- New reproducible performance baseline (=test/perf-benchmark.el=):
+  at 10k nodes the O(N) paths stay well inside interactive budgets.
+
+** Features (from community PRs and pre-release work)
+*** File node reference / backlink support
+- =supertag-add-reference= now accepts file nodes (level-0 nodes
+  representing entire files) as both source and target.
+- When a file node is the source, the forward link duplicate check
+  scans the whole file instead of a subtree.
+- When a file node is the target, the reciprocal backlink is inserted
+  at the marker position (after file metadata, as positioned by
+  =supertag-ui--find-node-marker=).
+- New helper =supertag-ui--find-node-marker= provides unified
+  node locating for both heading and file nodes, replacing scattered
+  =org-id-find= calls.
+
+*** Backlink timestamps
+- New option =supertag-reference-backlink-include-timestamp=.  When set
+  to =t=, creating a reference appends the current time as an inactive
+  Org timestamp to the reciprocal backlink, e.g.
+  =[[id:abc][Title]] [2025-06-22 Sun 16:07]=.  Default is =nil= to
+  preserve existing behavior.
+
+** Fixes
+*** Table view
+- Parent headings now inherit theme-appropriate subdued styling instead of using a hard-coded dark background.
+- Suppress schema fields whose slug is =refs= so the reserved Refs column is not displayed twice.
+
+*** Reference insertion cursor position
+- =supertag-add-reference= now saves the cursor as an Emacs marker
+  instead of a raw integer position. This ensures the forward link is
+  inserted at the original cursor location even when the reciprocal
+  backlink is inserted earlier in the same file, which would otherwise
+  shift subsequent text and leave the saved position stale.
+
+* [5.8.2] - 2026-03-05
+** Fixes
+*** Persistence
+- =supertag-save-store= no longer raises =user-error= when invoked by
+  the auto-save timer with an uninitialized store. Timer-driven calls
+  now log a single =Supertag auto-save skipped: ...= message instead
+  of spamming the echo area whenever the store origin is missing
+  (e.g. after a half-finished initialization). Interactive calls still
+  surface the full guard error.
+- =supertag-sync-full-initialize= now stamps =supertag--store-origin=
+  and triggers an immediate save once the rescan completes, so users
+  who run the full initializer without going through =supertag-init=
+  end up with a persisted database and no recurring timer error.
+
+*** Scheduler
+- The daily scheduler now respects the =:days-of-week= filter that was
+  already accepted by =supertag-scheduler-register-task= but silently
+  ignored at dispatch time.
+- A failing scheduled task no longer aborts the master scheduler tick;
+  the error is logged and the remaining tasks keep running.
+
+*** Automation
+- =supertag-automation-create= now preserves the =:schedule= plist on
+  the stored rule. Previously it was silently dropped, which meant any
+  =:on-schedule= rule was registered with =:time nil= and the scheduler
+  rejected it with "Invalid time format" — so scheduled automations
+  had never actually fired in this release line. Added
+  =test-automation-scheduled.el= as a runnable batch self-check.
+
+*** =#tag= Completion
+- Made the new-tag candidate survive =orderless= enumeration. orderless
+  enumerates the candidate set by calling the CAPF table with
+  =action=t= and =STR=""=, then filters with its own regexp. Our CAPF
+  gated the new-tag candidate on the passed-in =STR= being non-empty,
+  so when orderless asked with =STR=""= the candidate was absent from
+  the enumerated set — orderless could not "reveal" what it never saw,
+  and no user-visible [Create New Tag] entry ever appeared in the
+  popup. This was the root cause behind every "I still don't see it"
+  report. Switched the =action=t= branch to enumerate based on the
+  captured =prefix= (the live user input that triggered the CAPF), so
+  the candidate is always present in the enumerated set and orderless
+  filters from there.
+- Stopped the "[Create New Tag]" popup entry from being silently
+  auto-inserted into the buffer when it is the only surviving
+  candidate. The CAPF table's `try-completion' branch used to return
+  the full labeled candidate string ("PREFIX  [Create New Tag]"), and
+  corfu — especially with `corfu-preview-current' set to `'insert' —
+  treated that as "already complete" and committed the suffix to the
+  buffer (often as the lowercase residue "[Create new tag]") without
+  ever showing the popup. The CAPF now detects when the longest
+  common prefix contains the new-tag marker and returns the user's
+  raw input instead, forcing the popup to appear.
+- `test-completion' branch hardened the same way: a sole new-tag
+  candidate no longer reports the input as "exactly complete", so
+  `completion-at-point' will not skip the popup either.
+- Made the "create new tag" option actually visible in the popup
+  across UI/filter combinations. Two earlier shapes failed:
+  - =[Create New Tag: <name>]= candidate: orderless filtered it out
+    because the leading =[= and trailing =]= did not match user input;
+  - bare =<name>= candidate with metadata =affixation-function=:
+    affixation is not honored by every corfu version / marginalia
+    setup, so users saw no label at all.
+  Switched to a self-labeled candidate: the candidate string itself is
+  =<name>  [Create New Tag]=, carrying =is-new-tag= and =new-tag-name=
+  text properties. Because the candidate starts with the user's
+  prefix, orderless/basic/substring matchers all keep it visible.
+  =post-completion-action= strips the suffix back off the buffer after
+  commit, leaving only the bare tag name.
+- Added =supertag-tag-insert= as a UI-stack-agnostic fallback:
+  =M-x supertag-tag-insert= reads the tag via the minibuffer with
+  completion against existing tags, and a freshly typed name creates
+  the tag immediately. Use when the popup completion misbehaves with
+  exotic corfu/cape/marginalia configurations.
+- Added =supertag-completion-debug= for popup diagnosis. Run it with
+  the cursor right after a =#prefix= to dump bounds, live prefix,
+  raw candidate list, post-filter candidate list, candidate width,
+  and the active capf chain to =*Messages*=.
+- Typing =#newtag= and continuing to write (without explicitly
+  selecting the popup candidate) still records the tag immediately
+  via a buffer-local =post-self-insert-hook=. corfu/company quit
+  their popup silently in that case and never call the CAPF
+  =:exit-function=, so the tag used to be lost until the user
+  re-triggered completion with =C-M-i=. The new hook fires only when
+  the just-inserted character ends a =#tag= context, and skips tags
+  already on the node.
+- Loosened the CAPF =:exit-function= status guard to accept any
+  successful exit code (everything except =unknown=), so default
+  =completion-at-point= paths that report =nil= also commit.
+- Added =test-completion-newtag.el= covering candidate shape,
+  affixation label, the four exit-status paths, the ignored-candidate
+  hook path, the prose-no-tag path, and the duplicate-tag path.
+
+*** Sync
+- =supertag-sync-save-state= now creates its parent directory before
+  writing =sync-state.el=, fixing a =file-missing= error on first-time
+  setup when =~/.emacs.d/org-supertag/= did not yet exist. Users no
+  longer need to create the directory manually before running
+  =supertag-sync-full-initialize=.
+- Demoted the per-file "Skip sync" / "Enqueued external modification"
+  messages to fire only under =supertag-sync-smart-detection-verbose=,
+  reducing echo-area noise during normal editing.
+
+*** =#tag= Completion
+- Reworked inline =#tag= completion: the "create new tag" candidate is
+  now the typed text itself (propertized) instead of a =[Create New
+  Tag]= placeholder. This keeps it visible under corfu/orderless
+  filtering and lets the UI insert the real tag name directly.
+- Completion candidates now track the live input string rather than the
+  prefix captured when completion started, so the new-tag candidate
+  updates as you type under corfu's incremental filtering.
+- =supertag-completion--post-completion-action= no longer rewrites the
+  buffer after insertion (the inserted text is already the real tag
+  name), removing the fragile delete-region/re-insert step.
+
+* [5.8.1] - 2026-03-04
+** Fixes
+*** Board UI
+- Fixed stale tag field values in board cards: Emacs now pushes fresh
+  =board-data= directly to the frontend on any store change, replacing the
+  fragile =store-changed= → =open-board= round-trip that could silently drop
+  refresh signals.
+- Added =supertag-board--current-board-id= to track the open board on the
+  Emacs side; cleared on WebSocket disconnect and board deletion.
+- Removed orphaned =supertag-board-open= autoload from =org-supertag.el=
+  (function was never implemented; caused autoload errors on startup).
+- Replaced Chinese toggle labels ("展开内容" / "收起内容") in board node
+  cards with English ("Expand" / "Collapse").
+
+* [5.8.0] - 2026-03-03
+** Features
+*** Board (Whiteboard) Subsystem
+- Added =ext/board-ui/=: React Flow based whiteboard UI (Next.js).
+  - BoardCanvas, BoardNode, BoardGroup, FloatingEdge components.
+  - NodePalette for drag-and-drop node creation.
+  - EdgeRelationMenu for edge type selection.
+  - Toolbar with zoom/layout controls.
+  - Zustand store for board state management.
+- New =supertag-board.el=: board data model and rendering in Emacs.
+- New =supertag-board-ops.el=: board CRUD operations.
+- New =supertag-graph-ui.el=: graph visualization bridge.
+- Added =:boards= collection to core store schema.
+
+*** Force-Directed Graph Visualization
+- Added =ext/graph-ui/=: org-roam-ui inspired graph visualization frontend.
+  - Force-directed graph layout with d3-force via react-force-graph.
+  - Sidebar with node preview, backlinks, and tag bar.
+  - Tweaks panel: physics, visual, filter, behavior settings.
+  - Theme support (light/dark) with customizable colors.
+  - Tag-based node coloring and filtering.
+  - WebSocket integration for real-time Emacs communication.
+  - Org content rendering via uniorg parser.
+
+*** Semantic Relation Types
+- Added =supertag-relation-type-register= for user-defined semantic relation types.
+
+** Performance
+*** In-Memory Relation Indexes (O(N) → O(1))
+- New =supertag-core-index.el=: secondary hash-table indexes over =:relations= collection.
+  - Two indexes: =from-id → {relation-ids}= and =to-id → {relation-ids}=.
+  - Maintained incrementally on create/update/delete; full rebuild on store load.
+- =supertag-relation-find-by-from=, =supertag-relation-find-by-to=, =supertag-relation-find-between= now O(k) instead of O(N) full-table scans.
+- =supertag-relation-delete-for-node=, =supertag-relation-delete-for-tag=, =supertag-relation-get-database-relations= also accelerated.
+- Benchmark (1000 iterations avg):
+  |  Relations | Scan (μs) | Index (μs) | Speedup |
+  |-----------+-----------+------------+---------|
+  |       500 |        90 |        0.5 |   ~180x |
+  |     5,000 |       720 |        0.7 | ~1,100x |
+  |    20,000 |     2,880 |        0.7 | ~4,000x |
+  |    50,000 |     7,300 |        0.8 | ~10,000x |
+- Index rebuild cost: 0.1ms (500 rels) to 62ms (50k rels), once on load.
+
+** Fixes
+- Fixed grammar error in codebase.
+
+* [5.7.0] - 2026-02-10
+** Features
+*** Virtual Columns & Views
+- Added virtual column runtime and built-in virtual views.
+- Table view now supports virtual columns and force refresh.
+- Core now loads dashboard and view framework modules.
+
+*** Schema / Field Editing
+- Added interactive global-field editor with defaults.
+- Improved schema-view keymap layout and field edit workflows.
+
+*** Automation
+- Added multi-tag predicates and a `move-node` action.
+
+** Fixes
+*** Node / Capture / Relations
+- Guarded node-view field count against nil values.
+- Kept capture `batch-entries` within `let*` scope.
+- Hardened relation lookups against nil entries.
+- Propagated `add-reference` failure reasons.
+- Refreshed node hash when OLP changes.
+
+*** Service Org Safety
+- Hardened node move extraction and safety checks.
+
+** Docs
+- Added view framework and virtual columns guides.
+- Clarified automation `:condition` semantics and quoting.
+- Recorded issue007 resolution commit.
+
+** Chore
+- Ignored/untracked local beads and phrase artifacts.
+- Added agent-relay Gemini snippet lock metadata.
+
+* [5.6.3] - 2026-01-21
+** Improvements
+*** Sync
+- Smart sync detection is now always on; content-hash checks skip unchanged files and prevent accidental database clears from mtime-only touches.
+
+** Docs
+*** Sync
+- Documented smart scan behavior and safety note in README and README_CN.
+
+* [5.6.2] - 2026-01-16
+** Improvements
+*** Persistence / Vault Safety
+- Hardened DB loading with candidate fallback and `read-circle` support; record store-origin metadata for diagnostics.
+- Added safeguards to refuse unsafe saves when runtime persistence configuration appears inconsistent.
+- Added a runtime config guard to prevent manual changes to vault persistence variables; use vault activation APIs for switching.
+
+*** Automation
+- Added trigger matching and opt-in commit-hook integration to avoid double-triggering; improved verbose logging.
+
+*** References / View
+- Added reference field ownership helpers to keep node-reference fields consistent with :reference relations.
+
+** Tests
+*** Persistence
+- Added ERT coverage for load-store fallback and `print-circle` scenarios.
+
+** Docs
+*** Architecture
+- Added an ontology architecture overview (data/logic/behavior) and clarified trigger spelling pitfalls in automation docs.
+
+* [5.6.1] - 2025-12-26
+** Improvements
+*** Sync Integrity
+- Added snapshot guard (availability/completeness) to block destructive sync when directories are unavailable or partial.
+- Deferred orphan verification and GC remember pending files; full rescan now aborts if snapshot is not complete.
+- Bound sync-state to the active data directory (per-vault) and auto-reload on data-dir changes to prevent state mismatch.
+- Added `supertag-sync-snapshot-guard` toggle.
+
+*** View/Fields Resilience
+- Resolve node tags via relations with fallback to node `:tags`, improving field rendering when relations are missing.
+- Node view refreshes on `:field-values` change events.
+- Table view pins a "Refs" node-reference field at the end (auto-created/associated in global-field mode) so references can be edited in-table; it merges `add-reference` relations into display/selection; `C-o` jumps to referenced nodes.
+
+** Bug Fixes
+*** Inline Tag Parsing
+- Broadened inline `#tag` matching to support non-ASCII and slash-containing tags across parsing, capture, and migration.
+
+* [5.6.0] - 2025-12-17
+** Features
+*** View Data API and Plugin System
+- Introduced `supertag-view-api.el` as a unified, UI-agnostic data access layer for all views.
+- Established a formal View Plugin system with comprehensive documentation (`ORG-SUPERTAG-PLUGIN-GUIDE.md`).
+- Added a complete View Plugin demo: `supertag-view-demo-dashboard.el` (Dashboard UI).
+- Added Schema Registry to support custom entity type registration at startup.
+
+** Improvements
+*** Architecture
+- Decoupled `supertag-services-ui.el` and all view modules (`view-table`, `view-node`, `view-kanban`, `view-schema`) to use the new stable Data API.
+- Clarified plugin architecture: View Plugins are now the primary extension point.
+
+* [5.5.0] - 2025-12-17
+** Features
+*** Smart Sync Detection
+- Implemented content-hash based change detection to reduce unnecessary parsing.
+- Sync now only parses files if `mtime` changes AND content hash differs.
+- Added automatic sync state reconciliation when `org-supertag-sync-directories` changes.
+
+** Improvements
+*** Performance & Observability
+- Optimized buffer usage in sync to avoid double-reading files.
+- Added verbose logging (`supertag-sync-smart-detection-verbose`) and decision debugging.
+
+* [5.4.0] - 2025-12-16
+** Features
+*** Queue-Based Sync & Auto-Maintenance
+- Introduced file-level queue system for sync operations (default for full rescan).
+- Implemented configurable automatic database maintenance (validation + GC) triggered by sync ticks.
+
+** Improvements
+*** Safety & Reliability
+- Enabled "Safe Auto Mode" by default for sync.
+- Fixed `supertag-sync-check-state` compatibility with plist-style state entries.
+
+* [5.3.1] - 2025-12-16
+** Features
+*** Extractor Plugin Pipeline
+- Refactored node parsing to use an extensible Extractor Plugin system.
+- Built-in extractors now handle tags, properties, content, and OLP parsing.
+
+** Improvements
+*** Architecture
+- Moved parsing logic into registered extractors to allow future extensibility.
+
+* [5.3.0] - 2025-12-14
+** Features
+*** Property to Field Migration System
+- Added comprehensive Org properties to structured fields migration system
+- Introduced `supertag-migration-add-ids-to-org-headings` command to add :ID: properties to all Org headings
+- Enhanced `supertag-convert-properties-to-field` with automatic tag insertion in Org files
+- Added `supertag-batch-convert-properties-to-fields` for batch property conversion
+- Implemented plist format compatibility for property parsing and storage
+- Added automatic tag insertion in Org headlines during property conversion
+- Improved property collection with format-agnostic parsing (alist/plist support)
+
+*** Code Cleanup and Legacy Removal
+- Removed deprecated `supertag-import-fields-from-properties` and related import functions
+- Cleaned up 300+ lines of obsolete import code from `supertag-service-org.el`
+- Streamlined codebase by removing redundant property import functionality
+
+** Improvements
+*** Enhanced Property Format Compatibility
+- Fixed plist/alist format inconsistencies in property parsing
+- Updated `supertag--parse-properties` to consistently return plist format
+- Improved `supertag-node-hash` with format-agnostic property handling
+- Enhanced automation sync with proper plist-member usage
+
+*** Migration Workflow Optimization
+- Optimized property-to-field conversion workflow for both Org-roam and non-Org-roam users
+- Added intelligent tag insertion that respects Org file structure
+- Improved error handling and user feedback during migration
+- Added comprehensive documentation for migration paths
+
+** Bug Fixes
+*** Fixed Property Conversion Issues
+- Resolved "No org properties found" error in property conversion
+- Fixed plist-member parameter order in automation sync
+- Corrected property format detection in migration functions
+- Fixed tag insertion logic to prevent duplicate tags
+
+** Documentation
+*** Added Migration Documentation
+- Comprehensive English and Chinese documentation for property-to-field migration
+- Step-by-step guides for different user scenarios (with/without Org-roam)
+- Before/after examples showing migration benefits
+- Batch conversion workflow documentation
+
+* [5.2.0] - 2025-12-01
+** Features
+*** Global Field Model: Fields as First-Class Entities
+- Introduced an opt-in global field model guarded by `supertag-use-global-fields`, making fields independent entities instead of being nested under individual tags.
+- Extended the core store (`supertag-core-store.el`) with dedicated collections:
+  - `:field-definitions` – global field definitions keyed by field-id.
+  - `:tag-field-associations` – per-tag ordered lists of associated field-ids.
+  - `:field-values` – node → field-id → value flat storage for all field values.
+- Added `supertag-core-schema.el` as a light-weight schema module:
+  - Provides `supertag-sanitize-field-id` to normalize field ids (name → slug).
+  - Maintains global field caches (`supertag--global-field-cache`) and tag→field-order caches, with `supertag-schema-rebuild-global-field-caches` and `supertag--maybe-rebuild-global-field-caches`.
+
+*** Ops Layer Refactor for Global Fields
+- `supertag-ops-field.el`:
+  - `supertag-field-set` / `supertag-field-set-many` now route to `:field-values` when `supertag-use-global-fields` is non-nil, using sanitized global field ids.
+  - Maintains compatibility with legacy nested `:fields` storage when the flag is off.
+- `supertag-ops-tag.el`:
+  - Tag field definitions now bind to global field ids; associations are stored in `:tag-field-associations` with explicit ordering.
+  - Field CRUD on tags updates both legacy definitions and global associations where appropriate.
+- `supertag-ops-node.el`:
+  - Tag add/remove on a node initializes and prunes corresponding global field value entries in `:field-values`.
+  - Node operations are now aware of global field storage, ensuring tag operations and field values stay consistent.
+
+*** Migration: Legacy Tag-Scoped Fields → Global Fields
+- Extended `supertag-migration.el` with a global field migration pipeline:
+  - Deduplicates per-tag field definitions into global field definitions in `:field-definitions`.
+  - Builds tag↔field association lists (with order) into `:tag-field-associations`.
+  - Rewrites node-level field values from nested `:fields` into flat `:field-values`, with basic conflict handling and idempotent behavior.
+- Added dry-run and stats/reporting helpers to summarize created fields, associations, migrated values, skipped entries, and conflicts.
+
+** Improvements
+*** Automation – Global Field Integration & Field-Centric DSL
+- Unified global field changes with the automation engine:
+  - `supertag-core-store.el` emits `:store-changed` events on `(:field-values node-id field-id)` when global values change.
+  - `supertag-automation.el` passes the full path as metadata into `supertag-automation-sync-handle-event`, allowing sync handlers to recover `(node-id field-id)` reliably.
+  - `supertag-automation-sync.el` consumes commit `:path` metadata and handles `:field-values` events via `supertag-automation-sync--handle-global-field-value-event` / `supertag-automation-sync--process-global-field-change`.
+  - `supertag-field-set` (global branch) explicitly calls into the sync pipeline so UI updates that bypass `supertag-ops-commit` also trigger automation.
+- Extended the automation condition DSL for the global field model:
+  - Added `global-field-equals`, `global-field-changed`, and `global-field-test` so rules can explicitly target global fields.
+  - Updated `field-equals` / `field-changed` to:
+    - Prefer global field storage (via sanitized field ids and `:field-values`) when `supertag-use-global-fields` is non-nil.
+    - Fall back to legacy nested fields when global fields are disabled.
+  - Enhanced `supertag--extract-trigger-sources` and the rule index so both legacy property keys (e.g. `:status`) and normalized global field ids (e.g. `"status"`) are indexed, allowing `:field-values` events to resolve matching rules in O(1).
+- Tests (`dev-note/automation-global-field-tests.el`):
+  - Added coverage for global field conditions (`global-field-equals`, `global-field-changed`, `global-field-test`) and their interaction with `:field-values` events.
+  - Introduced an integration test verifying that both `supertag-store-put-field-value` and `supertag-field-set` fire automation rules correctly when `supertag-use-global-fields` is enabled.
+
+*** Org / Capture / Services Integration with Global Fields
+- `supertag-service-org.el`:
+  - Import/export of Org `:PROPERTIES:` drawers is now aware of global fields:
+    - Maps Org properties to global field ids according to tag associations and global field definitions.
+    - Writes imported values into `:field-values` instead of legacy nested `:fields` when global fields are enabled.
+  - Ensures capture and sync flows treat global fields as the single source of truth for node-level field values.
+- `supertag-services-capture.el`:
+  - Capture templates and capture flows now read/write node fields via global field APIs when the flag is on, removing direct dependency on tag-scoped storage.
+- `supertag-services-query.el`:
+  - Query filters that reference field names are resolved against global field ids and `:field-values` first, with legacy fallbacks only when global fields are disabled.
+
+*** UI & Views – Global Field–Aware Rendering 
+- `supertag-view-table.el`:
+  - Column construction now deduplicates fields using global field slugs when `supertag-use-global-fields` is enabled, preventing duplicate columns when multiple tags share the same global field.
+  - Column keys and exported metadata carry `:field-id` for smooth round-tripping with global field storage.
+  - Cell editing (`supertag-view-table-edit-cell`) sets field values via `supertag-field-set`, which in global mode writes to `:field-values` and triggers automation.
+  - Title column can now optionally render node hierarchy context: the main title on the first line and the direct parent title on the second line using a low-contrast face, while still preserving table alignment.
+  - Org-style links (e.g., `[[id:...][Description]]`) inside title cells are rendered as clickable `Description` labels using the existing org-link rendering helper.
+- `supertag-view-node.el`:
+  - Field rendering and in-place editing (`supertag-view-node--edit-field-value`) now resolve the effective field set using global field associations and read/write via `supertag-field-set` in global mode.
+- `supertag-view-schema.el`:
+  - Schema view reads definitions from `:field-definitions` and tag associations, showing which fields are global and how they are associated to tags.
+  - Adds debugging helpers to inspect raw tag data, legacy field definitions, global field associations, and the resolved schema.
+- `supertag-view-kanban.el`:
+  - Kanban groupings and columns take global field values into account when determining grouping and display, avoiding duplicates from shared fields.
+
+*** Documentation – Global Field Model & Field-Centric Rules
+- Existing global field design/migration docs are complemented by updates to the automation guide:
+  - `doc/AUTOMATION-SYSTEM-GUIDE.md` / `_cn.md`:
+    - Updated the `contact-tier-frequency` example to use `field-changed` instead of the older `property-changed` string form, aligning with the global field DSL.
+    - Added a “Field-Centric Rules (Global Fields)” section explaining how `field-equals` / `field-changed` behave when `supertag-use-global-fields` is enabled, including examples of rules that are driven purely by field changes without tag predicates.
+
+** Migration & Compatibility Notes
+- The global field model is gated by `supertag-use-global-fields` (default `nil`) to avoid breaking existing setups:
+  - When `nil`, behavior stays compatible with the legacy tag-scoped field model and nested `:fields` storage.
+  - When non-nil, all new field operations, UI interactions, and services use `:field-definitions`, `:tag-field-associations`, and `:field-values` as the source of truth, with legacy paths used only for reading or migration.
+- A dedicated migration path in `supertag-migration.el` supports one-shot conversion from tag-scoped fields to the global model; see `GLOBAL-FIELD-MIGRATION-GUIDE.md` for background, ordering, and risk notes.
+
+* [5.1.8] - 2025-11-22
+** Improvements
+*** Reference and Backlink Consistency
+- `supertag-add-reference` no longer blindly inserts a forward `[[id:...]]` link when creating a `:reference` relation. It now scans the current node's entire subtree (including the headline) and only inserts a forward link if none already exists, preventing duplicate forward links when the user has manually added a link.
+- Added `supertag-fix-missing-backlinks` in `scripts/check-reference-integrity.el`, which uses the results of `supertag-check-reference-integrity` to automatically insert missing backlinks under the target node's content region whenever a `:reference` relation exists in the database but the corresponding backlink is absent in the Org file.
+
+* [5.1.7] - 2025-11-18
+** Features
+*** Field Export to Org Properties with Progress UI
+- Added `supertag-export-all-fields-to-properties` command to export all database field values to Org `:PROPERTIES:` drawers for nodes that have fields.
+- Field names are exported as human-friendly Org property keys (e.g. `rate` → `:RATE:`, `who` → `:WHO:`) while keeping the database as the single source of truth.
+- Node-reference fields are exported as readable titles (e.g. director names) instead of raw node IDs, improving interoperability with external tools that only see Org files.
+- The export process shows a minibuffer progress bar and a final summary message, and can optionally save modified buffers when called with a prefix argument.
+
+* [5.1.6] - 2025-11-17
+** Improvements
+*** Org-Capture Integration as a First-Class Capture Path
+- Added a unified finalization API `supertag-capture-finalize-node-at-point` that turns any Org heading into a Supertag node, ensuring a stable `ID`, syncing to the database, and applying tag fields in one place.
+- `supertag-capture-with-template` and the new org-capture integration now both rely on this core API, avoiding duplicated sync logic.
+- Introduced `supertag-org-capture-after-finalize` hook integration:
+  - Templates can opt in with `:supertag t` in `org-capture-templates`.
+  - Optional `:supertag-template` lets org-capture templates pre-fill tag fields using the Tag/Field/Value model.
+
+*** Supertag-Aware Tag Prompt in org-capture
+- New `:supertag-tags-prompt` option for org-capture templates:
+  - After capture finalization, prompts `Supertag tags (comma separated):` with completion from existing Supertag tags.
+  - Supports creating new tags on the fly: names are sanitized and missing tags are automatically created as Tag entities.
+  - Selected tags are written both to the Supertag database and to the Org headline as inline `#tag`, then re-synced in one pass.
+
+*** Movement Workflow: org-capture + Supertag Move
+- Extended `:supertag-move` options to chain capture → finalize → move:
+  - `t` / `node` → run `supertag-move-node` for full file+position selection.
+  - `link` / `:link` → run `supertag-move-node-and-link`, moving the node and leaving a backlink at the original location.
+  - `within-target` / `:within-target` → only select a position within the capture target file, skipping the file prompt for a smoother “in-file re-positioning” flow.
+- This replaces the need to use `org-refile` for Supertag nodes, while staying compatible with org-capture’s templating model.
+
+*** Capture DSL and org-capture Symmetry
+- Clarified the roles of:
+  - `supertag-capture-with-template`: advanced DSL for Supertag-native capture flows.
+  - org-capture integration: lightweight path that reuses existing `org-capture-templates` and adds Supertag-specific post-processing via `:supertag`, `:supertag-template`, `:supertag-tags-prompt`, and `:supertag-move`.
+- Updated `doc/CAPTURE-GUIDE.md` and `doc/CAPTURE-GUIDE_cn.md`:
+  - Org-capture based capture is now documented as a first-class, recommended workflow for existing Org users.
+  - Added concrete examples for `:supertag-template`, `:supertag-tags-prompt`, and `:supertag-move within-target`, and a developer section for the core finalization API.
+
+**** Implementation Notes
+- Files touched: `supertag-services-capture.el`, `supertag-ui-commands.el`, `doc/CAPTURE-GUIDE.md`, `doc/CAPTURE-GUIDE_cn.md`.
+- `supertag-org-capture-after-finalize` now normalizes `:supertag-move` values from quoted and string forms and safely checks for the presence of move commands (`supertag-move-node`, `supertag-move-node-and-link`) before calling them.
+
+* [5.1.5] - 2025-11-15
+** Improvements
+*** Node View ergonomics and safety
+- Auto-focus: When switching to the Node View window, the cursor automatically jumps to the value column of the first Field, reducing extra movement.
+- Keybindings restored: j/k, n/p, and page navigation keys now use their defaults, and no longer force-align to the value column when moving.
+- More robust context detection: Only calls Org API inside Org buffers, avoiding errors like “Point must be at an Org heading.”
+- Docstring corrections: Removed unescaped quotes that could cause void-variable errors, preventing `Point` from being parsed as a variable.
+- Non-destructive cleanup: Rendering no longer incorrectly deletes :node-tag relations; if a tag is unavailable, a “Not found (skipped cleanup)” message is shown instead.
+*** Node/Table View unification and reference management
+- Unified reference creation entry point: `supertag-add-reference`, the `:node-reference` field in Node View, the `:node-reference` field in Table View, and sync-layer `:ref-to` parsing now all use `supertag-relation-add-reference` to create `:reference` relationships and automatically insert/deduplicate backlinks.
+- Shared data layer between Node View and Table View: Added `supertag-view-build-node-state` to construct a node's general view state (fields, references, etc.) for use by different layouts.
+- New `node-detail` layout in View Table: `supertag-view-table--build-node-detail-state` + `supertag-view-table--render-node-detail` now support rendering a single node card view through the table engine.
+- Node View rendering prefers delegating to the View Table’s `node-detail` layout; if View Table is not loaded, safely falls back to a local renderer, achieving the structure where "view-node depends on view-table, and view-table only optionally enhances view-node."
+*** Node reference field display improvements
+- In Node View, `:node-reference` fields now show the referenced node’s title(s) instead of just raw IDs (multiple references are comma-separated).
+- When the node-reference value is empty, shows a gray italic “[Empty]” prompt, consistent with other fields.
+*** References section is more readable and clickable
+- Each line uses text properties to bind RET/mouse click to jump to the corresponding node, implementing reference lists that “look like plain text but act like links.”
+
+** Data Integrity
+*** When cleaning tags, also clear field values (globally consistent)
+- When a node has a tag removed, automatically clears all field values under that tag on the node, preventing “old values” from being revived and re-triggering automations.
+- Changes: Field cleanup is now always done inside `supertag-node-remove-tag`; the `supertag-change-tag-at-point` path also does field cleanup (redundantly but safely).
+
+** Reliability
+*** Fixed recursive require error caused by cyclic dependency
+- Resolved: “Recursive ‘require’ for feature ‘supertag-core-scan’” error:
+  - Removed hard dependency of ops-node on ops-field, replaced with forward declaration, and read field definitions directly from the :tags set.
+  - Before calling field deletion, checks `fboundp` to avoid cycles due to load order.
+
+** Automation
+*** Add-tag insertion location returns to "append at end of line"
+- Automated add-tag actions revert to the original behavior: if the headline does not contain the tag, append ` #tag` to the end of the line and save.
+- Dropped use of view-helper’s "intelligent" insertion location logic to avoid experience differences.
+
+**** Implementation Notes
+- Files touched: `supertag-view-node.el`, `supertag-ops-node.el`, `supertag-ui-commands.el`, `supertag-automation.el`。
+- Added window focus hook: enabled on Emacs versions that support `window-selection-change-functions`, with graceful fallback on others.
+* [5.1.4] - 2025-11-11
+** Improvements
+*** Enhanced Node View with Popup Interface and Evil Mode Support
+- Replaced side-window Node View with a stable popup child frame (posframe) for better focus management
+- Ensured proper cursor visibility and focus control in the popup window
+- Added Evil mode compatibility:
+  - Disabled evil-local-mode in the popup to prevent key conflicts
+  - Forced Emacs state when Evil is present
+  - Set initial state to emacs for consistent behavior
+- Improved editing workflow:
+  - Jump directly to first field's value column on open (not header or last line)
+  - After updating a field, restore cursor to the same field/value with preserved column offset
+  - On cancel (C-g), return focus to popup and restore cursor position
+- Enhanced field targeting with text properties (:type :field-value) for precise cursor placement
+- Added supertag-value-column property to rendered value segments for accurate positioning
+- Implemented fallback behavior: return to buffer start when no fields exist
+
+**** Implementation Details
+- Files modified: supertag-view-node.el, supertag-view-helper.el
+- posframe-show configured with override parameters for cursor visibility and focus acceptance
+- Focus/positioning fixes applied after popup window selection to avoid focus churn
+
+* [5.1.3] - 2025-11-11
+** Improvements
+*** Safe Auto-Start for Sync and Enhanced Data Protection
+- Implemented delayed and retry-based auto-start of sync service
+  - New defcustom: supertag-sync-auto-start (default: t)
+  - New defcustom: supertag-sync-auto-start-initial-delay (default: 3s)
+  - New defcustom: supertag-sync-auto-start-retry-interval (default: 5s)
+  - New defcustom: supertag-sync-auto-start-max-retries (default: 24)
+  - Waits for all org-supertag-sync-directories to exist before starting
+  - Prevents early-start races when directories (cloud drives, mounts) aren't ready yet
+
+*** Enhanced Persistence Protection
+- Added safeguard in supertag-save-store to prevent data loss
+- Skips saving when in-memory node count is 0 AND on-disk DB appears non-trivial (>1KB)
+- Logs protective skip message to alert users of potential issue
+- Prevents accidental overwrite of valuable on-disk data with empty in-memory state
+
+*** Orphan Node Garbage Collection Guardrails
+- New defcustom: supertag-sync-orphan-grace-seconds (default: 3600)
+  - Orphan nodes marked with :orphaned-at timestamp
+  - Only deleted after grace period expires
+  - :orphaned-at cleared when node reappears in a file
+- New defcustom: supertag-sync-max-delete-ratio (default: 0.5)
+  - Limits mass deletions to 50% of total nodes
+- New defcustom: supertag-sync-max-delete-count (default: 1000)
+  - Hard cap on number of nodes deleted in one GC operation
+- Garbage collector aborts with warning when limits exceeded
+
+**** Rationale
+- Prevents transient environment issues (unmounted drives, delayed cloud sync) from causing mass data loss
+- Protects against scenario where early sync misclassifies many nodes as orphans
+- Provides conservative, configurable guardrails for safe automated cleanup
+
+**** Backwards Compatibility
+- Auto-start enabled by default but safe with retry mechanism
+- All GC guardrails are configurable via defcustoms
+- No breaking API changes
+
+* [5.1.2] - 2025-11-02
+** Improvements
+*** Enhanced Tag Inheritance Management and UI Clarity
+- Clarified tag inheritance model: Explicitly defined `org-supertag`'s schematic field inheritance, distinct from Org-mode's structural inheritance.
+- Improved Schema View UI: `supertag-schema--render-tag-node` now visually groups fields by origin (own vs. inherited), making inheritance explicit.
+- Renamed functions for clarity: `supertag-set-child` to `supertag-set-tag-parent` (and `supertag--set-parent` to `supertag--set-tag-parent`) to better reflect tag inheritance management.
+- Simplified Field Editing Workflow:
+  - `supertag-schema--rename-field-at-point`: Prevents renaming inherited fields, guiding users to edit at the source.
+  - `supertag-schema--edit-field-definition-at-point`: For inherited fields, offers "Jump to definition" (via `supertag-schema--goto-tag`). For local fields, retains full editing.
+  - `supertag-schema--delete-at-point`: Prevents deleting inherited fields from child tags, guiding users to delete from the parent.
+  - Added `supertag-schema--goto-tag` helper for jumping to tag definitions.
+
+* [5.1.1] - 2025-09-12
+** Improvements
+*** Enhanced Schema View User Experience
+- Redesigned shortcut system:
+  - Use n/p (and j/k) for up/down navigation
+  - 'a' for "add field"
+  - Capital 'A' for "add new tag"
+  - Added 'q' key for quitting the window
+- Added help documentation:
+  - Added footer at the bottom of the view, clearly listing all available shortcuts and their functions
+  - Implemented using supertag-view-helper-insert-simple-footer function
+- Optimized cursor position:
+  - Modified rendering logic to ensure the cursor automatically positions at the top of the buffer after each view load or refresh
+- Refactored supertag-schema--goto-context function:
+  - Replaced cl-return-from macro with flag-based approach for improved robustness
+  - Eliminated dependency on cl-lib macros
+
+These improvements make the schema view more user-friendly with clear instructions and an Emacs-convention-compliant interface.
+
+* [5.1.0] - 2025-09-11
+** Features
+*** Implement Interactive Schema View for Tag Management
+- Introduce `supertag-schema-view`, a dedicated buffer for visualizing and managing the entire tag hierarchy.
+- The view is fully interactive, allowing direct manipulation of the tag and field schema from a single interface.
+- **Hierarchical Display**: `:extends` relationships are shown as an indented tree for clarity.
+- **Interactive Commands**:
+  - `a`: Add a new top-level tag.
+  - On a tag: `n` (new field), `e` (set extends), `d` (delete tag).
+  - On a field: `r` (rename), `d` (delete), `M-up`/`M-down` (reorder).
+- **UX Enhancements**:
+  - `g`: Intelligent refresh that preserves cursor position.
+  - `j`/`k`/`p`: Standard navigation keys for familiar Emacs-style browsing.
+- The field reordering capability (`M-up`/`M-down`) has also been added to the Node View (`supertag-view-node.el`) for a consistent experience.
+
+* [5.0.0] - 2025-09-06
+** Major Refactor
+*** Complete Architecture Overhaul with Pure Emacs Lisp Implementation
+- *Eliminated Python dependency*: Removed all Python backend components (simtag/) for a pure Elisp implementation
+- *Data-Centric Architecture*: Introduced single source of truth with `supertag--store` hash table
+- *One-Way Data Flow*: Implemented strict Action -> Ops -> Transform -> Store -> Notify pipeline
+- *Performance Improvements*: Reduced codebase by ~53% while enhancing core functionality
+- *Simplified Deployment*: No external dependencies required for core functionality
+
+*** Unified Module Structure
+- *Consolidated Components*: Merged multiple modules into cohesive, single-responsibility files
+- *Eliminated Circular Dependencies*: Clean module hierarchy with clear separation of concerns
+- *Improved Maintainability*: Reduced inter-module coupling and increased cohesion
+
+*** Enhanced Automation System 2.0
+- *Rule Indexing*: Automatic rule indexing for O(1) lookup performance
+- *Multi-Action Support*: Single rules can trigger multiple sequential actions
+- *Scheduled Tasks*: Integrated scheduler for time-based automation
+- *Relationship Rollups*: Automatic calculation and synchronization of related node data
+- *Formula Fields*: Real-time calculated fields in table views
+
+*** New Capture System
+- *Template-Driven Creation*: Flexible node creation with dynamic content generators
+- *Smart Field Filling*: Automatic population of node fields from various sources
+- *Interactive Enrichment*: Post-creation field value addition workflow
+
+*** Query System Enhancement
+- *Query Block Renaming*: S-expression query functionality renamed to "Query-Block"
+- *Improved Syntax*: Enhanced query syntax with better logical combinations
+- *Time-Based Queries*: Advanced temporal query operators
+- *Dynamic Table Output*: Clickable results with field value columns
+
+*** Improved User Experience
+- *Streamlined Interface*: Removed experimental and rarely-used features
+- *Consistent Navigation*: Unified keybindings with C-c s prefix
+- *Better Documentation*: Comprehensive English and Chinese documentation
+
+* [4.6.2] - 2025-08-29
+** Improvements
+*** Added custom setting to enable AI services
+- *Usage*: (setq org-supertag-bridge-enable-ai nil) to disable AI services
+- *Default behavior*: AI services are enabled by default
+
+* [4.6.1] - 2025-08-13
+** Improvements
+*** Simplified user experience by removing overly complex features
+- *Removed auto-tag module*: Eliminated automatic tag generation system to reduce complexity and user distraction
+- *Removed smart-companion module*: Discontinued smart companion functionality to streamline the user interface
+- *Improved focus on core functionality*: These changes allow users to focus on the essential features of Org-SuperTag
+- *Enhanced manual tag management*: Integrated tag suggestions into the node view for better user control
+- *Simplified background processing*: Removed background scanning in favor of on-demand processing for better performance
+
+*** Completely rewrote README documentation to enhance readability
+- *Full documentation rewrite*: Reorganized and rewrote the entire README from scratch
+- *Improved structure*: Better logical flow and organization of information
+- *Enhanced clarity*: More concise and understandable explanations of features
+- *Bilingual consistency*: Ensured both English and Chinese versions are properly synchronized
+- *Better user guidance*: Clearer onboarding process and feature exploration path
+- *Comprehensive query system documentation*: Detailed explanation of the dual-query architecture (Query Blocks vs Query Buffer)
+
+
+* [4.6.0] - 2025-08-06
+** Features
+*** Enhanced Table View with display multi-line text and display images in cell
+- *Display multi-line text*
+- *Display images in cells*
+- *Easy navigation shortcuts*
+* [4.5.0] - 2025-07-31
+** Features
+*** Enhanced Chat Command System with Intelligent Mode Switching
+- *Intelligent Command Mode with Immediate Execution*: Implemented a new command system that allows commands to be executed immediately with parameters while maintaining persistent mode
+  - **Parameterized Command Execution**: `/bs 微软` → switches to bs mode and immediately executes with "微软" as input
+  - **Persistent Command Mode**: Subsequent conversations remain in the selected command mode until user switches back with `/default`
+  - **Flexible Command Usage**: Support both parameterized execution and mode-only switching
+- *Improved Command Parsing*: Enhanced command parsing to support alphanumeric, underscore, and hyphen characters in command names
+- *Enhanced User Interface*: Updated prompt display to show current mode as "User [bs mode]:" for better clarity
+- *Better Command Management*: Sorted command list alphabetically for improved user experience
+- *Simplified Command Selection*: Removed complex completion-at-point mechanism in favor of direct `completing-read` approach
+  - Multiple command selection methods: `C-c /` for direct selection, `/` for smart slash, `C-c C-h` for command help
+  - Disabled company-mode in chat buffer to prevent conflicts
+  - Reduced code complexity by removing ~150 lines of complex completion code
+
+*** Enhanced /define Command with Multiple Format Support
+- *Multiple Format Support*: `/define` command now supports three different formats:
+  - Standard format: `/define name "prompt content"`
+  - Empty prompt format: `/define name`
+  - Double-quoted format: `/define "name" "prompt"`
+- *Syntax Validation*: Added comprehensive validation with helpful error messages
+- *Improved Error Handling*: Clear feedback for syntax errors and usage instructions
+- *Enhanced Debugging*: Added debug information and better command processing logic
+
+* [4.4.0] - 2025-07-30
+** Features
+*** Enhanced Embed Block System with Bidirectional Synchronization
+- *Bidirectional Synchronization*: Implemented complete bidirectional sync between source nodes and embed blocks
+  - **Embed to Source**: Changes in embed blocks automatically sync back to source nodes
+  - **Source to Embed**: Changes in source nodes automatically refresh embed blocks
+  - **Smart Content Merging**: Preserves source node structure (PROPERTIES, ID) while updating content
+- *Automatic Synchronization*: Added `after-save-hook` integration for seamless auto-sync
+  - Automatically detects changes in both embed blocks and source files
+  - Prioritizes embed-to-source sync to prevent conflicts
+  - Provides detailed feedback messages for sync operations
+
+* [4.3.0] - 2025-07-28
+** Features 
+*** Enhanced S-expression Query Engine with Dynamic Table Output
+- **Dynamic Table Output for S-expression Queries**: The `org-babel-execute:org-supertag-query` function now generates dynamic Org tables with clickable node links, associated tags, and dynamically added columns for fields specified in the query.
+- **New Time-based Query Operators**: Introduced `(before "DATE")`, `(after "DATE")`, and `(between "START_DATE" "END_DATE")` operators for filtering nodes based on creation timestamps.
+- **Relative Date Support**: Date arguments now support both absolute dates ("YYYY-MM-DD") and relative dates ("-7d", "+1m", "now") for flexible time-based queries.
+- **Improved Field Querying**: The `field` operator (`(field "FIELD_NAME" "VALUE")`) has been thoroughly debugged and refactored to correctly retrieve nodes based on field name and value, with deep integration into `org-supertag-db.el`'s link storage mechanism.
+- **Enhanced Interactive Query Context**: The `org-supertag-query-find-nodes` function now provides more intelligent context snippets. When keywords match field names or values, the context displays `Field [FIELD_NAME]: FIELD_VALUE`, prioritizing relevant field information over general content snippets.
+- **New Interactive Command**: Added `M-x org-supertag-insert-query-block` to quickly insert a pre-formatted `org-supertag-query` babel block at point, prompting the user for the S-expression.
+- **Query History and Reusability**: Query history is automatically saved and can be reused, with frequently used queries prioritized in the history. Supports both keyword-based and S-expression queries in the same interface.
+
+**** Query Operators Supported
+- **Tag queries**: `(tag "TAG_NAME")` - Find nodes with specific tags
+- **Field queries**: `(field "FIELD_NAME" "VALUE")` - Find nodes with specific field values  
+- **Logical operators**: 
+  - `(and QUERY1 QUERY2)` - Both conditions must be true
+  - `(or QUERY1 QUERY2)` - Either condition can be true
+  - `(not QUERY)` - Exclude nodes matching the query
+- **Time-based queries**:
+  - `(after "DATE")` - Nodes created after the specified date
+  - `(before "DATE")` - Nodes created before the specified date
+  - `(between "START_DATE" "END_DATE")` - Nodes created between two dates
+  - Date formats support absolute dates ("2024-01-01") and relative dates ("-7d", "+1m", "now")
+
+* [4.2.0] - 2025-07-27
+** Features
+*** Implement tag field extension (inheritance)
+  - *Tag Extension*: Tags can now extend other tags, automatically inheriting their field definitions. Child tag fields override parent fields.
+
+* [4.1.0] - 2025-07-26
+** Improvements
+*** Implement card-based layout with structured three-line format
+** Fix
+*** Fix node navigation by implementing robust real-time location lookup
+* [4.0.0] - 2025-07-21
+** New Features
+*** AI Chat Service
+- Users can open AI Chat interface with M-x org-supertag-view-chat
+  - Input content after * User: and press RET to send message directly
+  - Provides RAG system's Context content during conversation, clicking expands to jump to source content
+- Supports /commands command system similar to Claude Code
+  - Type / and command name to invoke commands
+  - Use /define command to define new commands
+    - Syntax: /define <command-name> "Prompt", e.g. /define branstrom "Help me brainstorm this topic"
+    - Supports recognition of $INPUT variable in Prompt
+- Supports multilingual conversation, provides ~org-supertag-view-chat-lang~ custom option
+  - Can directly set English, Chinese, Japanese, Korean, French, German, Italian, Portuguese, Russian
+
+*** RAG Service: org-supertag now functions as RAG service for smarter tag recommendation and search
+- RAG service automatically checks database changes and incrementally updates to SQLite-vss database
+- Users can M-x org-supertag-background-run-now to manually run RAG synchronization
+- RAG provides accurate information retrieval for LLM in background
+
+*** Tags: New auto-tag recommendation feature
+- LLM will automatically generate tag suggestions for nodes without tags in the backend
+- Provides unified interface for applying tag recommendations
+
+*** Smart Partner: New smart partner functionality
+- Smart Partner automatically generates tag suggestions for nodes without tags
+- Provides unified interface for applying tag recommendations
+
+*** Scheduled Tasks: Used to manage background services
+
+** Refactors
+*** EPC: Completely refactored EPC server backend
+- Less code with cleaner structure
+
+*** Relationships: "Co-occurrence relationships" of tags no longer stored in separate files, but unified with other relationship types in LINK data objects
+
+*** Relationships: Redesigned *Org Supertag Relation Management* interface
+- No longer supports Find by Groups, Isolate Tag, etc. to focus functions
+
+*** Completion: Removed direct support for Company, now uses Emacs' built-in completion-at-point function
+- Works seamlessly regardless of whether user uses Company or Corfu
+
+*** Tags: Removed original "preset tag" mechanism
+
+*** Tags: No longer supports org-mode's traditional TAGS, only supports custom #inline-tag
+- Not restricted by org-mode's character limitations for TAGS input
+- Can use #inline-tag anywhere
+
+*** Properties: Removed direct modification of org-mode PROPERTIES
+- Users can now open node management interface with M-x org-supertag-view-node to modify Fields, data will be directly saved to database
+- org-supertag-tag-set-field-and-value is no longer available
+
+*** Behavior System: Extracted scheduling functionality into separate timer task component (org-supertag-scheduler.el) to support other org-supertag services
+
+** Removed
+*** Removed org-supertag-backlink.el
+- Related functionality has been integrated into org-supertag-view-node
+- Its provided commands are no longer available
+
+* [3.0.5] - 2025-06-25
+** Features
+*** Decouple metadata and adopt a database-first architecture
+- Fields are no longer synchronized with the Org :PROPERTIES: drawer. All field data is now read from and written directly to the database.
+- Support for headline :TAGS: has been completely removed. The system now exclusively uses org-supertag's inline-tag format for visual representation in files, while the actual tag relationships are managed solely by the database.
+- This view is now the central and sole interface for viewing and editing all metadata associated with a node. Users can modify field values directly within this view, creating a closed loop for data manipulation.
+- The :tag field type has been significantly upgraded to natively support one or more tag values (e.g., a movie with multiple directors). The UI accepts comma-separated input and formats the display cleanly (e.g., TagA / TagB / TagC).
+- The legacy List and Range field types have been deprecated to streamline the data model and reduce complexity.
+
+* [3.0.4] - 2025-05-30
+** Bug Fixes
+*** Fixed database cleanup path matching issues
+- Fixed path normalization in database cleanup to prevent aggressive node removal
+- Normalized all file paths to absolute paths using `expand-file-name` for accurate comparison
+- Created separate `sync-files` hash table to ensure precise path matching
+- Ensured only nodes from files truly not in sync state are removed
+- Prevented accidental removal of nodes from files still in sync scope
+- Improved logging and debugging information for path comparison process
+
+* [3.0.3] - 2025-05-30
+** Improvements
+*** Improved sync scope management with automatic node cleanup
+- Added automatic removal of nodes from files outside sync scope
+- Enhanced sync state management to maintain database consistency
+- Improved periodic sync to handle out-of-scope file cleanup
+- Added detailed logging for sync scope changes and node removal
+- Ensured proper cleanup when modifying sync directories
+
+* [3.0.2] - 2025-05-24
+** Improvements
+*** Enhanced synchronization stability with comprehensive data protection
+- Added preservation and restoration of non-node entities during sync operations
+- Enhanced protection for field definitions, tag relations, and link data
+- Improved `org-supertag-sync-force-all` to preserve all critical data structures
+- Strengthened `org-supertag-sync-all-nodes` with comprehensive data backup
+- Ensured database consistency during intensive sync operations
+
+*** Fixed tag vector database update mechanism
+- Resolved issues with tag_vector library updates
+- Improved vector database synchronization reliability
+- Enhanced tag similarity computation stability
+
+*** Fixed AI auto-tagging system freezing issues
+- Resolved `org-supertag-sim-auto-tag-node` causing Emacs to freeze
+- Added comprehensive timeout protection for all AI operations
+- Replaced blocking EPC calls with asynchronous implementations
+- Added initialization state validation to prevent infinite loops
+- Enhanced error handling with automatic recovery mechanisms
+
+** Features
+*** Added comprehensive database recovery system
+- Introduced `org-supertag-recovery` methods for database restoration
+- Provided automated recovery workflows for corrupted data
+- Added diagnostic tools for database integrity checking
+- Enhanced backup and restore capabilities
+
+*** Added AI system diagnostic and emergency tools
+- Added `org-supertag-sim-diagnose` for comprehensive system health checking
+- Added `org-supertag-sim-emergency-reset` for complete system recovery
+- Added `org-supertag-sim-safe-auto-tag-node` as a safer alternative to auto-tagging
+- Provided detailed troubleshooting guidance and emergency commands
+
+** Maintenance
+*** Codebase cleanup and organization
+- Removed deprecated protection scope checking utilities
+- Removed redundant recovery process files
+- Updated `.gitignore` to exclude development directory
+- Streamlined codebase for better maintainability
+
+* [3.0.1] - 2025-04-26
+** Features
+*** Add Backlink panel for node references
+- Add ~org-supertag-backlink-show~ command to display node references
+- Show both referenced and referencing nodes
+- Display node content with proper formatting
+- Support keyboard navigation and node viewing
+
+* [3.0.0] - 2025-04-05
+** Features
+*** Add AI backend for tag auto suggestion
+*** Add Bidirectional tag relation management
+*** Add Table View
+
+*** Refactor sync-mechanism
+* [2.5.3] - 2025-03-11
+** Features
+*** Enhanced multi-column view with relation-based tag management
+- Added ~org-supertag-view-add-related-tag-to-column~ for adding related tags to existing columns
+- Improved tag relation integration in column view:
+  - Select source column and relation group
+  - Choose from available related tags
+  - Add selected tag to existing column
+- Enhanced user interface with clear feedback messages
+- Added comprehensive error handling for edge cases
+
+** Improvements
+*** Better user interaction in multi-column view
+- Clearer operation instructions and feedback
+- Improved error messages and edge case handling
+- Better integration with tag relation system
+
+* [2.5.2] - 2025-03-10
+** Features
+*** Improved inline tag support with enhanced visual styling
+- Improved inline tag fontification with adaptive theming
+- Enhanced tag appearance with slight elevation and proper spacing
+- Fixed compatibility issues with font-lock implementation
+- Optimized tag recognition in various contexts
+- Improved tag insertion with better completion support
+- Added support for hiding # prefix symbol with customizable option
+
+The inline tag system now provides:
+- More reliable tag highlighting in all contexts
+- Better visual distinction between tags and regular text
+- Smoother integration with org-mode's native styling
+- Improved performance for documents with many tags
+
+*** Added comprehensive customization options for inline tags
+New variables for complete control over tag appearance:
+- `org-supertag-inline-enable-fontification`: Toggle tag highlighting
+- `org-supertag-inline-light-theme-colors`: Color settings for light themes
+- `org-supertag-inline-dark-theme-colors`: Color settings for dark themes
+- `org-supertag-inline-text-properties`: Control font size, weight, and spacing
+- `org-supertag-inline-tag-regexp`: Customize pattern for matching tags
+- `org-supertag-inline-hide-hash`: Option to hide/show the # prefix
+- `org-supertag-inline-excluded-contexts`: Control where tags are highlighted
+
+These customization options allow users to tailor the appearance of inline tags 
+to match their preferences and theme setup, ensuring optimal readability
+and visual harmony with the rest of their document.
+
+* [2.5.1] - 2025-03-03
+** Bug Fixes
+*** Fix org-supertag-tag-delete-at-all to ensure complete cleanup
+- Replace org-supertag-db-remove-object with direct remhash for reliable deletion
+- Add comprehensive cleanup of all tag-related database entries
+- Implement proper cleanup sequence for tag removal
+- Add debug logging for deletion process tracking
+*** Fix org-supertag-tag-set-field-and-value for not working
+
+* [2.5.0] - 2024-03-03
+** Features
+*** (org-supertag-inline.el) Add inline tag support for content tagging 
+- Enable users to tag specific content within org nodes using #hashtag style
+- Seamlessly insert tags in text with ~C-c t i~:
+  - Choose from existing tags through completion
+  - Create new tags on the fly by adding '#' suffix
+  - Quick access to preset tags marked with [P]
+- Tags in content maintain proper spacing for readability
+- Tags automatically link to current node without cluttering headlines
+- Natural writing flow with minimal disruption:
+  "Meeting with Owen who is my #friend about the #project"
+
+This feature allows for more granular content organization while maintaining
+a clean document structure. Users can now tag specific parts of their notes
+without adding tags to headlines, making the tagging system more flexible
+and context-aware.
+
+
+
+* [2.4.0] - 2025-03-02
+** Featuresf
+*** org-supertag-view-discovery: Discover and explore your tags naturally
+Introducing Tag Discovery View - a new way to explore and understand your tag ecosystem:
+
+- Start from any tag and discover related content:
+  "Starting with #project, what other tags frequently appear with it?"
+- See the bigger picture of your tag usage:
+  - How many notes use this combination of tags?
+  - Which tags often appear together?
+  - What are the relationships between different tags?
+- Build your tag filters progressively:
+  - Add more tags to narrow down your focus
+  - Remove tags to broaden your view
+  - Reset and start a new exploration path
+- Preview and access content directly:
+  - See matching notes with their titles and status
+  - View complete note content with a single click
+  - Understand tag relationships in context
+- Smooth keyboard-driven operation:
+  - ~a~ - Add tag to filter
+  - ~d~ - Remove tag from filter
+  - ~r~ - Reset all filters
+  - ~v~ - View selected node
+  - ~m~ - Manage tag relations
+  - ~g~ - Refresh view
+  - ~q~ - Quit
+
+*** org-supertag-view-column: Compare and analyze with Multi-column Tag View
+A powerful new way to analyze your tagged content side by side:
+
+- Compare different tag combinations simultaneously:
+  "Show me all #project tasks alongside #urgent items and #delegated work"
+- Build your analysis view flexibly:
+  - Start with any tag combination
+  - Add new columns for different perspectives
+  - Add related tags based on actual usage patterns
+  - Remove columns you don't need anymore
+- See your content from multiple angles:
+  - Compare todo states across different tag combinations
+  - Track related items across different categories
+  - Identify patterns and relationships in your notes
+- Stay in control with keyboard shortcuts:
+  - ~a~ - Add a new column
+  - ~A~ - Add a column with related tag
+  - ~t~ - Add tag to current column
+  - ~T~ - Add related tag to column
+  - ~d~ - Remove unwanted column
+  - ~r~ - Start fresh
+  - ~v~ - View node details
+  - ~m~ - Manage tag relations
+  - ~q~ - Quit
+
+These new views work together to help you:
+- Understand how your tags are connected
+- Find relevant content more efficiently
+- Discover patterns in your note organization
+- Make better decisions about tag usage
+
+
+** Change
+*** Original `org-supertag-view-tag` chang to `org-supertag-view-tag-only`
+
+* [2.3.0] - 2025-03-01
+** Features
+*** Add tag relationship management module (org-supertag-relation.el)
+- Implement sophisticated tag relationship system with symbolic representation
+  - Add 10 relationship types with intuitive symbols (A ⊃ B, A → B, A ⋈ B, etc.)
+  - Support relationship categories: hierarchical, causal, associative, co-occurrence
+- Enable automatic discovery of relationships based on usage patterns
+  - Statistical analysis of tag co-occurrences with strength metrics
+  - Real-time incremental updates when tags are added/removed
+- Provide intelligent tag recommendations based on contextual relevance
+- Create dedicated management interface for visualizing and editing relationships
+- Support customizable relation groups for organizing related tags
+- Add relationship strength thresholds to filter insignificant relationships
+
+* [2.2.13] - 2025-02-18
+** Bug Fixes
+*** Fix node movement failing due to missing file path
+- Fixed node sync to properly save file path information
+- Added comprehensive debug logging for node operations
+- Improved error handling in node movement process
+- Enhanced node property validation before movement
+* [2.2.12] - 2024-02-16
+** Features
+*** Enhanced reference creation with duplicate detection
+- Added smart node reference creation that checks for existing nodes
+- Reuses existing nodes when title matches exactly
+- Prevents duplicate node creation for same content
+- Improves reference management efficiency
+** Bug Fixes
+*** Fix field edit mode keymap and key bindings
+- Fixed keymap initialization in org-supertag-field-edit-mode
+- Simplified mode definition by removing unnecessary syntax-table
+- Fixed key bindings for field editing operations (e, d)
+- Improved error handling in field operations
+
+* [2.2.11] - 2024-02-12
+** Features
+*** Enhanced org-supertag-view with field value display
+- Added field value support in tag view table
+- Implemented case-insensitive field name matching
+- Added comprehensive field value lookup
+- Display field values in dedicated columns
+- Improved table formatting for better readability
+
+* [2.2.10] - 2024-02-03
+** Fix
+**** Fix tag company completion not working in heading
+**** Fix field edit mode not working
+
+* [2.2.9] - 2024-02-03
+** Features
+*** Added
+- New component: org-supertag-view.el
+  - Provides visualization system for tag content
+  - Smart command ~org-supertag-view-tag~ that:
+    - Shows tag content directly when cursor is on a tag
+    - Offers tag completion when not on a tag
+  - Table-based view showing:
+    - Node titles
+    - Node types
+    - Creation dates
+
+* [2.2.8] - 2024-02-03
+** Bug Fixes
+*** Fix tag deletion to ensure complete cleanup
+- Replace org-supertag-db-remove-object with direct remhash for reliable deletion
+- Add comprehensive cleanup of all tag-related database entries
+- Implement proper cleanup sequence for tag removal
+- Add debug logging for deletion process tracking
+- Add org-supertag-after-tag-delete-hook for post-deletion customization
+
+* [2.2.7] - 2025-02-02
+** Features
+*** Improve node movement(org-supertag-node-move-node) with outline path display
+- Show complete outline structure when moving nodes
+- Display paths in "filename / outline-path / title" format
+- Improve target location selection with clear hierarchy view
+- Keep existing insertion options (file start/end, under/same level)
+
+* [2.2.6] - 2024-1-31
+** Features
+*** Add comprehensive node finding system
+- Add ~org-supertag-node-find~ command for interactive node finding
+- Add ~org-supertag-node-find-other-window~ for other window display
+- Show complete node path in format "filename / outline-path / title"
+- Add robust error handling for missing metadata
+- Sort results alphabetically for easier navigation
+- Improve node visibility with automatic expansion
+
+* [2.2.5] - 2024-1-30
+** Features
+*** Add company-mode completion for supertags
+
+This commit adds interactive tag completion using company-mode:
+- Add company backend for supertag completion
+- Trigger completion with '#' prefix
+- Integrate with existing tag management system
+- Simplify implementation by reusing org-supertag-tag-add-tag
+- Add tag deletion functionality (org-supertag-tag-delete)
+
+The completion system provides a smoother user experience for adding
+supertags to org headlines, with proper tag formatting and handling
+of preset tags.
+
+* [2.2.4] - 2024-1-29
+** Refactor
+**** Change field type tag-reference to direct node reference
+
+BREAKING CHANGE: Completely redesign the tag-reference field type to 
+reference nodes directly instead of referencing other tag's field values.
+
+Before:
+- tag-reference pointed to another tag's field value
+- Used for value inheritance between different tags
+
+After:
+- tag-reference now directly points to org nodes
+- Uses org-mode's link format ([[id:NODE-ID][TITLE]])
+- Enables direct node relationships
+
+Changes:
+1. Rewritten org-supertag-field--convert-value to handle org-mode link format
+2. Modified org-supertag-validate-tag-reference to validate node existence
+3. Added node title lookup for better link display
+
+Note: This is a breaking change. Existing tag-reference fields will need 
+to be migrated to the new format.
+
+
+* [2.2.3] - 2025-01-28
+** Features
+**** Improve field type selection and display
+- Add help message showing available field types with descriptions
+- Use all field types from org-supertag-field-types instead of hardcoded list
+- Format field display with fixed-width alignment for better readability
+- Clean up help buffer after type selection
+- Improve field editing interface with consistent formatting
+
+* [2.2.2] - 2025-01-26
+** Bug Fixes
+**** Fix node movement and link creation
+- Completely replace original heading with link reference
+- Remove redundant title text in reference link
+- Maintain proper heading level and spacing
+- Ensure link insertion starts at beginning of line
+- Add proper error handling for nil values
+- Update documentation for modified behavior
+
+* [2.2.1] - 2025-01-26
+** Refactor: Improve query history handling and fix node navigation
+
+- Fix history saving for multi-keyword queries
+- Store complete search queries in history
+- Fix recenter error in node navigation
+- Improve error handling in node lookup
+- Add proper return values for navigation functions
+- Update documentation for modified functions
+
+
+* [2.2.0] - 2025-01-25
+** Features
+**** Add automatic node creation for org headlines
+- Add ~org-supertag-sync-auto-create-node~ to control auto creation
+- Add ~org-supertag-sync-node-creation-level~ for minimum level
+- Modify ~org-supertag-db-update-buffer~ to handle auto creation
+- Update ~org-supertag-sync--process-node~ for auto conversion
+
+This change enables automatic conversion of org headlines to nodes
+during synchronization, making node creation more seamless while
+maintaining control through customization options.
+
+**** Add directory scope control for synchronization
+- Add org-supertag-sync-directories for monitored directories
+- Add org-supertag-sync-exclude-directories for excluded paths
+- Add org-supertag-sync-file-pattern for file matching
+- Add helper functions for directory management:
+  - ~org-supertag-sync-add-directory~
+  - ~org-supertag-sync-remove-directory~
+  - ~org-supertag-sync-list-directories~
+
+*** Improve 
+**** File organization
+- Move org-supertag-sync-state.el to org-supertag-data-directory
+  - Add directory existence check in org-supertag-sync-init
+  - Keep data files organized under ~/.emacs.d/org-supertag/
+
+*** Bug Fixes
+**** Fix node movement reference format
+- Now completely replaces original heading with link reference
+- Removes redundant title text in reference link
+- Maintains proper heading level and spacing
+
+
+* [2.1.0] - 2025-01-18
+
+** Features
+*** Node: Enhanced node movement functionality
+**** Added interactive node movement command
+- Added ~org-supertag-node-move-node~ for direct node movement
+- Support comprehensive insertion positions:
+  - File start (after org-mode header)
+  - File end
+  - Under selected heading
+  - Same level as selected heading
+- Added clear error messages and operation feedback
+**** Added file start position support
+- Added helper function to locate content start after org-mode header
+- Added "File Start" option for node movement and export operations
+- Improved file header preservation during node operations
+- Better integration with existing query and export features
+
+* [2.0.0] - 2025-01-13
+
+** Features
+*** Behavior: Added schedule trigger and deadline management system
+**** Implemented cron-style scheduling for behaviors
+- Format: "minute hour day month weekday"
+- Examples:
+  - "0 9 * * 1-5" (weekdays at 9:00)
+  - "30 * * * *" (every hour at :30)
+  - "0 0 1 * *" (first day of each month)
+**** Added native org-mode timestamp integration
+- Support for SCHEDULED and DEADLINE timestamps
+- Support for absolute timestamps (<2024-03-20 Wed>)
+- Support for relative time expressions (now+2h, now-1d)
+- Support for property-based timing (${prop:DEADLINE}-2h)
+**** Added deadline check behavior (@deadline-check)
+**** Added derived behaviors for deadline management:
+- @overdue-urgent: Set high priority for overdue tasks
+- @upcoming-deadline: Mark tasks due in next 3 days
+- @overdue-archive: Archive overdue completed tasks
+
+*** Field: Enhanced timestamp handling
+- Improved org-mode timestamp format support
+- Date fields now use active timestamps (<...>) for agenda visibility
+- Timestamp fields use inactive timestamps ([...]) for historical records
+- Added automatic format conversion between different timestamp styles
+
+*** Behavior Template: Added template variable system for behaviors
+**** Added support for dynamic variable expansion
+- ${input:prompt} for user input
+- ${date:format} for date operations
+- ${prop:name} for property access
+- ${context:key} for shared data
+**** Added conditional execution with {if:condition}
+**** Added relative date calculations (now+1d, now-1w)
+**** Added simple context object for data sharing
+
+*** Node Management: Added new node operations
+- Added ~org-supertag-move-node-and-link~ command for node relocation with reference
+- Added ~org-supertag-delete-node~ command for complete node cleanup
+- Added flexible node movement behaviors
+- Support for keeping links at original location
+- Interactive target selection
+
+*** Sync: Added automatic synchronization system
+- Added file state tracking
+- Added buffer modification monitoring
+- Added automatic sync with conflict detection
+- Added state persistence and error recovery
+- Added node-level conflict analysis command
+- Added file analysis tools for debugging sync issues
+
+*** Query: Enhanced query system
+- Added cursor-based node insertion in query buffer
+- Added history support for query keywords
+- Added customizable history size
+- Preserved last used keywords
+
+*** Reference: Improved reference system
+- Added reference type tracking (ref-from)
+- Added reference count tracking
+
+*** Tag: Added improved tag change functionality
+
+*** Performance: Added asynchronous face refresh mechanism
+
+** Bug Fixes
+*** Fixed tag prefix matching issues (#9)
+- Improved tag completion with custom completion function
+- Added TAB completion support
+*** Fixed field type options insertion
+*** Fixed behavior system event handling
+*** Improved error handling in node operations
+*** Enhanced synchronization stability
+
+** Refactoring
+*** Query: Rewritten query results display using ewoc for better performance
+*** Query: Implemented query buffer reuse for cursor insertion
+*** Behavior: Improved behavior system architecture with detach support
+*** Sync: Enhanced file synchronization architecture
+
+** Internal Changes
+- Added scheduler system with task management
+- Added robust file synchronization mechanism
+- Optimized reference handling with better metadata tracking
+- Optimized query result caching
+- Improved node deletion with comprehensive cleanup
+- Enhanced query system with history management
+- Improved code organization and modularity
+- Enhanced documentation and examples

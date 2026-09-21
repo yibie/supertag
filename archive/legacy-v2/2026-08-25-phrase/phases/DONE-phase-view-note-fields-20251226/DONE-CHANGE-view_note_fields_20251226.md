@@ -1,0 +1,38 @@
+# change_view_note_fields_20251226
+
+- 2025-12-26 Add  
+  - Files:  
+    - `.phrase/phases/phase-view-note-fields-20251226/spec_view_note_fields_20251226.md`  
+    - `.phrase/phases/phase-view-note-fields-20251226/plan_view_note_fields_20251226.md`  
+    - `.phrase/phases/phase-view-note-fields-20251226/task_view_note_fields_20251226.md`  
+    - `.phrase/phases/phase-view-note-fields-20251226/change_view_note_fields_20251226.md`  
+    - `.phrase/phases/phase-view-note-fields-20251226/issue_view_note_fields_20251226.md`  
+  - Reason: 为 view note 字段展示问题建立独立 phase 与 issue 跟踪  
+  - Related: `task001` (task_view_note_fields_20251226)
+- 2025-12-26 Modify  
+  - Files:  
+    - `supertag-services-ui.el`  
+    - `supertag-view-node.el`  
+    - `.phrase/phases/phase-view-note-fields-20251226/issue_view_note_fields_20251226.md`  
+    - `.phrase/phases/phase-view-note-fields-20251226/task_view_note_fields_20251226.md`  
+  - Changes:  
+    - 统一 node view 的 tag 解析：优先 relations，缺失时回退到 node `:tags`；  
+    - `store-changed` 监听覆盖 `:field-values`，确保全局字段变更触发刷新；  
+    - 在 issue 中补充“缓存不一致不会自动导致字段丢失”的结论与依据；  
+    - 更新任务状态。  
+  - Related: `task002`, `task003` (task_view_note_fields_20251226)
+- 2025-12-26 Modify  
+  - Files:  
+    - `supertag-services-sync.el`  
+    - `supertag-core-transform.el`  
+    - `supertag-services-capture.el`  
+    - `supertag-migration.el`  
+    - `.phrase/phases/phase-view-note-fields-20251226/spec_view_note_fields_20251226.md`  
+    - `.phrase/phases/phase-view-note-fields-20251226/plan_view_note_fields_20251226.md`  
+    - `.phrase/phases/phase-view-note-fields-20251226/task_view_note_fields_20251226.md`  
+    - `.phrase/phases/phase-view-note-fields-20251226/issue_view_note_fields_20251226.md`  
+  - Changes:  
+    - 放宽 inline #tag 解析规则以支持中文与层级分隔符（如 `/`），避免 tag 截断；  
+    - 捕获/迁移/同步路径统一 tag 正则；  
+    - 更新 phase 文档与任务状态。  
+  - Related: `task004` (task_view_note_fields_20251226)

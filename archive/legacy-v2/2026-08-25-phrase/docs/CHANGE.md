@@ -1,0 +1,117 @@
+- 2026-08-19: phase-supertag-rename-20260819/change_supertag_rename_20260819.md  # task005 GitHub/origin/local checkout renamed to supertag
+- 2026-08-19: phase-supertag-rename-20260819/change_supertag_rename_20260819.md  # task004 full ERT/byte-compile/legacy-name whitelist audit
+- 2026-08-19: phase-supertag-rename-20260819/change_supertag_rename_20260819.md  # task003 current docs/tests/repository brand migration
+- 2026-08-19: phase-supertag-rename-20260819/change_supertag_rename_20260819.md  # task002 runtime/package/data/query-block breaking rename
+- 2026-08-19: phase-supertag-rename-20260819/change_supertag_rename_20260819.md  # task001 breaking rename spec and baseline
+- 2026-08-13: phase-query-syntax-alignment-20260813/change_query_syntax_alignment_20260813.md  # task009 phase accepted by user (hands-on emacs -Q acceptance)
+- 2026-08-13: phase-query-syntax-alignment-20260813/change_query_syntax_alignment_20260813.md  # task008 automation :condition unified with query grammar
+- 2026-08-13: phase-query-syntax-alignment-20260813/change_query_syntax_alignment_20260813.md  # task007 query block aggregate rendering
+- 2026-08-13: phase-query-syntax-alignment-20260813/change_query_syntax_alignment_20260813.md  # task006 aggregate/group-by modifiers + supertag-query-evaluate
+- 2026-08-13: phase-query-syntax-alignment-20260813/change_query_syntax_alignment_20260813.md  # task005 dynamic day variables
+- 2026-08-13: phase-query-syntax-alignment-20260813/change_query_syntax_alignment_20260813.md  # task004 in-query sort-by
+- 2026-08-13: phase-query-syntax-alignment-20260813/change_query_syntax_alignment_20260813.md  # task003 day symbols + h/min units
+- 2026-08-13: phase-query-syntax-alignment-20260813/change_query_syntax_alignment_20260813.md  # task002 multi-argument not
+- 2026-08-13: phase-query-syntax-alignment-20260813/change_query_syntax_alignment_20260813.md  # task001 task/priority operators (+ priority #-cookie follow-up fix)
+# CHANGE Index
+
+- 2026-08-19: phase-git-sync-20260713/CHANGE.md  # task009 / issue045 本机数据库锁隔离
+
+- 2026-08-12: phase-ownership-separation-20260812/change_ownership_separation_20260812.md  # task018 unified derived-index cold rebuild contract
+- 2026-08-12: phase-ownership-separation-20260812/change_ownership_separation_20260812.md  # task017 Stable Semantic Tag cutover + resolver
+- 2026-08-12: phase-ownership-separation-20260812/change_ownership_separation_20260812.md  # task016 deterministic Stable Semantic Tag ID dry-run
+- 2026-08-12: phase-ownership-separation-20260812/change_ownership_separation_20260812.md  # task015 relation ownership separation
+- 2026-08-12: phase-ownership-separation-20260812/change_ownership_separation_20260812.md  # task014 global-field production cutover
+- 2026-08-12: phase-ownership-separation-20260812/change_ownership_separation_20260812.md  # task013 deterministic legacy/global field audit
+- 2026-08-12: phase-ownership-separation-20260812/change_ownership_separation_20260812.md  # task012 replace node projection; semantic fields stay separate
+- 2026-08-12: phase-ownership-separation-20260812/change_ownership_separation_20260812.md  # task011 Org-first Tag membership writes
+- 2026-08-12: phase-ownership-separation-20260812/change_ownership_separation_20260812.md  # task010 confirmed reciprocal-link migration
+- 2026-08-12: phase-ownership-separation-20260812/change_ownership_separation_20260812.md  # task009 forward-only references + derived backlinks
+- 2026-08-12: phase-ownership-separation-20260812/change_ownership_separation_20260812.md  # task008 accurate Org Reindex Module
+- 2026-08-12: phase-ownership-separation-20260812/change_ownership_separation_20260812.md  # task007 pure Document Link projection
+- 2026-08-12: phase-ownership-separation-20260812/change_ownership_separation_20260812.md  # task006 Tag Occurrence / Semantic Tag separation
+- 2026-08-12: phase-ownership-separation-20260812/change_ownership_separation_20260812.md  # task005 Document Projector identity + incremental parity
+- 2026-08-12: phase-ownership-separation-20260812/change_ownership_separation_20260812.md  # task004 transactional node delete cleanup
+- 2026-08-12: phase-ownership-separation-20260812/change_ownership_separation_20260812.md  # task003 durable roots + full save verification
+- 2026-08-12: phase-ownership-separation-20260812/change_ownership_separation_20260812.md  # task002 ownership fixture + semantic fingerprint
+- 2026-08-12: phase-ownership-separation-20260812/change_ownership_separation_20260812.md  # task001 Ownership Constitution and migration map
+- 2025-12-16: phase-foundation-20251216/change_foundation_20251216.md
+- 2025-12-16: phase-extractor-fix-20251216/change_extractor_fix_20251216.md
+- 2025-12-16: phase-sync-improve-20251216/change_sync_improve_20251216.md
+- 2025-12-16: phase-extractor-plugins-20251216/change_extractor_plugins_20251216.md
+- 2025-12-17: DONE-phase-sync-smart-detection-20251217/change_sync_smart_detection_20251217.md
+- 2025-12-17: DONE-phase-view-api-20251217/change_view_api_20251217.md
+- 2025-12-26: phase-view-note-fields-20251226/change_view_note_fields_20251226.md
+- 2025-12-31: phase-sync-integrity-20251226/change_sync_integrity_20251226.md
+- 2025-12-26: phase-ontology-architecture-20251226/change_ontology_architecture_20251226.md
+- 2025-12-31: phase-logic-explainability-20251231/change_logic_explainability_20251231.md
+- 2026-01-16: phase-automation-alignment-20260116/change_automation_alignment_20260116.md
+- 2026-01-21: phase-automation-alignment-20260116/change_automation_alignment_20260116.md
+- 2026-01-21: phase-sync-improve-20251216/change_sync_improve_20251216.md
+- 2026-01-28: phase-virtual-columns-20260128/change_virtual_columns_20260128.md  # NEW: Virtual Columns + Open Viewer Architecture
+- 2026-02-04: phase-view-dsl-20260204/change_view_dsl_20260204.md
+- 2026-02-05: phase-view-dsl-20260204/change_view_dsl_20260204.md
+- 2026-02-22: phase-board-knowledge-ui-20260222/change_board_knowledge_ui_20260222.md
+- 2026-06-24: .phrase/docs/change_nested_tags_20260624.md  # issue009 嵌套标签技术方案
+- 2026-06-25: .phrase/docs/change_svg_tag_style_20260625.md  # 优化 #标签 SVG pill 样式
+- 2026-06-25: .phrase/docs/change_file_node_navigation_20260625.md  # 修复 file-level node 跳转
+- 2026-06-25: .phrase/docs/change_sync_msg_icon_20260625.md  # 同步提示改为图标
+- 2026-06-25: .phrase/docs/change_view_node_hide_side_20260625.md  # 修复 node 视图 q 键 commandp 错误
+- 2026-07-08: phase-concept-mentions-20260708/change_concept_mentions_20260708.md  # CJK concept mentions
+- 2026-07-11: phase-sync-integrity-20251226/change_sync_integrity_20251226.md  # persistence failover + stable mixed file-node identity/links
+- 2026-07-13: phase-git-sync-20260713/CHANGE.md  # Git 原生同步 P0/P1 加固与 release-gate 验收
+- 2026-07-14: phase-sync-integrity-20251226/change_sync_integrity_20251226.md  # PR #181 retry hardening + PR #182 file-node identity validation
+- 2026-07-21: phase-smart-key-20260721/change_smart_key_20260721.md  # Semantic Smart Key without Hyperbole dependency
+- 2026-07-22: phase-tag-merge-20260722/change_tag_merge_20260722.md  # Transactional Schema View tag merge
+- 2026-07-22: phase-sync-improve-20251216/change_sync_improve_20251216.md  # embed 跨 buffer 写入保持 Org element cache 一致
+- 2026-07-22: phase-tag-merge-20260722/change_tag_merge_20260722.md  # Untitled file-node merge compatibility
+- 2026-07-22: phase-smart-key-20260721/change_smart_key_20260721.md  # Node View no longer creates Org IDs
+- 2026-07-22: phase-smart-key-20260721/change_smart_key_20260721.md  # Node demotion removes Org ID and empty property drawer
+- 2026-07-22: phase-sync-improve-20251216/change_sync_improve_20251216.md  # TODO 标题解析与全量重扫修复
+- 2026-07-25: phase-smart-key-20260721/change_smart_key_20260721.md  # SVG tags are limited to whitespace-delimited Org prose tokens
+- 2026-07-26: phase-smart-key-20260721/change_smart_key_20260721.md  # Org compatibility, inline-tag boundary alignment, and leaner CI triggers
+- 2026-07-27: phase-git-sync-20260713/CHANGE.md  # Git command discovery + snapshot restore safety and CI hardening
+- 2026-07-28: phase-git-sync-20260713/CHANGE.md  # Doctor command discovery and stale byte-code-proof regression
+- 2026-07-28: phase-smart-key-20260721/change_smart_key_20260721.md  # Function-quote tag filtering + smaller SVG tag font
+- 2026-07-28: phase-git-sync-20260713/CHANGE.md  # Unambiguous sync root message + automatic mode enablement
+- 2026-07-28: phase-git-sync-20260713/CHANGE.md  # Immediate Git sync command + normal-exit synchronization guard
+- 2026-07-29: phase-git-sync-20260713/CHANGE.md  # Skip clean exit sync + auto-exit after successful synchronization
+- 2026-07-29: .phrase/docs/change_nested_tags_20260624.md  # Full-path nested Tag IDs + explicit descendant queries
+- 2026-07-29: .phrase/docs/change_nested_tags_20260624.md  # task013 Store-to-UI nested tag completion
+- 2026-07-30: phase-smart-key-20260721/change_smart_key_20260721.md  # Late-loaded inline SVG styling covers existing Org buffers
+- 2026-08-01: .phrase/docs/change_nested_tags_20260624.md  # task015 direct-child nested Tag completion and shared input
+- 2026-08-01: phase-smart-key-20260721/change_smart_key_20260721.md  # task016 underscore-safe Tag parsing and explicit orphan cleanup
+- 2026-08-01: phase-smart-key-20260721/change_smart_key_20260721.md  # task016 cleanup safety hardening after P0 review
+- 2026-08-01: phase-smart-key-20260721/change_smart_key_20260721.md  # task016 post-hook batch validation and shared frontend matcher
+- 2026-08-02: phase-smart-key-20260721/change_smart_key_20260721.md  # task016 real face/SVG font-lock extent fix
+- 2026-08-03: .phrase/docs/change_nested_tags_20260624.md  # task017 descend from an existing flat Tag in completion
+- 2026-08-03: .phrase/docs/change_nested_tags_20260624.md  # task018 leaf-first completion + unified parent Schema tree
+- 2026-08-03: .phrase/docs/change_nested_tags_20260624.md  # task019 Corfu affixation string-shape fix
+- 2026-08-03: .phrase/docs/change_nested_tags_20260624.md  # task020 progressive parent-to-child CAPF aliases
+- 2026-08-03: .phrase/docs/change_nested_tags_20260624.md  # task021 explicit [New] registration gate
+- 2026-08-04: .phrase/docs/change_nested_tags_20260624.md  # task022 real completion first, [New] second
+- 2026-08-05: DONE-phase-view-runtime-20260804/change_view_runtime_20260804.md  # unified Runtime adapters + legacy lifecycle deletion; hands-on approved
+- 2026-08-05: DONE-phase-view-runtime-20260804/change_view_runtime_20260804.md  # Widget renderer backend research: native primitives, stable keys, layout and dependency gates
+- 2026-08-05: DONE-phase-widget-renderer-20260805/change_widget_renderer_20260805.md  # native Widget renderer implementation phase
+- 2026-08-05: DONE-phase-widget-renderer-20260805/change_widget_renderer_20260805.md  # stable keys + native controls + Dashboard migration + Stream benchmark; hands-on approved
+- 2026-08-06: phase-stream-view-20260806/change_stream_view_20260806.md  # approved Stream View MVP phase
+- 2026-08-06: phase-view-dsl-20260204/change_view_dsl_20260204.md  # task020 interactive in-memory Widget DSL Showcase
+- 2026-08-06: phase-view-dsl-20260204/change_view_dsl_20260204.md  # task021 Showcase progress and responsive layout fixes
+- 2026-08-06: phase-view-dsl-20260204/change_view_dsl_20260204.md  # task022 ASCII-safe fixed-width borders
+- 2026-08-06: phase-view-dsl-20260204/change_view_dsl_20260204.md  # task023 responsive 80-column breakpoint
+- 2026-08-06: phase-view-dsl-20260204/change_view_dsl_20260204.md  # task024 editable-field overlay and pixel alignment fix
+- 2026-08-07: .phrase/docs/change_nested_tags_20260624.md  # task023 :extends-only hierarchy + slash-ID migration
+- 2026-08-07: phase-stream-view-20260806/change_stream_view_20260806.md  # task008 inherited descendant aggregation
+- 2026-08-07: phase-stream-view-20260806/change_stream_view_20260806.md  # task009 readable split index selection
+- 2026-08-07: phase-stream-view-20260806/change_stream_view_20260806.md  # task010 one Stream buffer per tag
+- 2026-08-07: phase-stream-view-20260806/change_stream_view_20260806.md  # task011 active Stream companion lifecycle
+- 2026-08-08: phase-stream-view-20260806/change_stream_view_20260806.md  # task012 single-column title stream; companion/full-body projection removed
+- 2026-08-08: .phrase/docs/issue_board_ui_build_20260808.md  # issue036/task001 clean-clone Board UI build restored
+- 2026-08-08: phase-stream-view-20260806/change_stream_view_20260806.md  # task013 natural navigation + confirm/abort expanded edit
+- 2026-08-09: phase-stream-view-20260806/change_stream_view_20260806.md  # task014 date/tag/title Stream rows
+- 2026-08-09: phase-stream-view-20260806/change_stream_view_20260806.md  # task015 trailing Stream tags
+- 2026-08-09: phase-stream-view-20260806/change_stream_view_20260806.md  # task016 creation-day Stream groups
+- 2026-08-09: phase-smart-key-20260721/change_smart_key_20260721.md  # issue038/task023 #tag completion bypasses generic prefix thresholds
+- 2026-08-10: phase-smart-key-20260721/change_smart_key_20260721.md  # task024 left-aligned full Tag completion paths
+- 2026-08-10: phase-git-sync-20260713/CHANGE.md  # task008 concise Git Sync retry message
+- 2026-08-11: phase-smart-key-20260721/change_smart_key_20260721.md  # task025 inline slash child creation
+- 2026-08-11: .phrase/docs/change_nested_tags_20260624.md  # task025 / as an inline creation operator

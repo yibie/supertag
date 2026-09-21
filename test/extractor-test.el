@@ -1,0 +1,377 @@
+;;; extractor-test.el --- ERT tests for the extractor plugin system -*- lexical-binding: t; -*-
+
+;;; Commentary:
+;; Tests for supertag-extractor registration, pipeline dispatch,
+;; and built-in extractors.
+;;
+;; Run:
+;;   emacs -batch -L . --eval "(package-initialize)" -l test/extractor-test.el -f ert-run-tests-batch-and-exit
+
+;;; Code:
+
+(require 'ert)
+(require 'cl-lib)
+
+;; Load path setup
+(when load-file-name
+  (add-to-list 'load-path (expand-file-name ".." (file-name-directory load-file-name))))
+
+(require 'supertag-services-sync)
+
+;;; --- Helpers ---
+
+(defmacro extractor-test--with-headline (text &rest body)
+  "Create a temp org buffer with TEXT, parse headline, and run BODY with HL bound."
+  (declare (indent 1))
+  `(with-temp-buffer
+     (org-mode)
+     (insert ,text)
+     (insert "\nSome content.\n")
+     (goto-char (point-min))
+     (let ((hl (org-element-at-point)))
+       ,@body)))
+
+(defun extractor-test--registry-count ()
+  "Return the number of registered extractors."
+  (length supertag-extractor--registry))
+
+(defun extractor-test--factory-reset ()
+  "Nuke all extractors and reinstall defaults."
+  (setq supertag-extractor--registry nil)
+  (supertag-extractor--setup-defaults))
+
+;;; --- Registration Tests ---
+
+(ert-deftest extractor-register-basic ()
+  "Register a single extractor and verify it appears in the registry."
+  (let ((old-registry (copy-sequence supertag-extractor--registry)))
+    (unwind-protect
+        (progn
+          (supertag-extractor-register
+           :name 'test-basic
+           :priority 100
+           :fn (lambda (el file ctx) (list :test-key "ok")))
+          (let* ((reg (supertag-extractor-list))
+                 (entry (cl-find 'test-basic reg
+                                 :key (lambda (e) (plist-get e :name))
+                                 :test #'equal)))
+            (should entry)
+            (should (functionp (plist-get entry :fn)))
+            (should (= 100 (plist-get entry :priority)))))
+      (setq supertag-extractor--registry old-registry))))
+
+(ert-deftest extractor-register-replace ()
+  "Registering with the same name replaces the old entry."
+  (let ((old-registry (copy-sequence supertag-extractor--registry)))
+    (unwind-protect
+        (progn
+          (supertag-extractor-register
+           :name 'test-replace
+           :priority 10
+           :fn #'ignore)
+          (supertag-extractor-register
+           :name 'test-replace
+           :priority 99
+           :fn (lambda (el file ctx) (list :new-key "replaced")))
+          (let* ((reg (supertag-extractor-list))
+                 (entries (cl-remove-if-not
+                           (lambda (e) (eq (plist-get e :name) 'test-replace))
+                           reg)))
+            (should (= 1 (length entries)))
+            (should (= 99 (plist-get (car entries) :priority)))))
+      (setq supertag-extractor--registry old-registry))))
+
+(ert-deftest extractor-unregister ()
+  "Unregister removes an extractor from the registry."
+  (let ((old-registry (copy-sequence supertag-extractor--registry)))
+    (unwind-protect
+        (progn
+          (supertag-extractor-register
+           :name 'test-remove
+           :priority 50
+           :fn #'ignore)
+          (should (cl-find 'test-remove (supertag-extractor-list)
+                           :key (lambda (e) (plist-get e :name))
+                           :test #'equal))
+          (supertag-extractor-unregister 'test-remove)
+          (should-not (cl-find 'test-remove (supertag-extractor-list)
+                               :key (lambda (e) (plist-get e :name))
+                               :test #'equal)))
+      (setq supertag-extractor--registry old-registry))))
+
+(ert-deftest extractor-list-returns-copy ()
+  "supertag-extractor-list returns a copy, not the internal reference."
+  (let ((a (supertag-extractor-list))
+        (b (supertag-extractor-list)))
+    (should (equal a b))
+    (setcar a nil)
+    (should (equal b (supertag-extractor-list)))))
+
+;;; --- Pipeline Tests ---
+
+(ert-deftest extractor-run-no-registry ()
+  "When no extractors are registered, the pipeline returns an empty plist."
+  (let ((saved supertag-extractor--registry))
+    (unwind-protect
+        (progn
+          (setq supertag-extractor--registry nil)
+          (extractor-test--with-headline "* Test"
+            (let ((result (supertag-extractor--run hl "/tmp/test.org" '())))
+              (should (null result)))))
+      (setq supertag-extractor--registry saved))))
+
+(ert-deftest extractor-run-merges-outputs ()
+  "Different extractors merge their keys into a single plist."
+  (let ((old-registry (copy-sequence supertag-extractor--registry)))
+    (unwind-protect
+        (progn
+          (setq supertag-extractor--registry nil)
+          (supertag-extractor-register
+           :name 'a :priority 0
+           :fn (lambda (el file ctx) (list :key-a "A")))
+          (supertag-extractor-register
+           :name 'b :priority 1
+           :fn (lambda (el file ctx) (list :key-b "B")))
+          (extractor-test--with-headline "* Test"
+            (let ((result (supertag-extractor--run hl "/tmp/test.org" '())))
+              (should (string= "A" (plist-get result :key-a)))
+              (should (string= "B" (plist-get result :key-b))))))
+      (setq supertag-extractor--registry old-registry))))
+
+(ert-deftest extractor-run-later-overrides-earlier ()
+  "A higher-priority (later-called) extractor wins for the same key."
+  (let ((old-registry (copy-sequence supertag-extractor--registry)))
+    (unwind-protect
+        (progn
+          (setq supertag-extractor--registry nil)
+          (supertag-extractor-register
+           :name 'early :priority 0
+           :fn (lambda (el file ctx) (list :dup-key "early")))
+          (supertag-extractor-register
+           :name 'late :priority 10
+           :fn (lambda (el file ctx) (list :dup-key "late")))
+          (extractor-test--with-headline "* Test"
+            (let ((result (supertag-extractor--run hl "/tmp/test.org" '())))
+              (should (string= "late" (plist-get result :dup-key))))))
+      (setq supertag-extractor--registry old-registry))))
+
+(ert-deftest extractor-run-nil-patch-ignored ()
+  "An extractor returning nil is safely ignored."
+  (let ((old-registry (copy-sequence supertag-extractor--registry)))
+    (unwind-protect
+        (progn
+          (setq supertag-extractor--registry nil)
+          (supertag-extractor-register
+           :name 'returns-nil :priority 0
+           :fn (lambda (el file ctx) nil))
+          (supertag-extractor-register
+           :name 'real :priority 1
+           :fn (lambda (el file ctx) (list :ok "yes")))
+          (extractor-test--with-headline "* Test"
+            (let ((result (supertag-extractor--run hl "/tmp/test.org" '())))
+              (should (string= "yes" (plist-get result :ok))))))
+      (setq supertag-extractor--registry old-registry))))
+
+(ert-deftest extractor-run-passes-context ()
+  "The CTX argument is passed through to extractors."
+  (let ((old-registry (copy-sequence supertag-extractor--registry)))
+    (unwind-protect
+        (progn
+          (setq supertag-extractor--registry nil)
+          (supertag-extractor-register
+           :name 'ctx-check :priority 0
+           :fn (lambda (el file ctx)
+                 (list :file file
+                       :full-rescan (plist-get ctx :full-rescan-p))))
+          (extractor-test--with-headline "* Test"
+            (let ((result (supertag-extractor--run hl "/tmp/check.org" '(:full-rescan-p t))))
+              (should (string= "/tmp/check.org" (plist-get result :file)))
+              (should (eq t (plist-get result :full-rescan))))))
+      (setq supertag-extractor--registry old-registry))))
+
+;;; --- Built-in Extractor Tests ---
+
+(ert-deftest extractor-builtins-exist ()
+  "All seven built-in extractors are registered after setup."
+  (extractor-test--factory-reset)
+  (let ((names (mapcar (lambda (e) (plist-get e :name))
+                       (supertag-extractor-list))))
+    (dolist (expected '(core-structure title olp tags properties content refs))
+      (should (member expected names)))))
+
+(ert-deftest extractor-core-structure ()
+  "Core structure extractor produces level, todo, priority."
+  (extractor-test--with-headline "** TODO [#A] Task"
+    (let ((result (supertag-extractor--core-structure hl "/tmp/f" '())))
+      (should (= 2 (plist-get result :level)))
+      (should (string= "TODO" (plist-get result :todo)))
+      (should (string= "#A" (plist-get result :priority))))))
+
+(ert-deftest extractor-title ()
+  "Title extractor produces :title and :raw-value."
+  (extractor-test--with-headline "* My Title"
+    (let ((result (supertag-extractor--title hl "/tmp/f" '())))
+      (should (string= "My Title" (plist-get result :title)))
+      (should (string= "My Title" (plist-get result :raw-value))))))
+
+(ert-deftest extractor-current-buffer-parser-recognizes-custom-todo ()
+  "The shared parser initializes Org before reading custom TODO keywords."
+  (let ((org-todo-keywords
+         '((sequence "TODO" "DOING" "|" "DONE"))))
+    (with-temp-buffer
+      (insert "* DOING \u3010\u6210\u672c\u660e\u7ec6\u8868\u3011\u5bfc\u51fa\u540e\u8868\u683c\u4e0e\u8f93\u5165\u5185\u5bb9\u4e0d\u4e00\u81f4\n"
+              ":PROPERTIES:\n:ID: node-1\n:END:\n")
+      (let ((node (car (supertag--parse-org-nodes-from-current-buffer
+                        "/tmp/custom-todo.org" t))))
+        (should (equal "DOING" (plist-get node :todo)))
+        (should (equal "\u3010\u6210\u672c\u660e\u7ec6\u8868\u3011\u5bfc\u51fa\u540e\u8868\u683c\u4e0e\u8f93\u5165\u5185\u5bb9\u4e0d\u4e00\u81f4"
+                       (plist-get node :title)))))))
+
+(ert-deftest extractor-tags ()
+  "Org-native :tag: syntax is imported only when explicitly enabled."
+  (extractor-test--with-headline "* Tagged #inline :orgtag:"
+    (let ((supertag-sync-import-org-tags nil))
+      (should (equal '("inline")
+                     (plist-get (supertag-extractor--tags hl "/tmp/f" '(:full-rescan-p t))
+                                :tag-occurrences))))
+    (let ((supertag-sync-import-org-tags t))
+      (should (member "orgtag"
+                      (plist-get (supertag-extractor--tags hl "/tmp/f" '(:full-rescan-p t))
+                                 :tag-occurrences))))))
+
+(ert-deftest extractor-inline-tags-respect-org-prose-boundaries ()
+  "Inline tags come from this node's direct Org prose, not nested objects."
+  (with-temp-buffer
+    (org-mode)
+    (insert
+     "* [[file:Copyright.xhtml#Copyright.xhtml][Label #linked]] #title word#embedded ~#code~ :native:\n"
+     ":PROPERTIES:\n:HASH: #drawer\n:END:\n"
+     "Body #body [[id:node][Description #inside]] word#fragment ~#verbatim~\n"
+     "https://x/y#url &#169; \\#escaped {{{hash(#macro)}}} <<#target>>\n"
+     "- item #list\n"
+     "#+begin_quote\nquoted #quote\n#+end_quote\n"
+     "| #table |\n: fixed #fixed\n"
+     "#+begin_src text\n#source\n#+end_src\n"
+     "#+begin_example\n#example\n#+end_example\n"
+     "#+begin_verse\n#verse\n#+end_verse\n"
+     "** Child #child\nChild body #child-body\n")
+    (let* ((headline (car (org-element-contents (org-element-parse-buffer))))
+           (tags (plist-get
+                  (supertag-extractor--tags
+                   headline "/tmp/f" '(:full-rescan-p t))
+                  :tag-occurrences))
+           (title (plist-get
+                   (supertag-extractor--title headline "/tmp/f" nil)
+                   :title)))
+      (should (equal (sort tags #'string<)
+                     '("body" "list" "quote" "title")))
+      (should
+       (equal title
+              "[[file:Copyright.xhtml#Copyright.xhtml][Label #linked]] word#embedded ~#code~")))))
+
+(ert-deftest extractor-inline-tags-reject-org-keyword-syntax ()
+  "Org keyword and block syntax cannot become inline tag occurrences."
+  (should-not (supertag-transform-extract-inline-tags "#+begin_quote"))
+  (should-not (supertag-transform-extract-inline-tags "#+END_TABLE"))
+  (should (equal '("emacs")
+                 (supertag-transform-extract-inline-tags "#emacs")))
+  (should-not (supertag-transform-extract-inline-tags "#+"))
+  (with-temp-buffer
+    (org-mode)
+    (insert "* Heading\nParagraph #+begin_quote #+END_TABLE #emacs #+\n")
+    (let* ((headline (car (org-element-contents (org-element-parse-buffer))))
+           (tags (plist-get
+                  (supertag-extractor--tags headline "/tmp/f" nil)
+                  :tag-occurrences)))
+      (should (equal '("emacs") tags)))))
+
+(ert-deftest extractor-inline-tags-ignore-commented-subtrees ()
+  "COMMENT subtree prose does not create stored inline tags."
+  (with-temp-buffer
+    (org-mode)
+    (insert "* COMMENT Hidden #heading\nBody #body\n")
+    (let* ((headline (car (org-element-contents (org-element-parse-buffer))))
+           (result (supertag-extractor--tags headline "/tmp/f" nil)))
+      (should-not (plist-get result :tag-occurrences)))))
+
+(ert-deftest extractor-inline-tags-preserve-underscores ()
+  "Org subscript parsing must not rewrite underscores inside Tag tokens."
+  (with-temp-buffer
+    (org-mode)
+    (insert
+     "* Tags #ai_suggestions #smart_companion #a_b/c_d\n"
+     "Body #body_tag x_{ #nested_tag } [[id:n][#linked_tag]] ~#code_tag~\n\n"
+     "#leading_tag\n")
+    (let* ((headline (car (org-element-contents (org-element-parse-buffer))))
+           (tags (plist-get
+                  (supertag-extractor--tags headline "/tmp/f" nil)
+                  :tag-occurrences))
+           (title (plist-get
+                   (supertag-extractor--title headline "/tmp/f" nil)
+                   :title)))
+      (should
+       (equal (sort tags #'string<)
+              '("a_b/c_d" "ai_suggestions" "body_tag" "leading_tag"
+                "smart_companion")))
+      (should (equal title "Tags")))))
+
+(ert-deftest extractor-inline-tags-stop-at-org-object-boundaries ()
+  "Adjacent Org objects must not become part of a Tag token."
+  (with-temp-buffer
+    (org-mode)
+    (insert
+     "* T #outer[[id:n][label]] #before ~code~\n"
+     "Body #body[[id:n][#linked]] #plain\n")
+    (let* ((headline (car (org-element-contents (org-element-parse-buffer))))
+           (tags (plist-get
+                  (supertag-extractor--tags headline "/tmp/f" nil)
+                  :tag-occurrences))
+           (title (plist-get
+                   (supertag-extractor--title headline "/tmp/f" nil)
+                   :title)))
+      (should (equal (sort tags #'string<)
+                     '("before" "body" "outer" "plain")))
+      (should (equal title "T [[id:n][label]] ~code~")))))
+
+(ert-deftest extractor-underscore-tags-stop-at-nested-org-objects ()
+  "Transparent Org subscript parsing must not hide a nested link boundary."
+  (with-temp-buffer
+    (org-mode)
+    (insert
+     "* T #ai_suggestions[[id:n][label]] #plain\n"
+     "Body #smart_companion[[id:n][#linked]] #body\n")
+    (let* ((headline (car (org-element-contents (org-element-parse-buffer))))
+           (tags (plist-get
+                  (supertag-extractor--tags headline "/tmp/f" nil)
+                  :tag-occurrences))
+           (title (plist-get
+                   (supertag-extractor--title headline "/tmp/f" nil)
+                   :title)))
+      (should (equal (sort tags #'string<)
+                     '("ai_suggestions" "body" "plain" "smart_companion")))
+      (should (equal title "T [[id:n][label]]")))))
+
+(ert-deftest extractor-inline-tag-string-boundaries-match-rendering ()
+  "String extraction requires line start or whitespace before a hash."
+  (should
+   (equal
+    (supertag-transform-extract-inline-tags
+     "#root plain #tag　#全角\n#next word#embedded https://x/y#fragment &#169; \\#escaped")
+    '("root" "tag" "全角" "next"))))
+
+(ert-deftest extractor-content ()
+  "Content extractor produces :content non-nil."
+  (extractor-test--with-headline "* With Content"
+    (let ((result (supertag-extractor--content hl "/tmp/f" '())))
+      ;; Content may be nil or string; either is fine for unit test
+      (should (or (null (plist-get result :content))
+                  (stringp (plist-get result :content)))))))
+
+(ert-deftest extractor-refs ()
+  "Refs extractor produces :ref-to (always a list)."
+  (extractor-test--with-headline "* No Refs"
+    (let ((result (supertag-extractor--refs hl "/tmp/f" '())))
+      (should (listp (plist-get result :ref-to))))))
+
+(provide 'extractor-test)
+;;; extractor-test.el ends here

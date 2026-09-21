@@ -1,0 +1,69 @@
+# change_ontology_architecture_20251226
+
+- 2025-12-26 Add  
+  - Files:  
+    - `.phrase/phases/phase-ontology-architecture-20251226/spec_ontology_architecture_20251226.md`  
+    - `.phrase/phases/phase-ontology-architecture-20251226/plan_ontology_architecture_20251226.md`  
+    - `.phrase/phases/phase-ontology-architecture-20251226/task_ontology_architecture_20251226.md`  
+    - `.phrase/phases/phase-ontology-architecture-20251226/change_ontology_architecture_20251226.md`  
+  - Reason: 建立本体三层架构视图的 phase 文档  
+  - Related: `task001` (task_ontology_architecture_20251226)
+- 2025-12-26 Add  
+  - Files:  
+    - `doc/ONTOLOGY-ARCHITECTURE_cn.md`  
+  - Changes:  
+    - 产出本体三层架构视图文档，包含层级定义、模块映射、运行流与 automation 差异说明。  
+  - Related: `task001` (task_ontology_architecture_20251226)
+- 2025-12-26 Modify  
+  - Files:  
+    - `.phrase/docs/CHANGE.md`  
+    - `.phrase/phases/phase-ontology-architecture-20251226/task_ontology_architecture_20251226.md`  
+    - `.phrase/phases/phase-ontology-architecture-20251226/change_ontology_architecture_20251226.md`  
+  - Changes:  
+    - 更新 CHANGE 索引并勾选任务完成。  
+  - Related: `task001` (task_ontology_architecture_20251226)
+- 2025-12-26 Modify  
+  - Files:  
+    - `.phrase/phases/phase-ontology-architecture-20251226/spec_ontology_architecture_20251226.md`  
+    - `.phrase/phases/phase-ontology-architecture-20251226/plan_ontology_architecture_20251226.md`  
+    - `.phrase/phases/phase-ontology-architecture-20251226/task_ontology_architecture_20251226.md`  
+  - Changes:  
+    - 补充函数级混杂点清单与拆分建议需求，并新增任务记录。  
+  - Related: `task002` (task_ontology_architecture_20251226)
+- 2025-12-26 Modify  
+  - Files:  
+    - `doc/ONTOLOGY-ARCHITECTURE_cn.md`  
+    - `.phrase/phases/phase-ontology-architecture-20251226/task_ontology_architecture_20251226.md`  
+    - `.phrase/phases/phase-ontology-architecture-20251226/change_ontology_architecture_20251226.md`  
+  - Changes:  
+    - 增加函数级混杂点清单与最小拆分建议；明确 `supertag-core-scan.el` 定位；标记任务完成。  
+  - Related: `task002` (task_ontology_architecture_20251226)
+- 2025-12-26 Modify  
+  - Files:  
+    - `.phrase/phases/phase-ontology-architecture-20251226/spec_ontology_architecture_20251226.md`  
+    - `.phrase/phases/phase-ontology-architecture-20251226/plan_ontology_architecture_20251226.md`  
+    - `.phrase/phases/phase-ontology-architecture-20251226/task_ontology_architecture_20251226.md`  
+  - Changes:  
+    - 新增实验脚本目标与任务记录，更新里程碑。  
+  - Related: `task003` (task_ontology_architecture_20251226)
+- 2025-12-26 Add  
+  - Files:  
+    - `supertag-test.el`  
+  - Changes:  
+    - 新增逻辑解释与 automation dry-run 的实验命令。  
+  - Related: `task003` (task_ontology_architecture_20251226)
+- 2025-12-26 Modify  
+  - Files:  
+    - `.phrase/phases/phase-ontology-architecture-20251226/change_ontology_architecture_20251226.md`  
+    - `.phrase/phases/phase-ontology-architecture-20251226/task_ontology_architecture_20251226.md`  
+  - Changes:  
+    - 标记实验脚本任务完成并记录变更。  
+  - Related: `task003` (task_ontology_architecture_20251226)
+- 2025-12-26 Modify  
+  - Files:  
+    - `doc/ONTOLOGY-ARCHITECTURE_cn.md`  
+    - `.phrase/phases/phase-ontology-architecture-20251226/task_ontology_architecture_20251226.md`  
+    - `.phrase/phases/phase-ontology-architecture-20251226/change_ontology_architecture_20251226.md`  
+  - Changes:  
+    - 将 `supertag-services-query.el` 与 `supertag-core-scan.el` 明确归入逻辑层，并增补“逻辑层≈supertag-query”的当前态说明。  
+  - Related: `task004` (task_ontology_architecture_20251226)

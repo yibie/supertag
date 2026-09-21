@@ -766,7 +766,7 @@ Adapt feature-owned renderers locally without changing their interfaces."
       (supertag-view-node--insert-field-section #'supertag-view-reference-insert-sections node-id)
       (supertag-view-node--insert-field-section #'supertag-ai-insert-section node-id)
       (when (supertag-concept-node-p node-data)
-        (supertag-view-node--insert-field-section #'supertag-view-mention-insert-section node-id))
+        (supertag-view-node--insert-field-section #'supertag-view-unlinked-mention-insert-section node-id))
       (supertag-view-node--insert-field-section #'supertag-semantic-insert-section node-id)
       (supertag-view-node--insert-field-section #'supertag-view-node--insert-named-links-section node-id)
       (supertag-view-node--space-sections)

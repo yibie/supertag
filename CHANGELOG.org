@@ -1,5 +1,14 @@
 * Changelog
 * [Unreleased]
+** Setup wizard retired
+- Removed =supertag-setup= and its private wizard helpers, its autoload, the
+  menu wrapper/entry, and the wizard-specific child-process tests (VAULT-E).
+  Vault management, the config guard, =supertag-setup-all-timers= and the
+  automation template wizard are unchanged.
+- Configure by setting =supertag-sync-directories= before =(require 'supertag)=,
+  then run =supertag-sync-full-rescan= once; see =doc/GETTING-STARTED_CN.md=.
+  =supertag-file-id-source= is optional and not guard-protected.  The config
+  guard still protects the sync directory variables, so they are set before loading.
 ** Smooth Node View following
 - Node View follow no longer rebuilds the side pane synchronously inside
   =post-command-hook= whenever point crosses an Org heading. It coalesces

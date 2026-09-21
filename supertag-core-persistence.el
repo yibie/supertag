@@ -4,7 +4,6 @@
 ;; This file provides functions for persisting the Supertag
 ;; in-memory store to a file and loading it back.
 
-
 ;; Commands: supertag-save-store, supertag-save-store-force, supertag-reload-store;
 ;; Lisp entrypoints: supertag-load-store,
 ;; supertag-persistence-check-legacy-data-directory, supertag-resolve-data-directories,
@@ -30,53 +29,6 @@ This is a fallback definition.
 The primary customization is in supertag-vault.el.")
 
 (defvar supertag--config-guard-allow)
-
-(defconst supertag-data-version "7.2.0"
-  "Current data format version.
-Used for data format compatibility checks and automatic migration.
-
-Bumped 7.1.0 -> 7.2.0: a Tag's `:extends' is a list of parent Tag IDs, not a
-single parent ID.  `supertag-migrate--normalize-extends-lists' rewrites every
-stored string into a one-element list (DB-only, idempotent), and
-`supertag-migrate--apply-legacy-extends' now adds a parent to the list
-instead of reporting a second parent as a conflict.
-
-Bumped 7.0.0 -> 7.1.0: `supertag-migrate--apply-legacy-extends' now resolves
-`:legacy-extends' records directly into `:extends' on Tag entities (DB-only,
-idempotent) instead of leaving them for an interactive path-rename step.
-Records that cannot be resolved (missing child/parent, a cycle, or a
-conflicting existing `:extends') remain in `:legacy-extends' and are reported
-by `supertag-migrate-status' under `:unresolved-extends'.
-
-7.0.0 preserves retired field data as pending migration records.
-The verified migration chain stamps this version only after DB steps succeed.
-
-Bumped 6.0.0 -> 6.1.0 to retire the duplicate `:node-tag' relation
-projection.  Node `:tags' remains the authoritative membership projection.
-
-Bumped 5.0.0 -> 6.0.0 (P1-8, see
-archive/legacy-v2/2026-08-25-phrase/phases/phase-git-sync-20260713/PLAN.md
-\"S2 规范化序列化\", 修订 2026-07-13): the S2 canonical, line-per-entity
-serialization is NOT actually readable by pre-6.0 (<= 5.9.x) builds the way
-the original S2 writeup assumed. Those builds'
-`supertag--persistence--try-read-store'
-does exactly ONE `read' of the file and returns whatever single form that
-call happens to consume; against the canonical format's line-per-entity
-layout, that first `read' only ever sees the root scalar line (e.g.
-`(:version \"6.0.0\" ...)') and never reaches any of the following
-`(:collection ...)' entity lines -- so an old build loads what LOOKS like a
-valid, merely-empty store, not a parse error. Bumping the data version at
-least makes `supertag--maybe-auto-migrate' fire (with its own pre-migration
-snapshot) the first time a pre-6.0 database is loaded by THIS (>= 6.0)
-build, and keeps `supertag--get-data-version'/`supertag-migrate-run'
-honest about the fact that the format actually changed here. See
-`supertag--persistence--write-canonical-store' for the belt-and-suspenders
-`supertag-db-preformat6-*' snapshot, which covers the case this version
-bump alone does not: a database already stamped `:version \"6.0.0\"' (or
-any version equal to `supertag-data-version') by a subsequent save, so
-`supertag--maybe-auto-migrate' sees no version mismatch and never runs,
-yet the on-disk file might still be the pre-canonical (legacy single-`prin1')
-format if it was never resaved since upgrading this package.")
 
 ;; Time validation remains with persistence after schema retirement.
 (defun supertag--validate-optional-time (time-value)
@@ -1963,6 +1915,12 @@ revision zero), rebuilds indexes, and keeps presence advisory."
         (setq load-status (cond (failures :failed)
                                 (snapshots :missing-with-backups)
                                 (t :new)))
+        ;; A genuinely new vault holds current-version data, so stamp it here:
+        ;; without this a fresh store is saved unstamped and reads back as an
+        ;; unknown legacy version.  `:failed' and `:missing-with-backups' are
+        ;; NOT new vaults -- they keep no version, and their saves stay blocked.
+        (when (eq load-status :new)
+          (puthash :version supertag-data-version supertag--store))
         (supertag-clear-dirty)
         (supertag--record-store-origin
          load-status
@@ -2151,12 +2109,13 @@ Returns t if times are equal, otherwise returns nil."
 ;;; --- Data Version Management ---
 
 (defun supertag--get-data-version (data)
-  "Extract version information from the data store.
-DATA should be the main data storage hash table.
-Returns the version string, or a default old version if not found."
-  (if (hash-table-p data)
-      (or (gethash :version data) "4.0.0")  ; Default old version
-    "4.0.0"))
+  "Return DATA's stored data-version string, or nil when it has none.
+DATA should be the main data storage hash table.  A missing stamp is
+deliberately reported as nil (unknown) rather than as a fabricated old
+version: callers must refuse to migrate an unknown store instead of
+guessing, and a store this session created itself carries the current
+version because `supertag--ensure-store' stamps it."
+  (and (hash-table-p data) (gethash :version data)))
 
 (defun supertag--set-data-version (data version)
   "Set version information in the data store.

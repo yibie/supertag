@@ -281,9 +281,14 @@ non-nil when any record's disposition changed."
     (if (equal version supertag-data-version) t
       (condition-case err
           (progn
-            (unless (and (stringp version) (version<= "5.0.0" version)
-                         (version< version supertag-data-version))
-              (user-error "Unsupported data version %s; 请用 supertag 6.x 先升级" version))
+            (cond
+             ((null version)
+              (user-error "Database has no :version stamp, so its data version is unknown; refusing to guess (nothing was changed). Back it up and migrate manually once you know which release wrote it"))
+             ((version< supertag-data-version version)
+              (user-error "Data version %s is newer than this build (%s); upgrade Supertag instead of migrating"
+                          version supertag-data-version))
+             ((version<= "5.0.0" version) nil)
+             (t (user-error "Unsupported data version %s; 请用 supertag 6.x 先升级" version)))
             (when (supertag-dirty-p)
               (user-error "Save or discard pending Store changes before migration"))
             (setq snapshot (supertag-migrate--snapshot version)

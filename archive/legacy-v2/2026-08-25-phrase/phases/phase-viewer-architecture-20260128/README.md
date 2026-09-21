@@ -4,7 +4,7 @@
 
 - **名称**: phase-viewer-architecture-20260128
 - **状态**: 规划中 / 等待启动
-- **依赖**: [DONE-phase-virtual-columns-20260128](../DONE-phase-virtual-columns-20260128/)
+- **依赖**: [DONE-phase-virtual-columns-20260128](../DONE-phase-virtual-columns-20260128)
 
 ## 目标
 
@@ -92,7 +92,7 @@ phase-viewer-architecture-20260128/
 
 ## 前一阶段成果
 
-[DONE-phase-virtual-columns-20260128](../DONE-phase-virtual-columns-20260128/) 已完成：
+[DONE-phase-virtual-columns-20260128](../DONE-phase-virtual-columns-20260128) 已完成：
 - 4 种虚拟列类型
 - UI 集成
 - 性能优化（比目标快 1000-10000 倍）

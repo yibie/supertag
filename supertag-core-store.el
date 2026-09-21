@@ -2,8 +2,10 @@
 
 ;;; Commentary:
 ;; This file implements the physical Store for Supertag.  The Store holds
-;; Semantic Facts, Document Projections, and derived state; ownership is defined
-;; by doc/OWNERSHIP-CONSTITUTION_cn.md, not by physical residence here.
+;; Semantic Facts, Document Projections and derived state.  Physical storage does
+;; not decide ownership, and the old ownership charter
+;; (archive/docs/legacy/OWNERSHIP-CONSTITUTION_cn.md) is historical material,
+;; not current authority.
 
 
 ;; Commands: none; Lisp entrypoints include supertag-get, supertag-set,
@@ -234,10 +236,61 @@ on the next save.  `:queries' was retired on 2026-09-06: the loader
       (supertag-emit-event :store-changed (list collection id) nil canonical))
     canonical))
 
+(defconst supertag-data-version "7.2.0"
+  "Current data format version.
+Used for data format compatibility checks and automatic migration.
+
+Bumped 7.1.0 -> 7.2.0: a Tag's `:extends' is a list of parent Tag IDs, not a
+single parent ID.  `supertag-migrate--normalize-extends-lists' rewrites every
+stored string into a one-element list (DB-only, idempotent), and
+`supertag-migrate--apply-legacy-extends' now adds a parent to the list
+instead of reporting a second parent as a conflict.
+
+Bumped 7.0.0 -> 7.1.0: `supertag-migrate--apply-legacy-extends' now resolves
+`:legacy-extends' records directly into `:extends' on Tag entities (DB-only,
+idempotent) instead of leaving them for an interactive path-rename step.
+Records that cannot be resolved (missing child/parent, a cycle, or a
+conflicting existing `:extends') remain in `:legacy-extends' and are reported
+by `supertag-migrate-status' under `:unresolved-extends'.
+
+7.0.0 preserves retired field data as pending migration records.
+The verified migration chain stamps this version only after DB steps succeed.
+
+Bumped 6.0.0 -> 6.1.0 to retire the duplicate `:node-tag' relation
+projection.  Node `:tags' remains the authoritative membership projection.
+
+Bumped 5.0.0 -> 6.0.0 (P1-8, see
+archive/legacy-v2/2026-08-25-phrase/phases/phase-git-sync-20260713/PLAN.md
+\"S2 规范化序列化\", 修订 2026-07-13): the S2 canonical, line-per-entity
+serialization is NOT actually readable by pre-6.0 (<= 5.9.x) builds the way
+the original S2 writeup assumed. Those builds'
+`supertag--persistence--try-read-store'
+does exactly ONE `read' of the file and returns whatever single form that
+call happens to consume; against the canonical format's line-per-entity
+layout, that first `read' only ever sees the root scalar line (e.g.
+`(:version \"6.0.0\" ...)') and never reaches any of the following
+`(:collection ...)' entity lines -- so an old build loads what LOOKS like a
+valid, merely-empty store, not a parse error. Bumping the data version at
+least makes `supertag--maybe-auto-migrate' fire (with its own pre-migration
+snapshot) the first time a pre-6.0 database is loaded by THIS (>= 6.0)
+build, and keeps `supertag--get-data-version'/`supertag-migrate-run'
+honest about the fact that the format actually changed here. See
+`supertag--persistence--write-canonical-store' for the belt-and-suspenders
+`supertag-db-preformat6-*' snapshot, which covers the case this version
+bump alone does not: a database already stamped `:version \"6.0.0\"' (or
+any version equal to `supertag-data-version') by a subsequent save, so
+`supertag--maybe-auto-migrate' sees no version mismatch and never runs,
+yet the on-disk file might still be the pre-canonical (legacy single-`prin1')
+format if it was never resaved since upgrading this package.")
+
 (defun supertag--ensure-store ()
-  "Ensure `supertag--store' exists and has canonical collections."
+  "Ensure `supertag--store' exists and has canonical collections.
+A store created here is current-version data, so it is stamped with
+`supertag-data-version'.  A store that came from disk keeps the version its
+file carried, including none at all -- an unstamped file is unknown, not current."
   (unless (hash-table-p supertag--store)
-    (setq supertag--store (ht-create)))
+    (setq supertag--store (ht-create))
+    (puthash :version supertag-data-version supertag--store))
   (dolist (collection supertag--store-collections)
     (let ((bucket (gethash collection supertag--store 'missing)))
       (unless (hash-table-p bucket)

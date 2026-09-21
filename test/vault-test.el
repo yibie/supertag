@@ -738,108 +738,62 @@
 (ert-deftest supertag-vault-vd-generated-activate-precondition () (supertag-vault-test--vd-child "generated-activate"))
 (ert-deftest supertag-vault-vd-generated-auto-precondition () (supertag-vault-test--vd-child "generated-auto"))
 
-;;; VAULT-E: independent Setup entry and writer boundaries.
-(defconst supertag-vault-test--ve-program ";;; -*- lexical-binding: t; -*-\n(require 'ert)\n(require 'cl-lib)\n(let* ((tree (getenv \"VE_TREE\")) (tmp (getenv \"VE_TMP\"))\n       (case (getenv \"VE_CASE\")) (phase (getenv \"VE_PHASE\"))\n       (before (equal (getenv \"SUPERTAG_VE_STAGE\") \"before\"))\n       (root (expand-file-name \"org/\" tmp)) (data (expand-file-name \"data/\" tmp))\n       (generated (expand-file-name \"autoloads.el\" tree))\n       (prompts 0) (init-count 0) (provider-count 0) (resolver-count 0)\n       (input-choice \"Nothing -- I only wanted to see the status\")\n       (init-advice (lambda (&rest _) (cl-incf init-count)))\n       saved-cell result)\n  (setq user-emacs-directory (file-name-as-directory tmp)\n        default-directory (file-name-as-directory tmp) after-init-time nil\n        load-prefer-newer nil org-id-locations-file (expand-file-name \"ids\" tmp))\n  (make-directory root t)\n  (unwind-protect\n      (progn\n        (cond\n         ((equal phase \"generate\")\n          (require 'loaddefs-gen)\n          (loaddefs-generate (list tree) generated\n           (cl-remove-if (lambda (s) (member (file-name-nondirectory s)\n                                  '(\"supertag.el\" \"supertag-vault.el\" \"supertag-setup.el\")))\n                         (directory-files tree t \"\\\\.el\\\\'\")) nil nil t)\n          (let (forms)\n            (with-temp-buffer\n              (insert-file-contents generated)\n              (goto-char (point-min))\n              (condition-case nil\n                  (while t (let ((f (read (current-buffer))))\n                             (when (eq (car-safe f) 'autoload) (push f forms))))\n                (end-of-file nil)))\n            (dolist (spec `((supertag-setup ,(if before \"supertag-setup\" \"supertag-vault\") t)\n                           (supertag--effective-sync-directories \"supertag\" nil)))\n              (let ((hits (cl-remove-if-not (lambda (f) (eq (cadr (cadr f)) (car spec))) forms)))\n                (should (= 1 (length hits)))\n                (should (equal (nth 2 (car hits)) (nth 1 spec)))\n                (should (eq (nth 4 (car hits)) (nth 2 spec)))\n                (should (stringp (nth 3 (car hits))))))))\n         ((equal phase \"compile\")\n          (require 'bytecomp)\n          (setq supertag-data-directory data supertag-db-file (expand-file-name \"store.el\" data)\n                supertag-db-backup-directory (expand-file-name \"backups/\" data)\n                supertag-sync-state-file (expand-file-name \"sync.el\" data)\n                supertag-sync-directories (list root) supertag-sync-auto-start nil)\n          (dolist (name (append '(\"supertag-vault.el\" \"supertag.el\" \"supertag-menu.el\")\n                               (when before '(\"supertag-setup.el\"))))\n            (should (byte-compile-file (expand-file-name name tree)))))\n         (t\n          (when (equal case \"foreign-before\")\n            (autoload 'supertag-init \"ve-foreign\" \"foreign\" t)\n            (setq saved-cell (symbol-function 'supertag-init)))\n          (when (member case '(\"pending\" \"late\"))\n            (should-not (fboundp 'supertag-init))\n            (advice-add 'supertag-init :before init-advice))\n          (when (equal case \"ordinary-before\")\n            (fset 'supertag-init (lambda () (cl-incf provider-count)))\n            (setq saved-cell (symbol-function 'supertag-init)))\n          ;; Pure phase, no configuration, no document-fixture or Sync preload.\n          (unless (member case '(\"generated\" \"menu\" \"load-error\" \"load-quit\"))\n            (require (if before 'supertag-services-template 'supertag-service-org))\n            (should-not (featurep 'supertag))\n            (should-not (featurep 'supertag-services-sync))\n            (should-not (boundp 'supertag-vault--current))\n            (should-not (boundp 'supertag--base-data-directory))\n            (should-not (fboundp 'supertag--effective-sync-directories))\n            (unless (member case '(\"foreign-before\" \"ordinary-before\"))\n              (if before (should-not (fboundp 'supertag-init))\n                (let ((c (symbol-function 'supertag-init)))\n                  (princ (format \"VE-INIT-CELL %S\\n\" c))\n                  (should (autoloadp c)) (should (equal \"supertag\" (nth 1 c)))\n                  (should (eq t (nth 3 c))) (should-not (nth 4 c))))))\n          (if (equal case \"pure\")\n              (progn\n                (when before (require 'supertag-setup) (should (featurep 'supertag)))\n                (princ (format \"VE-ENTRY pure main=%S\\n\" (featurep 'supertag))))\n            ;; Configuration below is entirely temporary. Entry still loads actual main.\n            (setq supertag-data-directory data supertag-db-file (expand-file-name \"store.el\" data)\n                  supertag-db-backup-directory (expand-file-name \"backups/\" data)\n                  supertag-sync-state-file (expand-file-name \"sync.el\" data)\n                  supertag-sync-directories (list root) supertag-sync-directories-mode 'unified\n                  supertag-sync-auto-start nil supertag-tag-auto-enable nil\n                  supertag-vault-auto-switch nil supertag-view-node-auto-show nil)\n            (when (member case '(\"late\" \"pending\")) (setq after-init-time '(1 0 0 0)))\n            (when (equal case \"foreign-before\") (should (eq saved-cell (symbol-function 'supertag-init))))\n            (when (member case '(\"foreign-after\" \"compiled-foreign\"))\n              (autoload 'supertag-init \"ve-foreign\" \"foreign\" t)\n              (setq saved-cell (symbol-function 'supertag-init)))\n            (when (member case '(\"macro\" \"keymap\"))\n              (fset 'supertag-init (list 'autoload \"supertag\" \"typed\" t (intern case)))\n              (setq saved-cell (symbol-function 'supertag-init)))\n            (when (equal case \"unbound\")\n              ;; Explicit mutation of the post-load cell, not a cold-load simulation.\n              (fmakunbound 'supertag-init))\n            (let* ((reject (member case '(\"foreign-before\" \"foreign-after\" \"compiled-foreign\"\n                                          \"ordinary-before\" \"macro\" \"keymap\" \"unbound\")))\n                   (load-failure (member case '(\"load-error\" \"load-quit\")))\n                   (main-loads 0)\n                   (real-load (symbol-function 'load))\n                   (real-resolve (symbol-function 'autoload-do-load)))\n              (cl-letf (((symbol-function 'completing-read)\n                         (lambda (&rest _)\n                           (should (featurep 'supertag)) (cl-incf prompts) input-choice))\n                        ((symbol-function 'autoload-do-load)\n                         (lambda (&rest args) (when (eq (cadr args) 'supertag-init) (cl-incf resolver-count)) (apply real-resolve args)))\n                        ((symbol-function 'load)\n                         (lambda (file &rest args)\n                           (when (member file '(\"supertag\" \"supertag.el\" \"supertag.elc\"))\n                             (cl-incf main-loads)\n                             (when load-failure\n                               (signal (if (equal case \"load-quit\") 'quit 'error) '(\"VE injected main load\"))))\n                           (apply real-load file args))))\n                (setq result\n                      (condition-case err\n                          (progn\n                            (cond\n                             ((equal case \"generated\") (load generated nil nil t)\n                              (should (autoloadp (symbol-function 'supertag-setup)))\n                              (call-interactively 'supertag-setup))\n                             ((equal case \"menu\") (require 'supertag-menu)\n                              (call-interactively 'supertag-menu--setup))\n                             (t (require (if before 'supertag-setup 'supertag-vault))\n                                (when (equal case \"compiled\")\n                                  (should (byte-code-function-p (symbol-function 'supertag-setup))))\n                                (call-interactively 'supertag-setup)))\n                            'ok)\n                        ((error quit) err)))\n                (princ (format \"VE-ENTRY %s before=%S result=%S main=%S prompts=%s init=%s resolver=%s\\n\"\n                               case before result (featurep 'supertag) prompts init-count resolver-count))\n                (cond\n                 (load-failure\n                  (should (eq (car-safe result) (if (equal case \"load-quit\") 'quit 'error)))\n                  (should (= 0 prompts)) (should-not (featurep 'supertag)))\n                 ((and reject (not before))\n                  (should (eq (car-safe result) 'user-error))\n                  (should (equal (cadr result) \"Supertag setup requires the main entry; load supertag first\"))\n                  (should-not (featurep 'supertag)) (should (= 0 prompts))\n                  (should (= 0 resolver-count)) (should (= 0 provider-count))\n                  (if saved-cell (should (eq saved-cell (symbol-function 'supertag-init)))\n                    (when (equal case \"unbound\") (should-not (fboundp 'supertag-init)))))\n                 (t\n                  (should (eq result 'ok)) (should (featurep 'supertag)) (should (= 1 prompts))\n                  (if (member case '(\"late\" \"pending\"))\n                      (progn (should supertag--initialized) (should (= 1 init-count))\n                             (should (advice-member-p init-advice 'supertag-init)))\n                    (should-not supertag--initialized)\n                    (should (memq 'supertag-init emacs-startup-hook)))\n                  ;; Already-loaded main must not repeat initialization or replace an advised cell.\n                  (let ((cell (symbol-function 'supertag-init)) (count init-count))\n                    (call-interactively 'supertag-setup)\n                    (should (eq cell (symbol-function 'supertag-init)))\n                    (should (= count init-count))))))\n              (when (equal case \"owner\")\n                (should (equal (if (and before (not (getenv \"VE_OWNER_RED\"))) \"supertag-setup.el\" \"supertag-vault.el\")\n                               (file-name-nondirectory (symbol-file 'supertag-setup 'defun))))))\n            (when (equal case \"loaded-private\")\n              (let ((cell (lambda () (cl-incf provider-count))))\n                (fset 'supertag-init cell)\n                (cl-letf (((symbol-function 'completing-read) (lambda (&rest _) input-choice)))\n                  (call-interactively 'supertag-setup))\n                (should (eq cell (symbol-function 'supertag-init)))\n                (should (= 0 provider-count))))\n            (when (equal case \"persist-quit\")\n              (setq supertag-sync-directories nil)\n              (let ((questions 0))\n                (cl-letf (((symbol-function 'read-directory-name) (lambda (&rest _) root))\n                          ((symbol-function 'completing-read)\n                           (lambda (prompt choices &rest _)\n                             (if (string-match-p \"persisted\\\\|Apply how\" prompt)\n                                 (car (last choices 2)) (car choices))))\n                          ((symbol-function 'y-or-n-p)\n                           (lambda (&rest _) (cl-incf questions)\n                             (if (= questions 1) nil (signal 'quit nil)))))\n                  (should-not (call-interactively 'supertag-setup)))\n                (should (= 2 questions)) (should (equal (list root) supertag-sync-directories))))\n            (when (member case '(\"session\" \"snippet\" \"save\" \"partial-save\" \"guard\" \"scan\" \"quit\"))\n              (let ((new-roots (list (expand-file-name \"other/\" tmp)))\n                    (new-id 'denote) (calls 0)\n                    (custom-file (expand-file-name \"custom.el\" tmp))\n                    (user-init-file (expand-file-name \"init.el\" tmp)))\n                (with-temp-file user-init-file (insert \"; temporary init\\n\"))\n                (let ((old-roots supertag-sync-directories))\n                  (cond\n                   ((equal case \"scan\")\n                    (with-temp-file (expand-file-name \"note.org\" root)\n                      (insert \"* VE node\\n:PROPERTIES:\\n:ID: ve-node\\n:END:\\nBody\\n\"))\n                    (supertag-load-store)\n                    (let ((n (supertag-setup--node-count)))\n                      (cl-letf (((symbol-function 'y-or-n-p) (lambda (&rest _) t)))\n                        (supertag-setup--run-scan 'supertag-sync-full-rescan \"VE scan\"))\n                      (should (supertag-node-get \"ve-node\"))\n                      (should (> (supertag-setup--node-count) n)))\n                    (let ((ensure (symbol-function 'supertag-persistence-ensure-data-directory)))\n                      (cl-letf (((symbol-function 'supertag-persistence-ensure-data-directory)\n                                 (lambda (&rest args) (cl-incf calls) (apply ensure args)))\n                                ((symbol-function 'y-or-n-p) (lambda (&rest _) nil)))\n                        (supertag-setup--run-scan 've-unavailable \"missing\")\n                        (supertag-setup--run-scan 'supertag-sync-full-rescan \"declined\")\n                        (should (= 0 calls))))\n                    (cl-letf (((symbol-function 'y-or-n-p) (lambda (&rest _) t))\n                              ((symbol-function 'supertag-persistence-ensure-data-directory)\n                               (lambda () (error \"VE ensure failure\"))))\n                      (should (equal (should-error (supertag-setup--run-scan 'supertag-sync-full-rescan \"ensure\"))\n                                     '(error \"VE ensure failure\"))))\n                    (cl-letf (((symbol-function 'y-or-n-p) (lambda (&rest _) t))\n                              ((symbol-function 'supertag-sync-full-rescan)\n                               (lambda () (error \"VE scan failure\"))))\n                      (should (equal (should-error (supertag-setup--run-scan 'supertag-sync-full-rescan \"scan\"))\n                                     '(error \"VE scan failure\")))))\n                   ((equal case \"quit\")\n                    (let ((supertag-sync-directories nil))\n                      (cl-letf (((symbol-function 'read-directory-name) (lambda (&rest _) (signal 'quit nil))))\n                        (should-not (call-interactively 'supertag-setup)))\n                      (should-not supertag-sync-directories))\n                    (should (eq old-roots supertag-sync-directories)))\n                   (t\n                    (when (equal case \"guard\")\n                      (setq supertag--initialized t) (supertag-config-guard-enable))\n                    (require 'cus-edit)\n                    (let ((real-save (symbol-function 'customize-save-variable)))\n                      (cl-letf (((symbol-function 'completing-read)\n                                 (lambda (_prompt choices &rest _)\n                                   (cond ((member case '(\"save\" \"partial-save\")) (car choices))\n                                         ((equal case \"snippet\") (car (last choices)))\n                                         (t (car (last choices 2))))))\n                                ((symbol-function 'customize-save-variable)\n                                 (lambda (&rest args)\n                                   (cl-incf calls)\n                                   (if (and (equal case \"partial-save\") (= calls 2))\n                                       (error \"VE second save\") (apply real-save args)))))\n                        (if (member case '(\"guard\" \"partial-save\"))\n                            (should-error (supertag-setup--persist new-roots new-id))\n                          (supertag-setup--persist new-roots new-id))))\n                    (if (equal case \"guard\")\n                        (should (eq old-roots supertag-sync-directories))\n                      (should (equal new-roots supertag-sync-directories))\n                      (should (eq new-id supertag-file-id-source))\n                      (cond\n                       ((equal case \"snippet\")\n                        (should (get-buffer \"*supertag-setup*\"))\n                        (should (string-match-p \"denote\" (with-current-buffer \"*supertag-setup*\" (buffer-string)))))\n                       ((member case '(\"save\" \"partial-save\"))\n                        (with-temp-buffer\n                          (insert-file-contents custom-file)\n                          (should (search-forward \"supertag-sync-directories\" nil t))\n                          (goto-char (point-min))\n                          (should (eq (not (equal case \"partial-save\"))\n                                      (not (null (search-forward \"supertag-file-id-source\" nil t)))))))))))\n                  (princ (format \"VE-WRITER %s roots=%S id=%S calls=%s\\n\"\n                                 case supertag-sync-directories supertag-file-id-source calls))\n                  (when (getenv \"VE_WRONG_OUTPUT\") (should (equal supertag-file-id-source 've-wrong)))))))))\n        (princ (format \"VE-DONE %s/%s\\n\" case phase)))\n    (dolist (s '(supertag-data-directory supertag-db-file supertag-db-backup-directory\n                 supertag-sync-state-file supertag-sync-directories supertag-active-sync-directory))\n      (remove-variable-watcher s 'supertag-config-guard--watch))\n    (setq emacs-startup-hook nil kill-emacs-hook nil org-mode-hook nil enable-theme-functions nil)\n    (dolist (b (buffer-list))\n      (when (buffer-file-name b) (with-current-buffer b (set-buffer-modified-p nil)) (kill-buffer b)))\n    (mapc #'cancel-timer (append timer-list timer-idle-list))))\n")
 
-(defun supertag-vault-test--ve-child (case)
-  "Run Setup CASE through real production in fresh, isolated processes."
-  (let* ((tmp (make-temp-file "supertag-ve-" t))
-         (tree (expand-file-name "tree/" tmp))
-         (source (or (getenv "SUPERTAG_VE_ROOT")
-                     (file-name-directory (locate-library "supertag-vault"))))
-         (program (or (getenv "EMACS_BIN") (expand-file-name invocation-name invocation-directory)))
+
+(ert-deftest supertag-vault-setup-entry-retired ()
+  "The retired wizard is gone from the public surface."
+  (should-not (fboundp 'supertag-setup))
+  (should-not (commandp 'supertag-setup))
+  (should-not (fboundp 'supertag-setup--run))
+  (should-not (fboundp 'supertag-setup--persist))
+  (should-not (fboundp 'supertag-menu--setup)))
+
+(ert-deftest supertag-vault-cold-start-template-configures-and-scans ()
+  "Pre-require configuration plus one full rescan is the documented cold start."
+  (let* ((tmp (make-temp-file "supertag-coldstart-" t))
+         (org (expand-file-name "org/" tmp))
+         (home (expand-file-name "home/" tmp))
+         (prog (expand-file-name "cold.el" tmp))
+         (repo (file-name-directory (locate-library "supertag-vault")))
+         (emacs (or (getenv "EMACS_BIN")
+                    (expand-file-name invocation-name invocation-directory)))
          (deps (split-string (or (getenv "SUPERTAG_DEPS_LOADPATH") "") path-separator t))
          (process-environment (copy-sequence process-environment))
-         (default-directory tmp)
-         (evidence (getenv "SUPERTAG_VE_EVIDENCE")))
+         (default-directory tmp))
     (unwind-protect
         (progn
-          (make-directory tree)
-          (dolist (file (directory-files source t "\\.el\\'"))
-            (copy-file file (expand-file-name (file-name-nondirectory file) tree)))
-          (when (member case '("load-error" "load-quit"))
-            ;; Inject in actual main source, not a fake provide or require stub.
-            (with-temp-buffer
-              (insert-file-contents (expand-file-name "supertag.el" tree))
-              (goto-char (point-min)) (forward-line 1)
-              (insert (if (equal case "load-quit") "(signal 'quit '(\"VE main load\"))\n"
-                        "(error \"VE main load\")\n"))
-              (write-region (point-min) (point-max) (expand-file-name "supertag.el" tree) nil 'silent)))
-          (with-temp-file (expand-file-name "ve-foreign.el" tree)
-            (insert "(error \"VE FOREIGN PROVIDER EXECUTED\")\n"))
-          (setenv "HOME" tmp) (setenv "CFFIXED_USER_HOME" tmp)
-          (setenv "EMACSLOADPATH" (concat (mapconcat #'identity deps path-separator) path-separator))
-          (setenv "VE_TREE" tree) (setenv "VE_TMP" tmp) (setenv "VE_CASE" case)
-          (dolist (phase (append (cond ((equal case "generated") '("generate"))
-                                      ((member case '("compiled" "compiled-foreign")) '("compile")))
-                                 '("execute")))
-            (setenv "VE_PHASE" phase)
-            (let ((file (expand-file-name (concat phase ".el") tmp)))
-              (with-temp-file file (insert supertag-vault-test--ve-program))
-              (with-temp-buffer
-                (let ((status (apply #'call-process program nil t nil
-                                     (append '("-Q" "--batch")
-                                             (apply #'append (mapcar (lambda (d) (list "-L" d)) deps))
-                                             (list "-L" tree "-l" file)))))
-                  (when evidence
-                    (let ((out (expand-file-name (concat case "/") evidence)))
-                      (make-directory out t)
-                      (copy-file file (expand-file-name (concat phase ".el") out) t)
-                      (write-region (point-min) (point-max) (expand-file-name (concat phase ".log") out) nil 'silent)
-                      (with-temp-file (expand-file-name (concat phase ".exit") out) (insert (format "%s\n" status)))
-                      (dolist (name '("autoloads.el" "supertag.elc" "supertag-vault.elc" "supertag-menu.elc" "supertag-setup.elc"))
-                        (when (file-exists-p (expand-file-name name tree))
-                          (copy-file (expand-file-name name tree) (expand-file-name name out) t)))))
-                  (princ (buffer-string)) (should (equal 0 status))
-                  (should (string-match-p (format "VE-DONE %s/%s" case phase) (buffer-string))))))))
+          (make-directory org t)
+          (make-directory home t)
+          (setenv "HOME" home)
+          (setenv "CFFIXED_USER_HOME" home)
+          (with-temp-file (expand-file-name "note.org" org)
+            (insert "* Node A\n:PROPERTIES:\n:ID: id-a\n:END:\nBody A\n\n* No ID heading\nBody B\n"))
+          (with-temp-file prog
+            (insert (format ";;; -*- lexical-binding: t; -*-\n
+(setq user-emacs-directory %S)\n
+(setq custom-file (expand-file-name \"custom.el\" user-emacs-directory))\n
+(setq org-id-locations-file (expand-file-name \"org-id-locations.el\" user-emacs-directory))\n
+(setq supertag-sync-directories (list %S))\n
+(require 'supertag)\n
+(supertag-sync-full-rescan)\n
+(let ((titles nil))\n
+  (maphash (lambda (_id n) (push (plist-get n :title) titles)) (supertag-store-get-collection :nodes))\n
+  (princ (format \"COLD-OK node=%%S no-id=%%S store=%%S\\n\"\n
+                 (and (supertag-node-get \"id-a\") t)\n
+                 (not (member \"No ID heading\" titles))\n
+                 (file-exists-p supertag-db-file))))\n"
+                    (expand-file-name home) org)))
+          (let* ((out (with-temp-buffer
+                        (let ((status (apply #'call-process
+                                             emacs nil t nil
+                                             (append (list "-Q" "--batch"
+                                                           "-L" repo
+                                                           "-L" (expand-file-name "test" repo))
+                                                     (cl-loop for d in deps
+                                                              append (list "-L" d))
+                                                     (list "-l" prog)))))
+                          (cons status (buffer-string))))))
+            (should (equal 0 (car out)))
+            (should (string-match-p "COLD-OK node=t no-id=t store=t" (cdr out)))
+            (should-not (string-match-p "config change blocked" (cdr out)))))
       (delete-directory tmp t))))
-
-(ert-deftest supertag-vault-ve-loaded-private () (supertag-vault-test--ve-child "loaded-private"))
-
-(ert-deftest supertag-vault-ve-persist-quit () (supertag-vault-test--ve-child "persist-quit"))
-
-(ert-deftest supertag-vault-ve-pure () (supertag-vault-test--ve-child "pure"))
-
-(ert-deftest supertag-vault-ve-generated () (supertag-vault-test--ve-child "generated"))
-
-(ert-deftest supertag-vault-ve-menu () (supertag-vault-test--ve-child "menu"))
-
-(ert-deftest supertag-vault-ve-late () (supertag-vault-test--ve-child "late"))
-
-(ert-deftest supertag-vault-ve-pending () (supertag-vault-test--ve-child "pending"))
-
-(ert-deftest supertag-vault-ve-foreign-before () (supertag-vault-test--ve-child "foreign-before"))
-
-(ert-deftest supertag-vault-ve-foreign-after () (supertag-vault-test--ve-child "foreign-after"))
-
-(ert-deftest supertag-vault-ve-ordinary-before () (supertag-vault-test--ve-child "ordinary-before"))
-
-(ert-deftest supertag-vault-ve-macro () (supertag-vault-test--ve-child "macro"))
-
-(ert-deftest supertag-vault-ve-keymap () (supertag-vault-test--ve-child "keymap"))
-
-(ert-deftest supertag-vault-ve-unbound () (supertag-vault-test--ve-child "unbound"))
-
-(ert-deftest supertag-vault-ve-load-error () (supertag-vault-test--ve-child "load-error"))
-
-(ert-deftest supertag-vault-ve-load-quit () (supertag-vault-test--ve-child "load-quit"))
-
-(ert-deftest supertag-vault-ve-session () (supertag-vault-test--ve-child "session"))
-
-(ert-deftest supertag-vault-ve-snippet () (supertag-vault-test--ve-child "snippet"))
-
-(ert-deftest supertag-vault-ve-save () (supertag-vault-test--ve-child "save"))
-
-(ert-deftest supertag-vault-ve-partial-save () (supertag-vault-test--ve-child "partial-save"))
-
-(ert-deftest supertag-vault-ve-guard () (supertag-vault-test--ve-child "guard"))
-
-(ert-deftest supertag-vault-ve-scan () (supertag-vault-test--ve-child "scan"))
-
-(ert-deftest supertag-vault-ve-quit () (supertag-vault-test--ve-child "quit"))
-
-(ert-deftest supertag-vault-ve-compiled () (supertag-vault-test--ve-child "compiled"))
-
-(ert-deftest supertag-vault-ve-compiled-foreign () (supertag-vault-test--ve-child "compiled-foreign"))
-
-(ert-deftest supertag-vault-ve-owner () (supertag-vault-test--ve-child "owner"))

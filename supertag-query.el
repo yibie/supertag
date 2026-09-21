@@ -444,6 +444,8 @@ Symbols (e.g. from dynamic variables like <%today%>) become their name."
 
 (defun supertag-query--parse-sexp (query-sexp)
   "Parse a query S-expression into an AST.
+Built-in operators take precedence over property-name shorthand.
+Unreserved symbols with one string argument desugar to `property'.
 This function is compatible with the old query syntax."
   (let ((op (car query-sexp))
         (args (cdr query-sexp)))
@@ -495,7 +497,7 @@ This function is compatible with the old query syntax."
         (error "'group-by' operator expects exactly one property key, but got %S" args))
       `(:type group-by :key ,(if (stringp (car args)) (car args)
                                  (symbol-name (car args)))))
-     ((eq op 'task)
+     ((memq op '(todo task))
       ;; Zero or more states; zero states match no node (identity of OR).
       `(:type task
               :values ,(mapcar (lambda (a)
@@ -584,6 +586,15 @@ This function is compatible with the old query syntax."
         `(:type between
                 :start-date ,(format "%04d-01-01" arg)
                 :end-date ,(format "%04d-01-01" (1+ arg)))))
+     ;; Keep this last: built-ins (including malformed ones) never fall
+     ;; through to a same-named Org property.  Explicit `property' is the
+     ;; escape hatch for reserved names.
+     ((and (symbolp op) op (not (keywordp op)))
+      (unless (and (= (length args) 1) (stringp (car args)))
+        (error "Property shorthand '%s' expects exactly one string argument, but got %S"
+               op args))
+      (supertag-query--parse-sexp
+       (list 'property (symbol-name op) (car args))))
      (t
       (error "Invalid query operator: %S" op)))))
 
@@ -1801,7 +1812,10 @@ Combinators
 
 Leaf conditions
   (tag NAME)             nodes carrying tag NAME
-  (property KEY VALUE)   nodes whose property KEY equals VALUE (exact match)
+  (PROPERTY VALUE)       custom Org property equals VALUE, e.g. (status \"doing\")
+  (property KEY VALUE)   explicit property lookup, including reserved names
+  (todo STATE...)        Org TODO state; multiple states match any (case-sensitive)
+  (priority VALUE...)    Org priority, e.g. (priority \"A\")
   (term WORD)            substring search over node title/content
   (after DATE)           nodes dated after DATE
   (before DATE)          nodes dated before DATE
@@ -1830,12 +1844,17 @@ Date formats (DATE / START / END above)
                         (the future); m is approximated as 30 days,
                         y as 365.25 days.
 
-NAME/KEY/VALUE/WORD must be strings (double-quoted); bare symbols are
-also accepted for NAME/KEY/VALUE but numbers are not -- write
-\"5\", not 5.
+Use strings (double-quoted) for names and values: \"5\", not 5.
+Property keys and values require strings.  Tag names and TODO states
+also accept bare symbols.
 
-`field' is accepted as an older spelling of `property' so existing
-query blocks keep working; `property' is the spelling to write.
+Property shorthand takes exactly one string value; property names are
+case-insensitive, values are exact matches.  Built-in operators take
+precedence: (todo \"TODO\") reads the heading state, while
+(property \"todo\" \"TODO\") reads the custom TODO property.
+Unknown operator names are treated as property names, including typos.
+Use explicit `property' for names that collide with any built-in operator.
+`task' remains an alias of `todo'; `field' remains an alias of `property'.
 
 Examples (simple to complex)
   (tag \"project\")
@@ -1854,11 +1873,11 @@ Examples (simple to complex)
        (link work/tasks
              (and (tag \"task\") (property \"status\" \"blocked\"))))
 
-See doc/QUERY.md for the full reference, composition examples, where
+See doc/query.md for the full reference, composition examples, where
 queries can be used (babel blocks, dynamic blocks, the
 guided builder), and troubleshooting."
   "Reference text shown by `supertag-query-describe-syntax'.
-Kept in sync with doc/QUERY.md by hand; doc/QUERY.md is the fuller
+Kept in sync with doc/query.md by hand; doc/query.md is the fuller
 version of this same content.")
 
 ;;;###autoload

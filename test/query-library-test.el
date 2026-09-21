@@ -203,7 +203,7 @@ This never touches the user's real database or init file."
               (should (string-match-p "(tag NAME)" text))
               (should (string-match-p "(field KEY VALUE)" text))
               (should (string-match-p "(between START END)" text))
-              (should (string-match-p "doc/QUERY.md" text))))))
+              (should (string-match-p "doc/query.md" text))))))
     (ignore-errors (kill-buffer "*Supertag Query Syntax*"))))
 
 ;;; --- 4. Running a saved query against an isolated store ------------------

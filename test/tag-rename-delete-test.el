@@ -168,7 +168,7 @@ same line with a paragraph after it was accepted, because
 `org-element-context' then reports that paragraph.  The rule now decides by
 the position's own line, so both shapes are rejected and only the
 paragraph's own occurrence is a Tag.  See
-doc/report-keyword-line-affiliation.md."
+local record (.scratch/tasks/reports/report-keyword-line-affiliation.md, not shipped)."
   (supertag-tag-change-test--vault
     ;; Keep the vault's second file out of the scan: its own fixture
     ;; occurrences are not what this test measures.

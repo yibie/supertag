@@ -7,7 +7,15 @@ if [[ ${1-} == --guidance ]]; then
   python3 - <<'PY'
 from pathlib import Path
 import re
-for name in ('README.md', 'README_CN.md', 'test/README.md', 'test/refactor-batch1-manifest.md'):
+for name in ('README.md', 'README_CN.md'):
+    path = Path(name)
+    text = path.read_text()
+    targets = [t for t in re.findall(r'\]\(([^)]+)\)', text) if '://' not in t]
+    assert targets, name
+    for target in targets:
+        assert (path.parent / target.split('#')[0]).exists(), (name, target)
+    assert any(t.split('#')[0] == 'test/README.md' for t in targets), name
+for name in ('test/README.md', 'test/refactor-batch1-manifest.md'):
     path = Path(name)
     text = path.read_text()
     section = text.split('<!-- P1 development -->', 1)[1].split('<!-- /P1 development -->', 1)[0]
@@ -24,7 +32,7 @@ assert 'run: bash test/run-tests.sh' in workflow
 assert 'run: bash test/run-tests.sh --guidance' in workflow
 assert 'archive_board' not in workflow and 'gitignore:' in workflow
 assert 'archive/ext/board-ui/hooks/useWebSocket.ts' in workflow
-print('P1 guidance links, commands and CI entrypoints: PASS')
+print('Guidance links, commands and CI entrypoints: PASS')
 PY
   exit
 fi

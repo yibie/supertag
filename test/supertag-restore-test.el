@@ -228,3 +228,98 @@ VERSION defaults to `supertag-data-version' and ROOT-KEY to :nodes."
 (provide 'supertag-restore-test)
 
 ;;; supertag-restore-test.el ends here
+
+(ert-deftest supertag-restore-fresh-store-version-survives-cold-load ()
+  "A fresh vault must not read back as an unsupported legacy version."
+  (let* ((tmp (make-temp-file "supertag-version-" t))
+         (org (expand-file-name "org/" tmp))
+         (home (expand-file-name "home/" tmp))
+         (data (expand-file-name "data/" tmp))
+         (store (expand-file-name "store.el" data))
+         (write-prog (expand-file-name "write.el" tmp))
+         (read-prog (expand-file-name "read.el" tmp))
+         (repo (file-name-directory (locate-library "supertag")))
+         (emacs (or (getenv "EMACS_BIN")
+                    (expand-file-name invocation-name invocation-directory)))
+         (deps (split-string (or (getenv "SUPERTAG_DEPS_LOADPATH") "") path-separator t))
+         (process-environment (copy-sequence process-environment))
+         (default-directory tmp)
+         (preamble (concat
+                    ";;; -*- lexical-binding: t; -*-\n"
+                    "(setq user-emacs-directory (file-name-as-directory (getenv \"SV_HOME\")))\n"
+                    "(setq custom-file (expand-file-name \"custom.el\" user-emacs-directory))\n"
+                    "(setq org-id-locations-file (expand-file-name \"org-id-locations.el\" user-emacs-directory))\n"
+                    "(setq supertag-data-directory (getenv \"SV_DATA\"))\n"
+                    "(setq supertag-db-file (expand-file-name \"store.el\" supertag-data-directory))\n"
+                    "(setq supertag-db-backup-directory (expand-file-name \"backups/\" supertag-data-directory))\n"
+                    "(setq supertag-sync-state-file (expand-file-name \"sync-state.el\" supertag-data-directory))\n"
+                    "(setq supertag-sync-directories (list (getenv \"SV_ORG\")))\n"
+                    "(require 'supertag)\n"))
+         (report "(princ (format \"%s version=%s nodes=%d\\n\" phase (or (supertag--get-data-version supertag--store) \"nil\") (hash-table-count (supertag-store-get-collection :nodes))))\n")
+         (run (lambda (prog)
+                (with-temp-buffer
+                  (let ((status (apply #'call-process
+                                       emacs nil t nil
+                                       (append (list "-Q" "--batch"
+                                                     "-L" repo
+                                                     "-L" (expand-file-name "test" repo))
+                                               (cl-loop for d in deps append (list "-L" d))
+                                               (list "-l" prog)))))
+                    (cons status (buffer-string)))))))
+    (unwind-protect
+        (progn
+          (make-directory org t)
+          (make-directory home t)
+          (setenv "HOME" home)
+          (setenv "CFFIXED_USER_HOME" home)
+          (setenv "SV_ORG" org)
+          (setenv "SV_DATA" data)
+          (setenv "SV_HOME" home)
+          (with-temp-file (expand-file-name "note.org" org)
+            (insert "* Node A\n:PROPERTIES:\n:ID: id-a\n:END:\nBody A\n"))
+          (with-temp-file write-prog
+            (insert preamble
+                    "(supertag-sync-full-rescan)\n(supertag-save-store)\n"
+                    (format "(princ (format \"WRITE version=%%s nodes=%%d store=%%S\\n\" (or (supertag--get-data-version supertag--store) \"nil\") (hash-table-count (supertag-store-get-collection :nodes)) (file-exists-p supertag-db-file)))\n")))
+          (with-temp-file read-prog
+            (insert preamble
+                    "(supertag-load-store)\n"
+                    (format "(princ (format \"READ version=%%s nodes=%%d store=%%S\\n\" (or (supertag--get-data-version supertag--store) \"nil\") (hash-table-count (supertag-store-get-collection :nodes)) (file-exists-p supertag-db-file)))\n")))
+          (let ((w (funcall run write-prog)))
+            (unless (equal 0 (car w))
+              (ert-fail (format "write child exit %s:\n%s" (car w) (cdr w))))
+            (should (string-match-p "WRITE version=" (cdr w)))
+            (should (string-match-p (concat ":version \"" (regexp-quote supertag-data-version) "\"")
+                                    (with-temp-buffer (insert-file-contents store) (buffer-string)))))
+          (let ((r (funcall run read-prog)))
+            (unless (equal 0 (car r))
+              (ert-fail (format "read child exit %s:\n%s" (car r) (cdr r))))
+            (unless (and (string-match-p (concat "READ version=" (regexp-quote supertag-data-version)
+                                                " nodes=1 store=t")
+                                        (cdr r))
+                         (not (string-match-p "Unsupported data version" (cdr r)))
+                         (not (string-match-p "Migration stopped" (cdr r))))
+              (ert-fail (format "cold load was not clean:\n%s" (cdr r))))))
+      (delete-directory tmp t))))
+
+(ert-deftest supertag-restore-unknown-and-future-versions-are-refused ()
+  "Unknown or future data versions are refused, never guessed or re-stamped."
+  (let ((supertag--store nil)
+        (supertag--store-revision 0)
+        (supertag-migrate--last-snapshot nil))
+    (supertag--ensure-store)
+    (should (equal supertag-data-version (supertag--get-data-version supertag--store)))
+    ;; Unknown: no :version stamp at all.
+    (remhash :version supertag--store)
+    (should-not (supertag--get-data-version supertag--store))
+    (should-not (supertag-migrate-run))
+    (should (string-match-p "unknown" (or supertag-migrate--last-error "")))
+    (should-not (supertag--get-data-version supertag--store))
+    (should-not supertag-migrate--last-snapshot)
+    ;; Future: a version this build is too old for.
+    (setq supertag-migrate--last-error nil)
+    (puthash :version "99.0.0" supertag--store)
+    (should-not (supertag-migrate-run))
+    (should (string-match-p "newer than this build" (or supertag-migrate--last-error "")))
+    (should (equal "99.0.0" (supertag--get-data-version supertag--store)))
+    (should-not supertag-migrate--last-snapshot)))

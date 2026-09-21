@@ -1269,3 +1269,62 @@
 (ert-deftest supertag-document-query-e-node-first () (supertag-document-query--e-cold 'node))
 (ert-deftest supertag-document-query-e-tag-first () (supertag-document-query--e-cold 'tag))
 (ert-deftest supertag-document-query-e-owner () (supertag-document-query--e-cold 'owner))
+
+(ert-deftest supertag-document-query-property-shorthand ()
+  "Shorthand shares property matching, composition and result columns."
+  (let ((supertag--store nil))
+    (supertag--ensure-store)
+    (supertag-store-put-entity
+     :nodes "a" '(:id "a" :title "Alpha"
+                     :properties (:STATUS "doing" :OWNER "Ada" :EMPTY "")))
+    (supertag-store-put-entity
+     :nodes "b" '(:id "b" :title "Beta" :properties (:STATUS "done")))
+    (dolist (query '((status "doing") (STATUS "doing")
+                     (property "status" "doing") (field "status" "doing")
+                     (and (status "doing") (owner "Ada"))
+                     (not (status "done")) (empty "")))
+      (should (equal '("a") (supertag-query-node-ids query))))
+    (should (equal '("a" "b")
+                   (sort (supertag-query-node-ids
+                          '(or (status "doing") (status "done"))) #'string<)))
+    (should-not (supertag-query-node-ids '(status "DOING")))
+    (should-not (supertag-query-node-ids '(absent "")))
+    (should (equal '("STATUS") (supertag-query-properties '(status "doing"))))
+    (let ((rendered (org-babel-execute:supertag-query-block "(status \"doing\")" nil)))
+      (should (string-match-p "STATUS" rendered))
+      (should (string-match-p "doing" rendered))
+      (should-not (string-match-p "Beta" rendered)))))
+
+(ert-deftest supertag-document-query-todo-shorthand-and-reserved-properties ()
+  "TODO uses heading state; explicit property bypasses built-in names."
+  (let ((supertag--store nil))
+    (supertag--ensure-store)
+    (supertag-store-put-entity
+     :nodes "a" '(:id "a" :todo "TODO" :priority "#A" :tags ("task")
+                     :properties (:STATUS "doing" :TODO "drawer"
+                                  :TAG "custom" :AND "custom" :PRIORITY "custom")))
+    (supertag-store-put-entity :nodes "b" '(:id "b" :todo "DONE"))
+    (supertag-store-put-entity :nodes "c" '(:id "c"))
+    (dolist (query '((todo "TODO") (task "TODO") (priority "a")
+                     (and (todo "TODO") (status "doing"))
+                     (and (tag "task") (todo "TODO"))
+                     (property "todo" "drawer") (property "tag" "custom")
+                     (property "and" "custom") (property "priority" "custom")))
+      (should (equal '("a") (supertag-query-node-ids query))))
+    (should (equal '("a" "b")
+                   (sort (supertag-query-node-ids '(todo "TODO" "DONE")) #'string<)))
+    (should-not (supertag-query-node-ids '(todo "todo")))
+    (should-not (supertag-query-node-ids '(todo "drawer")))
+    (should-not (supertag-query-node-ids '(todo)))))
+
+(ert-deftest supertag-document-query-shorthand-validation ()
+  "Only named, single-string properties qualify; built-ins keep validation."
+  (dolist (query '((status) (status "a" "b") (status 1) (status doing)
+                   (:status "doing") (nil "doing") (42 "doing")
+                   ("status" "doing") (tag "a" "b") (property "status")
+                   (before "a" "b") (and "custom")))
+    (should-error (supertag-query-validate query)))
+  (should (equal '(status "doing")
+                 (supertag-query-validate '(status "doing"))))
+  (should (equal '(todo "TODO")
+                 (supertag-query-validate '(todo "TODO")))))

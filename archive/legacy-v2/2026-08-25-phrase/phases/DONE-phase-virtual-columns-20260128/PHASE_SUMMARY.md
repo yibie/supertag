@@ -209,7 +209,7 @@ M-x supertag-view-schema
 ### Viewer 架构 (phase-viewer-architecture-20260128)
 
 **状态**: 规划中，等待启动
-**位置**: [../phase-viewer-architecture-20260128/](../phase-viewer-architecture-20260128/)
+**位置**: [../phase-viewer-architecture-20260128/](../phase-viewer-architecture-20260128)
 
 **已完成规划**:
 - 技术调研 (`tech_refer_viewer_architecture.md`)
@@ -233,7 +233,7 @@ M-x supertag-view-schema
 - ✅ 测试充分（32+ 测试用例）
 - ✅ Viewer 架构规划完成
 
-**下一阶段**: [Viewer 架构实现](../phase-viewer-architecture-20260128/)
+**下一阶段**: [Viewer 架构实现](../phase-viewer-architecture-20260128)
 
 ---
 

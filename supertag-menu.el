@@ -98,8 +98,7 @@
 (declare-function supertag-toggle-tag-style "supertag-tag" ())
 (declare-function supertag-mention-mode "supertag-concept" (&optional arg))
 
-;; Setup and Automation commands are loaded by their feature wrappers below.
-(declare-function supertag-setup "supertag-vault" ())
+;; Automation commands are loaded by their feature wrappers below.
 (declare-function supertag-automation-insert-template "supertag-automation" ())
 (declare-function supertag-automation-list-templates "supertag-automation" ())
 
@@ -248,10 +247,6 @@ errors propagate unchanged. DOC is the generated wrapper's docstring."
   supertag-concept supertag-mention-mode
   "Toggle dynamic concept-mention highlighting.")
 
-(supertag-menu--defwrapper supertag-menu--setup
-  supertag-vault supertag-setup
-  "Open the guided Supertag setup wizard.")
-
 (supertag-menu--defwrapper supertag-menu--migrate-tag-ids
   supertag-migrate-tag-ids supertag-migrate-tag-ids
   "Run `supertag-migrate-tag-ids', loading its feature first if needed.")
@@ -299,7 +294,6 @@ errors propagate unchanged. DOC is the generated wrapper's docstring."
   "Less-frequent commands for maintenance, automation, and migration."
   [["Data & setup"
     ("c" "Cleanup database" supertag-menu--sync-cleanup)
-    ("s" "Setup wizard"     supertag-menu--setup)
     ("er" "Rebuild similar notes" supertag-menu--semantic-rebuild)
     ("es" "Similarity status" supertag-menu--semantic-status)
     ("ec" "Continue embeddings" supertag-menu--semantic-resume)

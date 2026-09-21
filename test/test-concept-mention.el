@@ -492,7 +492,7 @@
   "Render the unlinked mention section for TARGET-ID as text."
   (let ((supertag-view-helper-width-override (or width 120)))
     (with-temp-buffer
-      (supertag-view-mention-insert-section target-id)
+      (supertag-view-unlinked-mention-insert-section target-id)
       (buffer-string))))
 
 (defun concept-test--count (needle text)
@@ -540,7 +540,7 @@
       (supertag-mention-service-clear-cache)
       (let ((supertag-view-helper-width-override 120))
         (with-temp-buffer
-          (supertag-view-mention-insert-section "pi")
+          (supertag-view-unlinked-mention-insert-section "pi")
           (goto-char (point-min))
           (search-forward "[Link]")
           (button-activate (button-at (1- (point))))))
@@ -561,13 +561,13 @@
       (supertag-mention-service-clear-cache)
       (let ((supertag-view-helper-width-override 120))
         (with-temp-buffer
-          (supertag-view-mention-insert-section "pi")
+          (supertag-view-unlinked-mention-insert-section "pi")
           (goto-char (point-min))
           (search-forward "[Link all]")
           (let ((button (button-at (1- (point)))))
             (should button)
             (should (eq (button-get button 'action)
-                        #'supertag-view-mention--link-all))
+                        #'supertag-view-unlinked-mention--link-all))
             (should (equal "many-src"
                            (plist-get (button-get button 'supertag-mention)
                                       :source-id)))

@@ -943,7 +943,7 @@
              (goto-char (point-min)) (search-forward "[Retry]")
              (should (equal (button-get (button-at (1- (point))) 'supertag-semantic) "document-node")))
            (with-temp-buffer
-             (supertag-view-mention-insert-section "vwc-example")
+             (supertag-view-unlinked-mention-insert-section "vwc-example")
              (should (string-match-p " UNLINKED MENTIONS / 01 " (buffer-string)))
              (should (string-match-p "Example is discussed" (buffer-string)))
              (goto-char (point-min)) (search-forward "[Link]")

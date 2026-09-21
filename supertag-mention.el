@@ -595,20 +595,20 @@ a standalone interactive command."
 (declare-function supertag-goto-node "supertag-node"
                   (node-id &optional other-window))
 
-(defun supertag-view-mention--jump (button)
+(defun supertag-view-unlinked-mention--jump (button)
   "Jump to BUTTON's source node."
   (supertag-goto-node (button-get button 'supertag-source-id)))
 
-(defun supertag-view-mention--link (button)
+(defun supertag-view-unlinked-mention--link (button)
   "Link BUTTON's mention candidate."
   (supertag-mention-link (button-get button 'supertag-mention)))
 
-(defun supertag-view-mention--link-all (button)
+(defun supertag-view-unlinked-mention--link-all (button)
   "Link all mentions represented by BUTTON's source candidate."
   (supertag-mention-link-all-in-node
    (button-get button 'supertag-mention)))
 
-(defun supertag-view-mention--ignore (button)
+(defun supertag-view-unlinked-mention--ignore (button)
   "Ignore BUTTON's target throughout its source node."
   (let* ((candidate (button-get button 'supertag-mention))
          (source-id (plist-get candidate :source-id))
@@ -627,13 +627,13 @@ a standalone interactive command."
              (or (plist-get candidate :target-title) target-id)
              (or (plist-get candidate :source-title) source-id))))
 
-(defun supertag-view-mention--context-text (candidate)
+(defun supertag-view-unlinked-mention--context-text (candidate)
   "Return CANDIDATE's source context as plain display text."
   (concat (or (plist-get candidate :before) "")
           (or (plist-get candidate :match) "")
           (or (plist-get candidate :after) "")))
 
-(defun supertag-view-mention--insert-card (candidate &optional occurrences)
+(defun supertag-view-unlinked-mention--insert-card (candidate &optional occurrences)
   "Insert one magazine-style unlinked mention CANDIDATE.
 OCCURRENCES is how many times its source mentions the target; the card
 offers actions to link the first occurrence or every live occurrence."
@@ -643,32 +643,32 @@ offers actions to link the first occurrence or every live occurrence."
         (start (point)))
     (insert "  ")
     (insert-text-button source-title 'face 'supertag-view-entry 'follow-link t
-                        'action #'supertag-view-mention--jump
+                        'action #'supertag-view-unlinked-mention--jump
                         'help-echo (format "Jump to %s" source-title)
                         'supertag-source-id source-id)
     (insert "\n")
     (supertag-view-helper-insert-excerpt
-     (supertag-view-mention--context-text candidate))
+     (supertag-view-unlinked-mention--context-text candidate))
     (when (> (or occurrences 1) 1)
       (insert (propertize (format "      +%d more\n" (1- occurrences))
                           'face 'supertag-view-mute)))
     (insert "    ")
     (supertag-view-helper-insert-action-button
-     "[Link]" #'supertag-view-mention--link candidate
+     "[Link]" #'supertag-view-unlinked-mention--link candidate
      "Turn this occurrence into a canonical Org ID link" 'supertag-mention)
     (insert "  ")
     (supertag-view-helper-insert-action-button
-     "[Link all]" #'supertag-view-mention--link-all candidate
+     "[Link all]" #'supertag-view-unlinked-mention--link-all candidate
      "Link every live occurrence of this target in this source node"
      'supertag-mention)
     (insert "  ")
     (supertag-view-helper-insert-action-button
-     "[Ignore in node]" #'supertag-view-mention--ignore candidate
+     "[Ignore in node]" #'supertag-view-unlinked-mention--ignore candidate
      "Suppress mentions of this target in this source node" 'supertag-mention)
     (insert "\n")
     (add-text-properties start (point) '(line-spacing 0.15))))
 
-(defun supertag-view-mention--source-groups (mentions)
+(defun supertag-view-unlinked-mention--source-groups (mentions)
   "Return MENTIONS grouped per source, in first-appearance order.
 Each element is a cons of the source's first candidate and its occurrence
 count, so the view renders one card per source."
@@ -683,18 +683,18 @@ count, so the view renders one card per source."
           (push cell order))))
     (nreverse order)))
 
-(defun supertag-view-mention-insert-section (target-id)
+(defun supertag-view-unlinked-mention-insert-section (target-id)
   "Insert nonempty unlinked mention candidates for TARGET-ID.
 One card per source; the section count is the number of sources."
   (let ((mentions (supertag-mention-service-find target-id)))
     (when mentions
-      (let ((groups (supertag-view-mention--source-groups mentions)))
+      (let ((groups (supertag-view-unlinked-mention--source-groups mentions)))
         (insert "\n")
         (supertag-view-helper-insert-section-chip "Unlinked Mentions"
                                                    (length groups)
                                                    'supertag-view-chip3)
         (dolist (group groups)
-          (supertag-view-mention--insert-card (car group) (cdr group)))))))
+          (supertag-view-unlinked-mention--insert-card (car group) (cdr group)))))))
 
 (provide 'supertag-mention)
 ;;; supertag-mention.el ends here

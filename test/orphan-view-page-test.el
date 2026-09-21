@@ -241,15 +241,18 @@ TEXT is only used to make the failure message readable."
 (defvar evil-emacs-state-modes)
 
 (ert-deftest supertag-orphan-page-mode-registers-with-evil-as-emacs ()
+  ;; Emacs 32's preloaded `eval-after-load' consults `features' through the
+  ;; real `featurep', whose `features' variable is not special in this
+  ;; lexical-binding file; a plain `let' would therefore be a lexical shadow
+  ;; that `featurep' never sees.  `cl-progv' binds both variables dynamically,
+  ;; so the immediate and already-loaded paths both run, and the throwaway
+  ;; `after-load-alist' keeps queued callbacks from leaking into other tests.
   (let ((evil-emacs-state-modes nil)
         calls)
-    (let ((real-featurep (symbol-function 'featurep)))
-      (cl-letf (((symbol-function 'featurep)
-                 (lambda (feature &optional subfeature)
-                   (or (eq feature 'evil)
-                       (funcall real-featurep feature subfeature))))
-                ((symbol-function 'evil-set-initial-state)
-                 (lambda (mode state) (push (cons mode state) calls))))
+    (cl-letf (((symbol-function 'evil-set-initial-state)
+               (lambda (mode state) (push (cons mode state) calls))))
+      (cl-progv '(features after-load-alist)
+          (list (cons 'evil features) nil)
         (supertag-view-register-modal-state 'supertag-view-orphan-tags-mode)
         (supertag-view-register-modal-state 'supertag-view-orphan-tags-mode)))
     (should (equal evil-emacs-state-modes '(supertag-view-orphan-tags-mode)))

@@ -215,7 +215,8 @@ Silent when the last load succeeded normally and the default roots are clear."
          (store-loaded (and (boundp 'supertag--store) (hash-table-p supertag--store)))
          (current (cond
                    ((and (fboundp 'supertag--get-data-version) store-loaded)
-                    (supertag--get-data-version supertag--store))
+                    (or (supertag--get-data-version supertag--store)
+                        "unknown (no :version stamp)"))
                    ((not store-loaded) "n/a (store not loaded)")
                    (t (supertag-doctor--na)))))
     (insert (format "Target version (supertag-data-version): %s\n" (or target (supertag-doctor--na))))

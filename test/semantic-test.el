@@ -341,7 +341,7 @@
   (supertag-semantic-test-with-index
    (supertag-semantic-test-with-request
     (cl-letf (((symbol-function 'supertag-concept-node-p) (lambda (_) t))
-              ((symbol-function 'supertag-view-mention-insert-section)
+              ((symbol-function 'supertag-view-unlinked-mention-insert-section)
                (lambda (_) (insert "MENTION-SECTION\n"))))
       (let ((view (with-current-buffer (find-file-noselect file) (supertag-view-node-open "document-node"))))
         (with-current-buffer view

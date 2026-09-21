@@ -59,7 +59,10 @@
                 (let ((form (read (current-buffer))))
                   (when (eq (car-safe form) 'supertag-menu--defwrapper) (push form wrappers))))
             (end-of-file nil)))
-        (should (= 37 (length wrappers)))
+        (should (= 36 (length wrappers)))
+        ;; The initial-setup wizard retired, so its wrapper and target are gone.
+        (should-not (member 'supertag-menu--setup (mapcar (lambda (row) (nth 1 row)) wrappers)))
+        (should-not (member 'supertag-setup (mapcar (lambda (row) (nth 3 row)) wrappers)))
         (dotimes (_ 2)
           (dolist (row wrappers)
             (should (commandp (nth 1 row)))

@@ -27,12 +27,8 @@ contributing = Path('.github/CONTRIBUTING.org').read_text()
 assert 'bash test/run-tests.sh' in contributing
 for target in re.findall(r'\[\[file:([^]]+)\]', contributing):
     assert (Path('.github') / target).exists(), target
-workflow = Path('.github/workflows/test.yml').read_text()
-assert 'run: bash test/run-tests.sh' in workflow
-assert 'run: bash test/run-tests.sh --guidance' in workflow
-assert 'archive_board' not in workflow and 'gitignore:' in workflow
-assert 'archive/ext/board-ui/hooks/useWebSocket.ts' in workflow
-print('Guidance links, commands and CI entrypoints: PASS')
+assert not Path('.github/workflows').exists() or not any(Path('.github/workflows').iterdir())
+print('Guidance links and local entrypoints: PASS')
 PY
   exit
 fi

@@ -107,9 +107,8 @@ compat and named transition tests. The old run-refactor-batch1 pathname delegate
 to the same executor. Logs and temporary data stay in its printed unique directory;
 missing files, zero ERT and failed selectors fail, including through tee.
 Local checks initialize installed dependencies but do not install packages.
-CI retains the Emacs 29.1/29.4 matrix, runs the current entry, checks gitignore
-independently, and uses lightweight guidance checks for documentation changes.
-Board npm/build requires the explicit manual archive option.
+Run these checks locally before submitting a change. Board npm/build requires
+the explicit manual archive option.
 
 The Q leaf loads independently; real public NodeView still has transitional
 aggregate dependencies. Temporary-copy byte compilation and source-first tests

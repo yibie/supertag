@@ -28,9 +28,9 @@ P3, and legacy query DSL remains subject to G2. Full public loading still uses
 old aggregates; independent Q loading is a separate, narrower claim.
 
 Every run prints its unique `supertag-tests.*` directory. Data and per-suite logs
-stay there; CI uploads those same logs, including successful suites before a
-failure. Missing files, empty sets/selectors, unmatched selectors and zero ERT
-fail. `tee` preserves the Emacs failure status. Counterexample copies and their
+stay there, including successful suites before a failure. Missing files, empty
+sets/selectors, unmatched selectors and zero ERT fail. `tee` preserves the Emacs
+failure status. Counterexample copies and their
 exit-code logs remain in the printed `supertag-entrypoints.*` directory.
 The runner uses `-Q`, initializes installed dependencies, source-loads Query and
 Node, then requires Tag/Sync and prepares the Node cache listener. It never

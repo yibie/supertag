@@ -40,7 +40,7 @@
                      (supertag-view-api-list-entity-ids
                       '(:type :tag :value "project")))))))
 
-(ert-deftest supertag-query-model-resolves-fields-and-values ()
+(ert-deftest supertag-query-model-resolves-properties-and-values ()
   "Projected properties and values have View API parity."
   (supertag-ownership-test-with-vault
     (supertag-store-put-entity :nodes supertag-ownership-test-node-a
@@ -48,15 +48,15 @@
                  :properties '(:STATUS "active")))
     (should (equal '(:STATUS)
                    (mapcar (lambda (property) (plist-get property :key))
-                           (supertag-query-resolved-fields supertag-ownership-test-node-a))))
+                           (supertag-query-node-properties supertag-ownership-test-node-a))))
     (should (equal "active"
-                   (supertag-query-field-value
-                    supertag-ownership-test-node-a "project" "Status")))
+                   (supertag-query-property-value
+                    supertag-ownership-test-node-a "Status")))
     (should (equal
-             (supertag-query-field-value
-              supertag-ownership-test-node-a "project" "Status")
-             (supertag-view-api-node-field-in-tag
-              supertag-ownership-test-node-a "project" "Status")))))
+             (supertag-query-property-value
+              supertag-ownership-test-node-a "Status")
+             (supertag-view-api-node-property
+              supertag-ownership-test-node-a "Status")))))
 
 (ert-deftest supertag-query-model-queries-relations-without-raw-collection-access ()
   "Relation reads cover outgoing, incoming, and induced subgraphs."

@@ -8,13 +8,12 @@ The legacy schema/table/kanban/search/capture entry points described here are ar
 
 ### Core Features
 
-- ✅ **Unified Tag System**: Every tag is a fully-featured "database" with custom fields and automation capabilities.
+- ✅ **Unified Tag System**: Tags scope automation rules; optional Org properties provide saved values.
 - ✅ **True Event-Driven**: Responds to precise data changes in real-time, rather than polling scans.
 - ✅ **Automatic Rule Indexing**: Automatically builds high-performance indexes for rules in the background, without users needing to worry about performance optimization details.
 - ✅ **Multiple Action Execution**: A single rule can trigger a series of sequentially executed actions.
 - ✅ **Scheduled Tasks**: Supports time-based and periodic automation, driven by an integrated scheduler.
 - ✅ **Relationships and Calculations**: Supports bidirectional relationships and read-time query aggregates.
-- ✅ **Formula Fields**: Calculates and displays data in real-time in table views without persistent storage.
 - ✅ **Legacy Interop**: Some legacy storage/events are still supported where needed (details are called out explicitly below).
 
 ## 🏗️ Unified Architecture (Automation System 2.0)
@@ -138,54 +137,6 @@ read-time summaries; they do not persist a rollup result.
 
 ---
 
-## Core Concept: Formula Fields
-
-Formula fields are an innovative feature of `supertag` that allows you to define "virtual columns" in table views, whose values are calculated in real-time based on other fields. The calculation results of formula fields are **not** stored in node properties; they are only calculated and displayed when the table view is rendered.
-
-### How to Define Formula Fields
-
-In tag definitions, you can declare formula fields just like regular fields, but their `:type` is `:formula`, and they include a `:formula` property to define the calculation expression.
-
-```elisp
-(supertag-tag-create
- '(:id "task"
-   :name "Task"
-   :fields ((:name "due_date" :type :date)
-            (:name "completed_date" :type :date)
-            (:name "progress" :type :number)
-            ;; Example: A derived number for display (not persisted)
-            (:name "days_left" :type :formula
-                   :formula "10 - progress")
-            ;; Example: Calculate completion percentage (basic arithmetic)
-            (:name "completion_percentage" :type :formula
-                   :formula "(progress / 100) * 100"))))
-```
-
-### Formula Language and Available Functions
-
-Formula fields use a single infix grammar shared by table formula fields,
-formula virtual columns, and automation formula fields.  Field references
-are bare field names; arithmetic is `+ - * /` with parentheses, and
-`/` is floating-point division (division by zero yields 0).
-
-- Example: `"(done / total) * 100"` reads the `done` and `total` field
-  values of the rendered node and computes a percentage.
-- Unknown fields resolve to their schema default (or nil/0 when unset).
-- Legacy `{{key}}`-placeholder prefix formulas (e.g. `"(- 10 {{:progress}})"`)
-  are translated to the infix grammar automatically, so existing
-  configurations keep working.
-
-### Differences Between Formula Fields and Automation Rules
-
-| Feature | Formula Fields | Automation Rules |
-| :--- | :--- | :--- |
-| **Purpose** | Display calculation results in real-time **in views** | **Modify persistent data** based on events |
-| **Trigger Timing** | When table view is rendered | Data change events (such as property changes, tag additions/removals) |
-| **Data Persistence** | **Does not** store results | Stores the result of an explicit action |
-| **Use Cases** | Lightweight display calculations without changing source data | Explicit event-driven workflows |
-
----
-
 ## Core Concept: Scheduled Tasks
 
 In addition to responding to real-time data changes, Automation System 2.0 can also be time-driven to execute pre-scheduled tasks. This is supported by an integrated, reliable scheduler service (`supertag-services-scheduler.el`).
@@ -264,16 +215,15 @@ The `trigger` field defines "when" to check this rule. A precise trigger is the 
 | Trigger Type | Format | Description |
 | :--- | :--- | :--- |
 | **Any Change** | `:on-change` | Triggered on any recognized store change event (broad; use conditions to narrow). |
-| **Property/Field Change** | `:on-property-change` | Triggered on property/field/global-field changes (broad; use `property-changed` / `field-changed` in conditions to narrow). |
-| **Field Change** | `:on-field-change` | Triggered when a global field value changes. |
+| **Property Change** | `:on-property-change` | Triggered on synchronized Org property changes; use `property-changed` to narrow. |
 | **Tag Added** | `(:on-tag-added "tag-name")` | Triggered when a node is **first** tagged with the specified tag. |
 | **Tag Removed** | `(:on-tag-removed "tag-name")` | Triggered when a specified tag is removed from a node. |
 | **Scheduled Task** | `:on-schedule` | Time-based trigger, requires `:schedule` property and a running scheduler (see above). |
-| **Always / Fallback** | `nil` / `:always` | Always matches (useful for tag-only rules where the trigger is implied by the tag trigger itself). |
+| **Always / Fallback** | `:always` | Always matches (useful for tag-only rules where the trigger is implied by the tag trigger itself). |
 
 Notes:
 - `:on-schedule` rules are executed by the scheduler runner; they are not matched against store change events.
-- Unknown triggers fail closed (do not match).
+- Creation rejects unknown triggers and action types (including nested case actions). Unknown triggers in previously stored rules still fail closed.
 
 ### 2. Conditions - `IF`
 
@@ -284,24 +234,18 @@ operators; event conditions are the dedicated forms below.
 
 | Condition Type | Format | Description |
 | :--- | :--- | :--- |
-| **Query grammar** | `(and ...)` `(or ...)` `(not ...)` `(tag ...)` `(field ...)` `(property ...)` `(task ...)` `(priority ...)` `(term ...)` + date operators | Full query syntax; the rule matches the same node set a query block would |
+| **Query grammar** | `(and ...)` `(or ...)` `(not ...)` `(tag ...)` `(property ...)` `(task ...)` `(priority ...)` `(term ...)` + date operators | Full query syntax; the rule matches the same node set a query block would |
 | **Org property** | `(property "STAGE" "ready")` | Exact text match against a saved, synchronized local Org property; names are normalized to uppercase, and an empty value differs from a missing property |
-| **Property Equals (keyword)** | `(property-equals :prop-name "value")` | Node plist property equality (no query equivalent; keyword form only) |
+| **Property Equals (keyword)** | `(property-equals :prop-name "value")` | Saved Org property text equality; string or keyword keys |
 | **Property Changed** | `(property-changed :prop-name)` | This event changed the specified property |
-| **Property Test** | `(property-test :prop-name #'> 8)` | Test the property value via a function |
-| **Field Changed** | `(field-changed "field-name")` | This event changed the field's global value |
-| **Global Field Changed** | `(global-field-changed "field-id")` | This event changed that global field-id |
-| **Global Field Test** | `(global-field-test "field-id" #'pred ...)` | Test a global field value via a function |
+| **Property Test** | `(property-test :STATUS #'stringp)` | Test the property value via a function |
 
-Legacy condition forms (`has-tag`, `has-any-tag`, `has-all-tags`,
-`field-equals`, `global-field-equals`, and `property-equals` with a string
-key) convert deterministically to the query grammar at evaluation time and
-keep working; new rules should write the query grammar directly.
-
-`property` is distinct from `field`: it reads only the Org property's
-projected text and does not resolve or fall back to a legacy field. Queries and
-Automation conditions see the synchronized database snapshot, not unsaved Org
-drafts.
+`has-tag`, `has-any-tag`, `has-all-tags`, and `property-equals` convert to
+query conditions. Property keys may be strings or keywords and are normalized
+to uppercase. Values are saved Org text, not typed schema values. Queries and
+Automation conditions read the Store snapshot without opening Org files.
+Unsaved edits are invisible until saved and synchronized. `:update-property`
+writes the Org file and synchronization projects the result back to the Store.
 
 Saving a real Org change and processing it through incremental synchronization
 can trigger a matching rule once. An unchanged projection is a no-op. In
@@ -325,7 +269,7 @@ must be a Lisp list form:
 - Optional: omit it or set it to `nil` to always pass (rule runs whenever `:trigger` matches).
 - Form: the query grammar plus the event-sensitive helpers above (no arbitrary `eval`).
 - Quoting: both `:condition (and ...)` and `:condition '(and ...)` work; the engine unwraps one leading `quote`. If the whole rule is already quoted (`'(...)`), you typically do **not** need to quote `:condition` again.
-- Event-sensitive helpers like `property-changed` / `field-changed` rely on the event `:path` (see “Event Context”), so pair them with the appropriate `:trigger` (e.g. `:on-property-change` / `:on-field-change`).
+- Event-sensitive helpers like `property-changed` rely on the event `:path` (see “Event Context”), so pair them with the appropriate `:trigger` (e.g. `:on-property-change`).
 
 > This guide does not define a condition-level “formula DSL”. For complex logic, compose query operators and/or move complexity into `:call-function` actions.
 
@@ -343,8 +287,7 @@ Each action is a `plist` in the format `(:action :action-type :params (...))`.
 | **`:remove-tag`** | `(:tag "tag-name")` | Remove a tag from the current node. |
 | **`:call-function`** | `(:function #'your-function :args (...))` | Call an Emacs Lisp function you've defined yourself. This is the "ultimate weapon" for implementing complex logic. The function receives `(node-id context &rest args)`. |
 | **`:create-node`** | `(:title "..." :tags '("...") :target-file "/absolute/path/to/notes.org")` | Append a new identified level-1 heading to an existing local Org file, save it, then project it. `:tags` writes Org tag occurrences; only already-existing Semantic Tags resolve into the DB projection. Org's native title syntax is preserved. The absolute target is required; existing rules without it fail and must be amended manually. |
-| **`:update-field`** | `(:tag "tag-id" :field "field-name" :value v)` | Resolve the Tag schema field and update its global value for the node. |
-| **`:case`** | `(:on (:field "层级") :branches '((:equals "20" :actions ((:action :update-field ...))) (:default t :actions ((:action :call-function ...)))))` | Resolve a value (`:on`) and execute the first matching branch. Each branch can use `:equals`, `:in`, `:match` (regexp/function), or `:test` to match, and runs its own nested `:actions`. Provide `:default t` for a fallback branch. |
+| **`:case`** | `(:on (:property "层级") :branches ((:equals "20" :actions ((:action :update-property ...))) (:default t :actions ((:action :call-function ...)))))` | Resolve a value (`:on`) and execute the first matching branch. Each branch can use `:equals`, `:in`, `:match` (regexp/function), or `:test` to match, and runs its own nested `:actions`. Provide `:default t` for a fallback branch. |
 
 #### Event Context (重要)
 
@@ -360,7 +303,6 @@ When a rule is executed, it receives a `context` plist describing the current ev
 Common `:path` shapes used by the engine:
 
 - Node property change: `(:nodes NODE-ID :properties :some-prop)`
-- Global field value change: `(:field-values NODE-ID "field-id")`
 
 `(property-changed ...)` relies on `:path` being specific (e.g. `(:nodes NODE-ID :properties :hours)`), so the engine must preserve this precision when routing events.
 
@@ -382,7 +324,7 @@ to a target file without prompting:
 
 This example will demonstrate some features that are difficult or impossible to achieve with native Org Mode, showcasing the unique value of the new system.
 
-*(Note: This example assumes that a `#task` tag with `status`, `priority`, and `hours` fields has been pre-defined, as well as a one-to-one relationship named `depends_on` from `task` to `task`.)*
+*(Note: This example assumes that a `#task` tag exists, with optional `STATUS`, `PRIORITY`, and `HOURS` Org properties, as well as a one-to-one relationship named `depends_on` from `task` to `task`.)*
 
 #### 1. Creating Truly "Smart" Automation Rules
 
@@ -441,71 +383,46 @@ This example will demonstrate some features that are difficult or impossible to 
 
 ### Example: Tier-Based Mapping with `:case`
 
-Use the `:case` action when you want to map one field value to another without creating multiple rules or helper functions. The rule below watches the `层级` field on `#contact` nodes and adjusts `联系频率` accordingly. A default branch keeps data in a sane state if the tier is unexpected.
+Use the `:case` action when you want to map one property value to another without creating multiple rules or helper functions. The rule below watches the `层级` property on `#contact` nodes and adjusts `联系频率` accordingly. A default branch keeps data in a sane state if the tier is unexpected.
 
 ```elisp
 (supertag-automation-create
  '(:name "contact-tier-frequency"
-   :trigger :on-field-change
-   ;; In the global-field model, treat field-centric
-   ;; conditions as global fields by default.
-   :condition '(and (has-tag "contact")
-                    (field-changed "层级"))
+   :trigger :on-property-change
+   :condition (and (has-tag "contact")
+                    (property-changed "层级"))
    :actions
-   '((:action :case
+   ((:action :case
       :params
-      (:on (:field "层级")
+      (:on (:property "层级")
        :branches
        ((:equals "20"
-         :actions ((:action :update-field
-                            :params (:tag "contact" :field "联系频率" :value "30d"))))
+         :actions ((:action :update-property
+                            :params (:property "联系频率" :value "30d"))))
         (:equals "50"
-         :actions ((:action :update-field
-                            :params (:tag "contact" :field "联系频率" :value "90d"))))
+         :actions ((:action :update-property
+                            :params (:property "联系频率" :value "90d"))))
         (:equals "150"
-         :actions ((:action :update-field
-                            :params (:tag "contact" :field "联系频率" :value "180d"))))
+         :actions ((:action :update-property
+                            :params (:property "联系频率" :value "180d"))))
         (:default t
-         :actions ((:action :update-field
-                            :params (:tag "contact" :field "联系频率" :value "90d"))))))))))
+         :actions ((:action :update-property
+                            :params (:property "联系频率" :value "90d"))))))))))
 ```
 
 Because each branch contains its own `:actions` list, you can chain more logic—for example, adding a notification tag, updating properties, or calling functions—once the correct branch has been selected.
 
-### Field-Centric Rules (Global Fields)
+### Property-driven rules
 
-The global field model is always active: fields are first-class entities and are not scoped to a single tag. The automation DSL supports rules driven by field changes instead of tags:
-
-- `field-equals` / `field-changed` – resolve the first string argument as a stable global field ID or display name.
-- `global-field-equals` / `global-field-changed` – explicit global field variants if you want to be fully explicit.
-
-For example, this rule fires whenever the global `status` field for a node becomes `"done"`, regardless of which tags the node has:
-
-```elisp
-(supertag-automation-create
- '(:name "status-done-anywhere"
-   :trigger :on-field-change
-   :condition '(field-equals "status" "done")
-   :actions ((:action :call-function
-              :params (:function
-                       (lambda (node-id _ctx &rest _)
-                         (message "Node %s reached status=done" node-id)))))))
-```
-
-You can still combine field-centric conditions with tag predicates when you want to narrow the scope:
-
-```elisp
-:condition '(and (has-tag "task")
-                 (field-equals "status" "doing"))
-```
-
-Under the hood, `field-equals`/`field-changed` are indexed by the stable global field ID, so display-name changes do not move stored values or disconnect new rules from `:field-values` events.
+Use `:on-property-change` for saved and synchronized Org property changes.
+Match the current value with `(property "STATUS" "done")`, or narrow the
+changed key with `(property-changed "STATUS")`. No tag schema is required.
 
 ### Example 2: Project-Task Integration
 
 This example showcases relationships and an explicit Automation rule.
 
-*(Note: This example assumes that a `#Project` tag with a `status` field and a one-to-many relationship named `tasks` from `Project` to `task` have been pre-defined.)*
+*(Note: This example assumes that nodes tagged `#Project` with an optional `STATUS` Org property and a one-to-many relationship named `tasks` from `Project` to `task` have been pre-defined.)*
 
 #### 1. Creating Automation Rules
 
@@ -582,7 +499,7 @@ This is the best demonstration of the new automation engine's powerful capabilit
 
 After our refactoring, the system's core philosophy has become clearer:
 
-1.  **Tags are Core**: All data structures (fields) and behaviors (automation) are organized around tags.
+1.  **Tags are Core**: Tags can scope rules; Org properties belong to the document, not a tag schema.
 2.  **Rules are Declarative**: You only need to "declare" in rules what events and targets it cares about using `:trigger` and `:condition`, and the system will automatically apply it to the right place.
 3.  **Backend is Intelligent**: You don't need to worry about performance. The system automatically builds indexes for your rules, ensuring fast response times even with hundreds or thousands of rules.
 4.  **No Class Distinctions**: Any tag, whether simple or complex, can have
@@ -1064,8 +981,6 @@ Enable debug mode to get more detailed log information:
 ;; Enable verbose automation diagnostics (routine traces, SKIP/no-op notices)
 (setq supertag-automation-verbose t)
 
-;; Optional: log detailed field events in the sync bridge
-(setq supertag-debug-log-field-events t)
 ```
 
 ### System Health Checks
@@ -1343,14 +1258,14 @@ Design a clear tag hierarchy structure, avoiding overly complex nesting.
 ;; task-personal-work-high-priority-urgent-due-tomorrow
 ```
 
-#### 2. Standardized Field Naming
-Use consistent field naming conventions.
+#### 2. Standardized Property Naming
+Use consistent property naming conventions.
 
 ```elisp
 ;; Good practice: Standardized naming
-;; Date fields: created_date, due_date, completed_date
-;; Status fields: status, priority, progress
-;; Relationship fields: parent_id, assigned_to, depends_on
+;; Date properties: created_date, due_date, completed_date
+;; Status properties: status, priority, progress
+;; Relationship properties: parent_id, assigned_to, depends_on
 
 ;; Avoid: Inconsistent naming
 ;; create_time, dueDate, finished_at, stat, prio, prog
@@ -1408,3 +1323,17 @@ Regularly back up important configurations and data.
       (insert ")\n"))
     (message "Configuration backed up to %s" backup-file)))
 ```
+
+## Built-in templates
+
+Create rules with `M-x supertag-automation-insert-template`.
+
+1. `:tag-added-set-todo-state` — Tag added → set TODO state
+2. `:tag-added-set-property` — Tag added → set property
+3. `:tag-added-add-tag` — Tag added → add another tag
+4. `:tag-removed-remove-tag` — Tag removed → remove derived tag
+5. `:property-change-update-property` — Scoped property change → set another property
+6. `:property-equals-move-node` — Property equals value → move node to file (optional tag scope)
+7. `:property-equals-add-tag` — Property equals value → add tag
+8. `:daily-set-property-for-tag` — Daily schedule → set property on tagged nodes
+9. `:tag-added-create-followup-node` — Tag added → create follow-up node (no automatic link)

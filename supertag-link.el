@@ -1168,6 +1168,15 @@ Signal an error when TERM names more than one node."
           (org-back-to-heading t)
           (org-entry-get nil "ID"))))))
 
+(defun supertag-reference--capture-draft-p ()
+  "Return non-nil in a file-backed Org capture indirect buffer.
+Finalization and sync own persistence; reference completion only edits
+the draft."
+  (and (bound-and-true-p org-capture-mode)
+       (derived-mode-p 'org-mode)
+       (buffer-base-buffer)
+       (buffer-file-name (buffer-base-buffer))))
+
 (defun supertag-reference-materialize
     (beg-marker end-marker target-id title &optional link-type)
   "Materialize BEG-MARKER..END-MARKER as a link to TARGET-ID titled TITLE.
@@ -1176,12 +1185,18 @@ This is the system's sole production gateway for reference commands that
 commit a source-owned physical `[[id:]]' node link to an Org buffer.  Callers
 that replace a region pass its boundary markers.  Pure display renderers and
 explicitly marked machine-generated view regions may still emit link-shaped
-strings because the projector excludes those regions from Document Links."
+strings because the projector excludes those regions from Document Links.
+In an active Org capture draft, only replace the text; defer source identity,
+saving and projection to the normal capture finalization/sync lifecycle."
   (let ((source-buffer (marker-buffer beg-marker)))
     (unless (and source-buffer (eq source-buffer (marker-buffer end-marker)))
       (user-error "Reference region is no longer valid"))
     (with-current-buffer source-buffer
-      (let ((source-id (supertag-reference--source-id-at-marker beg-marker)))
+      (supertag-reference--validate-source beg-marker)
+      (let ((source-id
+             (if (supertag-reference--capture-draft-p)
+                 (supertag-reference--existing-source-id-at-marker beg-marker)
+               (supertag-reference--source-id-at-marker beg-marker))))
         (when (equal source-id target-id)
           (user-error "A node cannot reference itself through this workflow"))
         (if link-type
@@ -1321,7 +1336,8 @@ When CHOOSE-TARGET is non-nil, prompt for the creation target."
                (buffer-live-p (marker-buffer marker)))
     (user-error "Reference source is no longer available"))
   (with-current-buffer (marker-buffer marker)
-    (unless (and buffer-file-name (derived-mode-p 'org-mode))
+    (unless (and (derived-mode-p 'org-mode)
+                 (or buffer-file-name (supertag-reference--capture-draft-p)))
       (user-error "References require an Org buffer visiting a file"))
     (save-excursion
       (goto-char marker)
@@ -1358,31 +1374,34 @@ private helper is the materializer's only low-level buffer mutation."
     (goto-char beg-marker)
     (delete-region beg-marker end-marker)
     (insert (supertag-node-format-link to-id title link-type))
-    (condition-case cause
-        (save-buffer)
-      (error
-       (supertag-reference-signal-retryable-error
-        :source-save from-id to-id file
-        #'supertag-reference-retry-source-save
-        (list from-id file to-id link-type) cause)))
-    (condition-case cause
-        (progn
-          (supertag-ui--reproject-containing-node from-id)
-          (unless (cl-find-if
-                   (lambda (relation)
-                     (and (supertag-relation-document-link-p relation)
-                          (if link-type
-                              (equal link-type
-                                     (plist-get relation :relation-name))
-                            (null (plist-get relation :relation-name)))))
-                   (supertag-relation-find-between
-                    from-id to-id :reference))
-            (error "Saved Org link has no matching Document Link Projection")))
-      (error
-       (supertag-reference-signal-retryable-error
-        :source-project from-id to-id file
-        #'supertag-reference-retry-source-projection
-        (list from-id file to-id link-type) cause)))))
+    ;; An Org capture buffer shares its text with the destination but must
+    ;; remain a draft: finalize/abort, not completion, owns its persistence.
+    (unless (supertag-reference--capture-draft-p)
+      (condition-case cause
+          (save-buffer)
+        (error
+         (supertag-reference-signal-retryable-error
+          :source-save from-id to-id file
+          #'supertag-reference-retry-source-save
+          (list from-id file to-id link-type) cause)))
+      (condition-case cause
+          (progn
+            (supertag-ui--reproject-containing-node from-id)
+            (unless (cl-find-if
+                     (lambda (relation)
+                       (and (supertag-relation-document-link-p relation)
+                            (if link-type
+                                (equal link-type
+                                       (plist-get relation :relation-name))
+                              (null (plist-get relation :relation-name)))))
+                     (supertag-relation-find-between
+                      from-id to-id :reference))
+              (error "Saved Org link has no matching Document Link Projection")))
+        (error
+         (supertag-reference-signal-retryable-error
+          :source-project from-id to-id file
+          #'supertag-reference-retry-source-projection
+          (list from-id file to-id link-type) cause))))))
 
 ;;; 补全
 

@@ -218,7 +218,7 @@ Write participants, discussion, and decisions in the body; use ordinary lists fo
 | Link related nodes | Type `[[` and complete, or `M-x supertag-add-link` | Links an existing node or explicitly creates a fresh template-based target, writes one forward Org link, and derives the target Backlink |
 | Review unlinked mentions | Open Node View and use **Unlinked Mentions** | Finds plain-text title/alias mentions as disposable candidates; link one, link all in the source node, or ignore that target in the source |
 | Promote text or a heading with a template | `M-x supertag-promote` | Explicit reuse/new with content preview; selected text becomes an ordinary Org link |
-| Highlight concept mentions | `M-x supertag-concept-link-mode` | Shows concept title/alias mentions as amber semantic highlights, not stored links |
+| Highlight concept mentions | `M-x supertag-mention-mode` | Shows concept title/alias mentions as amber semantic highlights, not stored links |
 | Context actions at point | `embark-act` (Embark, optional) | Object-specific actions; RET runs the default |
 | Save database | `M-x supertag-save-store` | Immediately writes unsaved Store changes to disk; auto-save and Emacs exit do this too |
 | Reload database from disk | `M-x supertag-reload-store` | Reloads a clean Store; refuses unsaved changes unless called with a prefix argument to discard them |
@@ -569,6 +569,8 @@ The following table is generated from the loaded source; purposes use each docst
 | `supertag-ai-max-body-chars` | `8000` | Maximum number of own-body characters sent for extraction. |
 | `supertag-ai-prompts` | `list of 1 entries, see docstring` | Named extraction prompts. |
 | `supertag-ai-timeout` | `60` | Runtime request timeout in seconds. |
+
+Queries and automation conditions use `property` for Org properties and read saved, synchronized values from the Store. `(field …)` remains an older query input alias. Automation `:update-property` writes Org files, then sync updates the Store.
 
 **supertag-automation.el**
 

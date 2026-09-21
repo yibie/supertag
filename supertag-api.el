@@ -133,7 +133,7 @@
   "Run QUERY and return the result as plain data.
 
 QUERY is a query string as written in a query block, for example
-\"(and (tag \\\"project\\\") (field \\\"Status\\\" \\\"active\\\"))\", or the
+\"(and (tag \\\"project\\\") (property \\\"Status\\\" \\\"active\\\"))\", or the
 same S-expression.  Dynamic variables such as <%today%> are expanded.
 
 For node queries the result is (:query :count :truncated :nodes), where
@@ -209,7 +209,7 @@ The result carries :id, :name, :aliases, :description and :node-count."
      :description "Run a Supertag query and return the matching nodes (id, title, tags, file)."
      :parameters
      ((:name "query" :type :string :required t
-       :description "Query expression such as (and (tag \"project\") (field \"Status\" \"active\")); <%today%> and friends are expanded.")
+       :description "Query expression such as (and (tag \"project\") (property \"Status\" \"active\")); <%today%> and friends are expanded.")
       (:name "limit" :type :integer :required nil
        :description "Maximum number of nodes to return.")))
     (:name "node" :function supertag-api-node :effect :read

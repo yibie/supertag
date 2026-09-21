@@ -258,14 +258,6 @@ FILTER is a function receiving an automation plist and returning non-nil."
      (supertag-store-get-collection :relations))
     result))
 
-(defun supertag-query-resolved-fields (node-id)
-  "Return NODE-ID's sorted projected property descriptors (legacy name)."
-  (plist-get (supertag-note-query-read-node node-id) :properties))
-
-(defun supertag-query-field-value (node-id _tag-id field-name &optional _raw-p)
-  "Read projected property FIELD-NAME for NODE-ID (legacy compatibility)."
-  (supertag-query-property-value node-id field-name))
-
 (defun supertag-query-property-value (node-id name)
   "Read NODE-ID's Org property NAME with case-insensitive key matching."
   (plist-get (plist-get (supertag-node-get node-id) :properties)
@@ -414,9 +406,9 @@ query also carries group-by."
   "Compatibility entry point for `supertag-query-node-ids'."
   (supertag-query-node-ids query-sexp))
 
-(defun supertag-query-fields (query-sexp)
-  "Return field keys referenced by QUERY-SEXP, for table headers."
-  (supertag-query--get-fields-from-ast
+(defun supertag-query-properties (query-sexp)
+  "Return property keys referenced by QUERY-SEXP, for table headers."
+  (supertag-query--get-properties-from-ast
    (supertag-query--parse-sexp query-sexp)))
 
 (defun supertag-query-validate (query-sexp)
@@ -478,7 +470,7 @@ This function is compatible with the old query syntax."
       `(:type tag :value ,(if (stringp (car args)) (car args) (symbol-name (car args)))))
      ((eq op 'sort-by)
       (unless (<= 1 (length args) 2)
-        (error "'sort-by' operator expects a field key and an optional asc/desc order, but got %S" args))
+        (error "'sort-by' operator expects a property key and an optional asc/desc order, but got %S" args))
       (let* ((key (if (stringp (car args)) (car args) (symbol-name (car args))))
              (order-arg (and (cdr args) (cadr args)))
              (order (cond
@@ -491,7 +483,7 @@ This function is compatible with the old query syntax."
         `(:type sort-by :key ,key :order ,order)))
      ((memq op '(sum avg min max first last unique-count concat))
       (unless (= (length args) 1)
-        (error "'%s' operator expects exactly one field key, but got %S" op args))
+        (error "'%s' operator expects exactly one property key, but got %S" op args))
       `(:type ,op :key ,(if (stringp (car args)) (car args)
                           (symbol-name (car args)))))
      ((eq op 'count)
@@ -500,7 +492,7 @@ This function is compatible with the old query syntax."
       '(:type count :key nil))
      ((eq op 'group-by)
       (unless (= (length args) 1)
-        (error "'group-by' operator expects exactly one field key, but got %S" args))
+        (error "'group-by' operator expects exactly one property key, but got %S" args))
       `(:type group-by :key ,(if (stringp (car args)) (car args)
                                  (symbol-name (car args)))))
      ((eq op 'task)
@@ -516,7 +508,9 @@ This function is compatible with the old query syntax."
                                  (if (stringp a) a (symbol-name a)))
                                args)))
 
-     ;; Legacy field syntax is a property alias until phase 4.
+     ;; `field' is a permanent input alias for `property': existing query
+     ;; blocks in users' Org files keep working unchanged.  It is not offered
+     ;; anywhere in the UI, docs or prompts, which all say `property'.
      ((memq op '(property field))
       (unless (and (= (length args) 2)
                    (stringp (car args))
@@ -842,17 +836,17 @@ alist of (group-key . value) with group-by + aggregate."
       (error "group-by requires an aggregate modifier"))
     (if (null aggregates)
         sorted
-      (let* ((group-field (and groups (plist-get (car groups) :key)))
+      (let* ((group-property (and groups (plist-get (car groups) :key)))
              (aggregate (car aggregates))
              (agg-type (plist-get aggregate :type))
              (agg-key (plist-get aggregate :key)))
-        (if group-field
+        (if group-property
             (mapcar
              (lambda (entry)
                (cons (car entry)
                      (supertag-query--aggregate-values
                       (cdr entry) agg-type agg-key)))
-             (supertag-query--group-values sorted group-field))
+             (supertag-query--group-values sorted group-property))
           (supertag-query--aggregate-values
            (mapcar #'supertag-query-node sorted) agg-type agg-key))))))
 
@@ -860,10 +854,6 @@ alist of (group-key . value) with group-by + aggregate."
   "Return the result modifiers of QUERY-SEXP, in order."
   (supertag-query--ast-modifiers
    (supertag-query--parse-sexp query-sexp)))
-
-(defun supertag-query--find-nodes-by-field-indexed (field-name value)
-  "Legacy property lookup; no field index or schema fallback."
-  (supertag-query-node-ids (list 'property field-name value)))
 
 (defun supertag-query--resolve-date-string (date-str)
   "Resolve a date string into an absolute time value.
@@ -922,10 +912,10 @@ Compatible with the old query engine date format."
      ;; Default: Invalid format
      (t nil))))
 
-(defun supertag-query--get-fields-from-ast (ast)
-  "Extract field keys from the query AST.
+(defun supertag-query--get-properties-from-ast (ast)
+  "Extract property keys from the query AST.
 Used for generating table headers in Org Babel output."
-  (let ((fields '()))
+  (let ((properties '()))
     (cl-labels ((walk (sub-ast)
                   (let ((type (plist-get sub-ast :type)))
                     (cond
@@ -934,11 +924,12 @@ Used for generating table headers in Org Babel output."
                      ((eq type 'not)
                       (dolist (child (plist-get sub-ast :children)) (walk child)))
                      ((eq type 'property)
-                      (push (substring (symbol-name (plist-get sub-ast :key)) 1) fields))
+                      (push (substring (symbol-name (plist-get sub-ast :key)) 1)
+                            properties))
                      ((plist-get sub-ast :child)
                       (walk (plist-get sub-ast :child)))))))
       (walk ast))
-    (cl-delete-duplicates fields :test #'string=)))
+    (cl-delete-duplicates properties :test #'string=)))
 
 ;; --- Canonical infix parser and evaluator ---
 
@@ -1051,15 +1042,15 @@ Used for generating table headers in Org Babel output."
 
 (defun supertag-formula-eval (ast node-id &optional resolver)
   "Evaluate AST for NODE-ID, resolving variables via RESOLVER.
-RESOLVER is a function taking a field name and returning its value.
+RESOLVER is a function taking a property name and returning its value.
 Without RESOLVER, variables read projected Org properties; missing keys return nil."
   (pcase ast
     ((pred numberp) ast)
     (`(*number* ,n) n)
-    (`(*var* ,field-name)
-     (let ((value (if resolver (funcall resolver field-name)
+    (`(*var* ,property-name)
+     (let ((value (if resolver (funcall resolver property-name)
                     (plist-get (plist-get (supertag-store-get-entity :nodes node-id) :properties)
-                               (intern (concat ":" (upcase field-name)))))))
+                               (intern (concat ":" (upcase property-name)))))))
        (if (and (stringp value)
                 (string-match-p "\\`[+-]?[0-9]+\\(?:\\.[0-9]+\\)?\\'" value))
            (string-to-number value)
@@ -1154,18 +1145,18 @@ Automation so identical inputs produce identical results."
     ((pred functionp) (funcall function-name values))
     (_ (message "Unknown rollup function: %S" function-name))))
 
-(defun supertag-formula-evaluate (formula-string entity-data &optional field-getter)
+(defun supertag-formula-evaluate (formula-string entity-data &optional property-getter)
   "Evaluate FORMULA-STRING for ENTITY-DATA.
-Canonical grammar: infix arithmetic with field references as variables,
+Canonical grammar: infix arithmetic with property references as variables,
 e.g. \"(done / total) * 100\".  Legacy {{key}}-placeholder prefix forms
-are translated first.  Variables resolve through FIELD-GETTER when
+are translated first.  Variables resolve through PROPERTY-GETTER when
 supplied, otherwise through projected Org properties."
   (unless (and (stringp formula-string) (not (string-empty-p formula-string)))
     (error "FORMULA-STRING must be a non-empty string"))
   (let* ((canonical (supertag-formula--canonicalize formula-string))
          (node-id (plist-get entity-data :id))
          (resolver
-          (or field-getter
+          (or property-getter
               (lambda (name)
                 (plist-get (plist-get entity-data :properties)
                            (intern (concat ":" (upcase name))))))))
@@ -1302,16 +1293,16 @@ Returns (node-id . node-data) or nil."
 ;; which are no-ops when omitted (existing babel blocks keep behaving
 ;; exactly as before):
 ;;
-;;   :sort    title | created | modified | a field name.
-;;            Field (and "created"/"modified") sorts compare numerically
+;;   :sort    title | created | modified | a property name.
+;;            Property (and "created"/"modified") sorts compare numerically
 ;;            when both values parse as numbers, otherwise string-compare
 ;;            ("created"/"modified" compare as Emacs time values instead).
 ;;            Nodes missing the sort key sort last, regardless of :order.
 ;;   :order   asc (default) | desc.
 ;;   :limit   a positive integer, applied after sorting.
-;;   :columns an explicit list of field names for extra table columns,
-;;            overriding the fields auto-derived from the query's
-;;            (field ...) clauses. The "Node" and "Tags" columns are
+;;   :columns an explicit list of property names for extra table columns,
+;;            overriding the properties auto-derived from the query's
+;;            (property ...) clauses. The "Node" and "Tags" columns are
 ;;            always present regardless.
 ;;
 ;; Malformed queries and invalid params never signal into the org-babel or
@@ -1339,7 +1330,7 @@ Returns (node-id . node-data) or nil."
 ;;; --- Shared Core: query string + params -> table string ---
 
 (defun supertag-query-block--parse-columns (columns)
-  "Normalize the :columns param COLUMNS into a list of field-name strings.
+  "Normalize the :columns param COLUMNS into a list of property-name strings.
 Accepts a list of strings/symbols, a single symbol, a space/comma
 separated string, or nil (meaning \"no override\")."
   (cond
@@ -1358,7 +1349,7 @@ separated string, or nil (meaning \"no override\")."
    (t (error "Invalid :columns value: %S" columns))))
 
 (defun supertag-query-block--normalize-sort-key (sort)
-  "Normalize the :sort param SORT into a field-key string, or nil."
+  "Normalize the :sort param SORT into a property-key string, or nil."
   (cond
    ((null sort) nil)
    ((stringp sort) (let ((trimmed (string-trim sort)))
@@ -1464,9 +1455,9 @@ that must never signal should go through `supertag-query-block--render'."
     (if aggregate-p
         (supertag-query-block--aggregate-headers-and-rows query-sexp)
       (let* ((node-ids (supertag-query-node-ids query-sexp))
-             (auto-fields (supertag-query-fields query-sexp))
+             (auto-properties (supertag-query-properties query-sexp))
              (columns (or (supertag-query-block--parse-columns (plist-get opts :columns))
-                          auto-fields))
+                          auto-properties))
              (sort-key (supertag-query-block--normalize-sort-key (plist-get opts :sort)))
              (order (supertag-query-block--normalize-order (plist-get opts :order)))
              (limit (supertag-query-block--normalize-limit (plist-get opts :limit)))
@@ -1516,7 +1507,7 @@ BODY is the S-expression query string.
 PARAMS are the babel header args. All are optional and, when omitted,
 produce exactly the previous behavior:
 
-  :sort NAME    title | created | modified | a field name. To pass a
+  :sort NAME    title | created | modified | a property name. To pass a
                 literal string instead of a bare symbol, quote it, e.g.
                 :sort \"priority\".
   :order asc|desc
@@ -1551,12 +1542,12 @@ PARAMS is the plist Org parses from the #+BEGIN: line, e.g.:
 Recognized keys (all but :query are optional):
   :query   (required) an S-expression query string, same syntax as the
            `supertag-query-block' babel language.
-  :sort    title | created | modified | a field name (bare symbol or
+  :sort    title | created | modified | a property name (bare symbol or
            string).
   :order   asc (default) | desc.
   :limit   a positive integer, applied after sorting.
-  :columns an explicit list of field names, e.g. (\"status\" \"priority\"),
-           overriding the fields auto-derived from the query. \"Node\"
+  :columns an explicit list of property names, e.g. (\"status\" \"priority\"),
+           overriding the properties auto-derived from the query. \"Node\"
            and \"Tags\" columns are always present.
 
 Refresh with \\[org-ctrl-c-ctrl-c] on the block, `org-dblock-update', or
@@ -1594,11 +1585,11 @@ invalid param renders as a one-line error string instead of a table."
 (defun supertag-query-block--render-results (query-sexp)
   "Run QUERY-SEXP and return a read-only buffer showing the results.
 Node titles are shown as Org links, alongside a Tags column and one
-column per field mentioned in QUERY-SEXP.  This reuses the query
-engine's own AST parser/executor/field-extractor; it does not
+column per property mentioned in QUERY-SEXP.  This reuses the query
+engine's own AST parser/executor/property-extractor; it does not
 reimplement parsing or execution."
   (let* ((node-ids (supertag-query-node-ids query-sexp))
-         (field-keys (supertag-query-fields query-sexp))
+         (property-keys (supertag-query-properties query-sexp))
          (nodes (delq nil (mapcar #'supertag-node-get node-ids)))
          (buf (get-buffer-create "*Supertag Query Results*")))
     (with-current-buffer buf
@@ -1609,7 +1600,7 @@ reimplement parsing or execution."
         (insert (format "#+TITLE: Supertag Query Results\n# Query: %S\n\n" query-sexp))
         (if (not nodes)
             (insert "No results found.\n")
-          (let ((headers (append '("Node" "Tags") field-keys)))
+          (let ((headers (append '("Node" "Tags") property-keys)))
             (insert "| " (mapconcat #'identity headers " | ") " |\n")
             (insert "|-" (mapconcat (lambda (h) (make-string (length h) ?-)) headers "-|-") "-|\n")
             (dolist (node nodes)
@@ -1622,7 +1613,7 @@ reimplement parsing or execution."
                            (mapcar (lambda (key)
                                      (let ((val (supertag-query-property-value id key)))
                                        (if val (format "%s" val) "")))
-                                   field-keys))))
+                                   property-keys))))
                 (insert "| " (mapconcat #'identity row " | ") " |\n")))
             (org-table-align)))
         (goto-char (point-min))
@@ -1633,7 +1624,7 @@ reimplement parsing or execution."
 
 (defconst supertag-query-block--operators
   '(("tag"     . "(tag NAME) -- nodes carrying tag NAME")
-    ("field"   . "(field KEY VALUE) -- nodes whose field KEY equals VALUE")
+    ("property" . "(property KEY VALUE) -- nodes whose property KEY equals VALUE")
     ("term"    . "(term WORD) -- full-text search over title/content")
     ("after"   . "(after DATE) -- nodes dated after DATE")
     ("before"  . "(before DATE) -- nodes dated before DATE")
@@ -1665,7 +1656,7 @@ reimplement parsing or execution."
   "Return known tag names from live data, or nil if unavailable."
   (ignore-errors (supertag-view-api-list-tag-ids)))
 
-(defun supertag-query-block--live-field-names ()
+(defun supertag-query-block--live-property-names ()
   "Return property names present in node projections."
   (let (names)
     (maphash (lambda (_id node)
@@ -1681,12 +1672,12 @@ reimplement parsing or execution."
         (supertag-ui-read-tag "Tag: " tags t nil)
       (read-string "Tag: "))))
 
-(defun supertag-query-block--read-field-name ()
-  "Read a field name, completing against node properties when available."
-  (let ((fields (supertag-query-block--live-field-names)))
-    (if fields
-        (completing-read "Field: " fields nil nil)
-      (read-string "Field: "))))
+(defun supertag-query-block--read-property-name ()
+  "Read a property name, completing against node properties when available."
+  (let ((properties (supertag-query-block--live-property-names)))
+    (if properties
+        (completing-read "Property: " properties nil nil)
+      (read-string "Property: "))))
 
 (defun supertag-query-block--read-link-reference ()
   "Read a named Org link relation, completing against projected names."
@@ -1731,9 +1722,9 @@ COMBINATOR is \"and\"/\"or\" (a string) or the symbol `and'/`or'."
   (let ((op (supertag-query-block--completing-read-operator "Condition operator: ")))
     (pcase op
       ("tag" (supertag-query-block--make-condition op (supertag-query-block--read-tag-name)))
-      ("field" (let ((key (supertag-query-block--read-field-name)))
-                 (supertag-query-block--make-condition
-                  op key (read-string (format "Value for field `%s': " key)))))
+      ("property" (let ((key (supertag-query-block--read-property-name)))
+                    (supertag-query-block--make-condition
+                     op key (read-string (format "Value for property `%s': " key)))))
       ("term" (supertag-query-block--make-condition op (read-string "Search term: ")))
       ("after" (supertag-query-block--make-condition
                 op (supertag-query-block--read-date "After date")))
@@ -1780,7 +1771,7 @@ COMBINATOR is \"and\"/\"or\" (a string) or the symbol `and'/`or'."
 Prompts for a leaf condition, including named Org link traversal,
 then repeatedly offers to combine it with another condition using AND
 or OR, and finally offers to wrap the whole thing in NOT.  Tag and
-field names are completed from live data when possible.  When done,
+property names are completed from live data when possible.  When done,
 previews the resulting S-expression and offers to copy it, insert it
 as a block, or run it immediately."
   (interactive)
@@ -1810,7 +1801,7 @@ Combinators
 
 Leaf conditions
   (tag NAME)             nodes carrying tag NAME
-  (field KEY VALUE)      nodes whose field KEY equals VALUE (exact match)
+  (property KEY VALUE)   nodes whose property KEY equals VALUE (exact match)
   (term WORD)            substring search over node title/content
   (after DATE)           nodes dated after DATE
   (before DATE)          nodes dated before DATE
@@ -1843,22 +1834,25 @@ NAME/KEY/VALUE/WORD must be strings (double-quoted); bare symbols are
 also accepted for NAME/KEY/VALUE but numbers are not -- write
 \"5\", not 5.
 
+`field' is accepted as an older spelling of `property' so existing
+query blocks keep working; `property' is the spelling to write.
+
 Examples (simple to complex)
   (tag \"project\")
-  (field \"status\" \"active\")
+  (property \"status\" \"active\")
   (term \"meeting\")
-  (and (tag \"task\") (not (field \"status\" \"done\")))
+  (and (tag \"task\") (not (property \"status\" \"done\")))
   (or (tag \"work\") (tag \"personal\"))
   (and (tag \"task\") (after \"-7d\"))
   (and (or (tag \"work\") (tag \"project\"))
-       (not (field \"status\" \"completed\"))
+       (not (property \"status\" \"completed\"))
        (after \"2025-01-01\"))
 
-  (link work/tasks (field \"status\" \"blocked\"))
+  (link work/tasks (property \"status\" \"blocked\"))
   (reverse-link work/tasks (tag \"project\"))
   (and (tag \"project\")
        (link work/tasks
-             (and (tag \"task\") (field \"status\" \"blocked\"))))
+             (and (tag \"task\") (property \"status\" \"blocked\"))))
 
 See doc/QUERY.md for the full reference, composition examples, where
 queries can be used (babel blocks, dynamic blocks, the
@@ -1958,13 +1952,13 @@ Entities that do not exist are skipped."
         (when entity
           (push entity result))))))
 
-(defun supertag-view-api-node-field-in-tag (node-id tag-id field-name)
-  "Read FIELD-NAME for NODE-ID within TAG-ID context.
+(defun supertag-view-api-node-property (node-id property-name)
+  "Read PROPERTY-NAME for NODE-ID from its projected Org properties.
 
-FIELD-NAME is a string (an Org property key)."
-  (unless (and (stringp field-name) (not (string-empty-p field-name)))
-    (error "FIELD-NAME must be a non-empty string"))
-  (supertag-query-property-value node-id field-name))
+PROPERTY-NAME is a string (an Org property key)."
+  (unless (and (stringp property-name) (not (string-empty-p property-name)))
+    (error "PROPERTY-NAME must be a non-empty string"))
+  (supertag-query-property-value node-id property-name))
 
 (provide 'supertag-query)
 ;;; supertag-query.el ends here

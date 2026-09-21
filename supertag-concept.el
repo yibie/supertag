@@ -7,7 +7,8 @@
 ;; - render other exact title/alias occurrences as dynamic mentions
 
 
-;; Commands: supertag-promote, supertag-concept-open-at-point, supertag-concept-open-at-mouse, supertag-concept-link-mode.
+;; Commands: supertag-promote, supertag-concept-open-at-point,
+;; supertag-concept-open-at-mouse, supertag-mention-mode.
 ;; Dependencies: cl-lib, org, subr-x, supertag-core-store, supertag-node, supertag-service-org,
 ;; supertag-query, supertag-tag, supertag-services-sync, supertag-link, supertag-mention.
 ;; Shared Link retry/materializer, nine ServiceOrg helpers and two Sync readers retain their
@@ -97,6 +98,9 @@ Each entry is (TERM . NODE-ID).")
 
 (defvar-local supertag-concept--font-lock-keywords nil
   "Buffer-local font-lock keywords for concept mentions.")
+
+(defvar-local supertag-concept--font-lock-regexp nil
+  "Buffer-local compiled regexp for concept mention fontification.")
 
 (defvar-local supertag-concept--protected-ranges-cache nil
   "Buffer-local (TICK . RANGES) memo of `supertag-concept--protected-ranges'.
@@ -242,6 +246,19 @@ relative to the real buffer start, which is the origin
     (and (derived-mode-p 'org-mode)
          (not (supertag-concept--ignored-org-context-p pos)))))
 
+(defun supertag-concept--font-lock-matcher (limit)
+  "Find the next renderable concept mention before LIMIT.
+Protected Org constructs are skipped by the matcher itself, rather than
+matched with a nil face.  Consequently the mention keyword never participates
+in fontifying an explicit reference and cannot replace its `org-link' face."
+  (let (found)
+    (while (and supertag-concept--font-lock-regexp
+                (not found)
+                (re-search-forward supertag-concept--font-lock-regexp limit t))
+      (when (save-match-data (supertag-concept--valid-match-p))
+        (setq found t)))
+    found))
+
 (defun supertag-concept--match-handler ()
   "Font-lock handler for concept mention matches."
   (let ((start (match-beginning 0))
@@ -249,8 +266,7 @@ relative to the real buffer start, which is the origin
     (when (and start end
                (<= (point-min) start)
                (<= end (point-max))
-               (save-match-data
-                 (supertag-concept--valid-match-p)))
+               (save-match-data (supertag-concept--valid-match-p)))
       (let* ((term (buffer-substring-no-properties start end))
              (node-id (cdr (assoc term supertag-concept--entries))))
         (when node-id
@@ -273,18 +289,20 @@ unsupplied ENTRIES computes it here, exactly as before."
   (setq supertag-concept--entries
         (if entries-supplied-p entries (supertag-concept-entries)))
   (let ((regexp (supertag-concept--regexp supertag-concept--entries)))
+    (setq supertag-concept--font-lock-regexp regexp)
     (setq supertag-concept--font-lock-keywords
           (when regexp
-            `((,regexp (0 (supertag-concept--match-handler) t)))))
+            `((supertag-concept--font-lock-matcher
+               (0 (supertag-concept--match-handler) t)))))
     (when supertag-concept--font-lock-keywords
       (font-lock-add-keywords nil supertag-concept--font-lock-keywords t))))
 
 ;;;###autoload
-(define-minor-mode supertag-concept-link-mode
+(define-minor-mode supertag-mention-mode
   "Highlight known concept titles and aliases as dynamic mentions."
-  :lighter " ST-Concept"
-  :group 'supertag-concept
-  (if supertag-concept-link-mode
+  :lighter " ST-Mention"
+  :group 'supertag-mention
+  (if supertag-mention-mode
       (progn
         (make-local-variable 'font-lock-extra-managed-props)
         (dolist (prop '(keymap help-echo mouse-face supertag-concept-node-id))
@@ -294,6 +312,7 @@ unsupplied ENTRIES computes it here, exactly as before."
     (when supertag-concept--font-lock-keywords
       (font-lock-remove-keywords nil supertag-concept--font-lock-keywords))
     (setq supertag-concept--font-lock-keywords nil
+          supertag-concept--font-lock-regexp nil
           supertag-concept--entries nil)
     (supertag-view-helper--refresh-fontification)))
 
@@ -301,7 +320,7 @@ unsupplied ENTRIES computes it here, exactly as before."
   "Refresh concept mentions in the current buffer.
 ENTRIES, when supplied, is a ready `supertag-concept-entries' result; the
 all-buffers refresh passes it so the store is scanned only once."
-  (when supertag-concept-link-mode
+  (when supertag-mention-mode
     ;; Forward the supplied-ness as well: an explicit nil means "no concepts",
     ;; while omitting the argument means "compute the entries here".
     (if entries-supplied-p
@@ -318,7 +337,7 @@ not scan at all."
         entries)
     (dolist (buffer (buffer-list))
       (with-current-buffer buffer
-        (when supertag-concept-link-mode
+        (when supertag-mention-mode
           (unless computed
             (setq entries (supertag-concept-entries)
                   computed t))

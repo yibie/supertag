@@ -80,6 +80,21 @@ if your Emacs accepts fractional heights for side windows."
   :type 'boolean
   :group 'supertag)
 
+(defcustom supertag-view-node-follow-idle-delay 0.08
+  "Idle seconds before Node View follows point into another node.
+Deferring the render keeps heading-to-heading cursor motion responsive."
+  :type 'number
+  :group 'supertag)
+
+(defvar-local supertag-view-node--follow-timer nil
+  "Pending idle timer for following point in the current buffer.")
+
+(defun supertag-view-node--cancel-follow-timer ()
+  "Cancel this buffer's pending Node View follow operation."
+  (when supertag-view-node--follow-timer
+    (cancel-timer supertag-view-node--follow-timer)
+    (setq supertag-view-node--follow-timer nil)))
+
 (defun supertag-view-node--buffer ()
   (let ((buf (get-buffer supertag-view-node--buffer-name)))
     (and buf (buffer-live-p buf) buf)))
@@ -201,6 +216,7 @@ Returned keys (current contract):
           (lambda ()
             (when (and follow-local-p (buffer-live-p origin))
               (with-current-buffer origin
+                (supertag-view-node--cancel-follow-timer)
                 (remove-hook 'post-command-hook
                              #'supertag-view-node--post-command t)))))))
 
@@ -240,23 +256,36 @@ Returned keys (current contract):
     (dolist (win (get-buffer-window-list buf nil t))
       (when (window-live-p win) (delete-window win)))))
 
+(defun supertag-view-node--follow-at-idle (origin)
+  "Make Node View follow point in ORIGIN after cursor motion settles."
+  (when (buffer-live-p origin)
+    (with-current-buffer origin
+      (setq supertag-view-node--follow-timer nil)
+      (when (or supertag-view-node--enabled supertag-view-node-auto-show)
+        (let ((eid (supertag-view-node--current-entity-id)))
+          (unless (equal eid supertag-view-node--last-entity-id)
+            (setq supertag-view-node--last-entity-id eid)
+            (when eid
+              (when-let* ((buf (supertag-view-node--buffer)))
+                (if (buffer-local-value 'supertag-view--instance buf)
+                    (with-current-buffer buf
+                      (setf (plist-get supertag-view--instance :input)
+                            (plist-put
+                             (copy-sequence
+                              (plist-get supertag-view--instance :input))
+                             :node-id eid))
+                      (supertag-view-refresh buf))
+                  (supertag-view-node--show-side eid))))))))))
+
 (defun supertag-view-node--post-command ()
-  "Auto-refresh when current entity changes."
+  "Schedule an idle Node View follow check after cursor motion."
   (when (or supertag-view-node--enabled supertag-view-node-auto-show)
-    (let ((eid (supertag-view-node--current-entity-id)))
-      (unless (equal eid supertag-view-node--last-entity-id)
-        (setq supertag-view-node--last-entity-id eid)
-        (when eid
-          (when-let* ((buf (supertag-view-node--buffer)))
-            (if (buffer-local-value 'supertag-view--instance buf)
-                (with-current-buffer buf
-                  (setf (plist-get supertag-view--instance :input)
-                        (plist-put
-                         (copy-sequence
-                          (plist-get supertag-view--instance :input))
-                         :node-id eid))
-                  (supertag-view-refresh buf))
-              (supertag-view-node--show-side eid))))))))
+    (supertag-view-node--cancel-follow-timer)
+    (setq supertag-view-node--follow-timer
+          (run-with-idle-timer
+           supertag-view-node-follow-idle-delay nil
+           #'supertag-view-node--follow-at-idle
+           (current-buffer)))))
 
 (defun supertag-view-node-ensure-shown ()
   "Ensure the Node View side window is visible and following."
@@ -278,6 +307,9 @@ Returned keys (current contract):
         (supertag-view-node-ensure-shown)
         (message "Node View auto-show: ON"))
     (remove-hook 'post-command-hook #'supertag-view-node--post-command)
+    (dolist (buffer (buffer-list))
+      (with-current-buffer buffer
+        (supertag-view-node--cancel-follow-timer)))
     (supertag-view-node--hide-side)
     (message "Node View auto-show: OFF")))
 

@@ -92,10 +92,10 @@ Many read APIs take a `QUERY-SPEC` plist, e.g.:
   add the smallest domain query to the existing query Module. Removal is tracked
   by ownership-separation `task026`.
 
-**Field access**
+**Property access**
 
-- `(supertag-view-api-node-field-in-tag NODE-ID TAG-ID FIELD-NAME) -> value`  
-  Read a node field value within a tag context (field values).
+- `(supertag-view-api-node-property NODE-ID PROPERTY-NAME) -> value`
+  Read a saved Org property from the Store projection; no tag context is needed.
 
 **Subscription**
 

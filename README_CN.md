@@ -209,7 +209,7 @@ Table、Schema、Kanban、Board、Graph 入口已封存，不属于当前工作�
 | 关联节点 | 输入 `[[` 后补全，或执行 `M-x supertag-add-link` | 链接已有节点或显式按模板新建独立目标，只写 source 的正向 Org link，target Backlink 自动派生 |
 | 处理未链接提及 | 打开 Node View，使用 **Unlinked Mentions** | 将普通文字中的 title/alias 提及作为临时候选；可链接一次、链接来源节点内全部，或在该来源节点忽略 |
 | 按模板提升文本或标题 | `M-x supertag-promote` | 预览实际内容后明确复用/新建；选区替换为普通 Org 链接 |
-| 高亮概念提及 | `M-x supertag-concept-link-mode` | 将概念 title/alias 的提及显示为琥珀色语义高亮，不落库为链接 |
+| 高亮概念提及 | `M-x supertag-mention-mode` | 将概念 title/alias 的提及显示为琥珀色语义高亮，不落库为链接 |
 | 光标处的情景动作 | `embark-act`（Embark，可选） | 识别对象并提供对应动作；RET 为默认动作 |
 | 保存数据库 | `M-x supertag-save-store` | 立即把未保存的 Store 变更写入磁盘；自动保存和退出时也会执行 |
 | 从磁盘重新加载数据库 | `M-x supertag-reload-store` | 仅在 Store 干净时重新加载；有未保存变更时拒绝，除非带前缀参数明确丢弃 |
@@ -500,6 +500,8 @@ Supertag 以 GPLv3 自由软件协议开发。欢迎在 GitHub 上贡献代码�
 | `supertag-ai-max-body-chars` | `8000` | Maximum number of own-body characters sent for extraction. |
 | `supertag-ai-prompts` | `list of 1 entries, see docstring` | Named extraction prompts. |
 | `supertag-ai-timeout` | `60` | Runtime request timeout in seconds. |
+
+查询与自动化条件用 `property` 表示 Org 属性，并读取 Store 中已保存、已同步的值；`(field …)` 仅保留为旧查询输入别名。自动化 `:update-property` 写入 Org 文件，再由同步更新 Store。
 
 **supertag-automation.el**
 

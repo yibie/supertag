@@ -7,6 +7,56 @@
 (require 'supertag-view-framework)
 (require 'supertag-view-node)
 
+(ert-deftest supertag-view-node-follow-defers-refresh-until-idle ()
+  "Crossing a heading must not rebuild Node View inside cursor motion."
+  (let ((origin (generate-new-buffer " *supertag-node-follow-origin*"))
+        (view (generate-new-buffer " *supertag-node-follow-view*"))
+        (supertag--store (make-hash-table :test 'equal))
+        scheduled cancelled resolved refreshed timer-callback timer-args)
+    (unwind-protect
+        (progn
+          (with-current-buffer view
+            (setq-local supertag-view--instance '(:input (:node-id "old"))))
+          (with-current-buffer origin
+            (supertag--ensure-store)
+            (org-mode)
+            (setq-local supertag-view-node--last-entity-id "old")
+            (cl-letf (((symbol-function 'supertag-view-node--current-entity-id)
+                       (lambda ()
+                         (setq resolved (1+ (or resolved 0)))
+                         "new"))
+                      ((symbol-function 'supertag-view-node--buffer)
+                       (lambda () view))
+                      ((symbol-function 'run-with-idle-timer)
+                       (lambda (_delay _repeat function &rest args)
+                         (setq scheduled (1+ (or scheduled 0))
+                               timer-callback function
+                               timer-args args)
+                         'fake-timer))
+                      ((symbol-function 'cancel-timer)
+                       (lambda (_timer)
+                         (setq cancelled (1+ (or cancelled 0)))))
+                      ((symbol-function 'supertag-view-refresh)
+                       (lambda (_buffer)
+                         (setq refreshed (1+ (or refreshed 0))))))
+              (let ((supertag-view-node--enabled t)
+                    (supertag-view-node-auto-show nil))
+                (supertag-view-node--post-command)
+                (should (= scheduled 1))
+                (should-not resolved)
+                (should-not refreshed)
+                ;; More motion replaces pending work instead of rendering.
+                (supertag-view-node--post-command)
+                (should (= scheduled 2))
+                (should (= cancelled 1))
+                (should-not resolved)
+                (should-not refreshed)
+                (apply timer-callback timer-args)
+                (should (= resolved 1))
+                (should (= refreshed 1))))))
+      (when (buffer-live-p origin) (kill-buffer origin))
+      (when (buffer-live-p view) (kill-buffer view)))))
+
 (ert-deftest supertag-view-node-runtime-owns-side-view-lifecycle ()
   "Node View must refresh through Runtime and release follow/subscription state."
   (supertag-view-framework-init)

@@ -12,7 +12,7 @@ touch those, and do not change `supertag-mention.el`.
 ## Fix B — `supertag-concept--refresh-all-buffers` recomputes the same thing N times
 
 `supertag-promote` ends by calling `supertag-concept--refresh-all-buffers`
-(`supertag-concept.el:269`). For **every** buffer with `supertag-concept-link-mode`
+(`supertag-concept.el:269`). For **every** buffer with `supertag-mention-mode`
 on, it calls `supertag-concept-refresh` →
 `supertag-concept--refresh-font-lock-keywords` → `supertag-concept-entries`,
 which scans the whole node store.
@@ -31,7 +31,7 @@ Do:
    pass them down. Give `supertag-concept-refresh` and
    `supertag-concept--refresh-font-lock-keywords` an optional ENTRIES argument;
    when it is absent they behave exactly as today, so every existing caller
-   (including `supertag-concept-link-mode` itself) keeps working.
+   (including `supertag-mention-mode` itself) keeps working.
 2. Hoist the target-file list out of the per-node predicate. Give
    `supertag-concept-node-p` an optional second argument carrying an
    already-computed target list, and have `supertag-concept--term-index`

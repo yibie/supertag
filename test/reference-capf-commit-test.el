@@ -255,4 +255,103 @@
         (should (equal "[[id:target][Target]]"
                        (supertag-reference-capf-test--link-text)))))))
 
+
+(ert-deftest supertag-reference-capf-org-capture-keeps-link-until-finalize ()
+  "Both openers and paired closers preserve real capture finalize/abort behavior."
+  (dolist (finish '(finalize abort))
+    (dolist (opener '("[[" "【【"))
+      (supertag-reference-capf-test--isolated
+       (let* ((source (expand-file-name "capture.org" tmp))
+              (target (expand-file-name "concepts.org" tmp))
+              (org-capture-templates
+               `(("r" "Reference" entry (file ,source) "* Captured\n%?")))
+              (org-capture-mode-hook nil)
+              (org-capture-before-finalize-hook nil)
+              (org-capture-prepare-finalize-hook nil)
+              (org-capture-after-finalize-hook nil))
+         (with-temp-file source (insert "#+title: Inbox\n"))
+         (supertag-reference-capf-test--write-node target "pi-target" "Pi")
+         (save-window-excursion
+           (unwind-protect
+               (progn
+                 (org-capture nil "r")
+                 (should org-capture-mode)
+                 (should (buffer-base-buffer))
+                 (should-not buffer-file-name)
+                 (insert opener "Pi" (if (equal opener "[[") "]]" "】】"))
+                 (backward-char 2)
+                 (let* ((capf (supertag-reference-capf-test--capf))
+                        (row (supertag-reference-capf-test--candidate
+                              (nth 2 capf) nil "concepts.org")))
+                   (should row)
+                   (delete-region (nth 0 capf) (nth 1 capf))
+                   (insert row)
+                   (funcall (plist-get (nthcdr 3 capf) :exit-function)
+                            (substring-no-properties row) 'finished))
+                 (should (string-match-p (regexp-quote "[[id:pi-target][Pi]]")
+                                         (buffer-string)))
+                 (should org-capture-mode)
+                 (should-not (save-excursion
+                               (org-back-to-heading t) (org-entry-get nil "ID")))
+                 (should (equal "#+title: Inbox\n"
+                                (with-temp-buffer
+                                  (insert-file-contents source) (buffer-string))))
+                 (if (eq finish 'finalize)
+                     (progn
+                       (org-capture-finalize)
+                       (should (string-match-p
+                                (regexp-quote "[[id:pi-target][Pi]]")
+                                (with-temp-buffer
+                                  (insert-file-contents source) (buffer-string)))))
+                   (org-capture-kill)
+                   (should (equal "#+title: Inbox\n"
+                                  (with-temp-buffer
+                                    (insert-file-contents source) (buffer-string))))))
+             (when (bound-and-true-p org-capture-mode)
+               (org-capture-kill)))))))))
+
+(ert-deftest supertag-reference-capf-org-capture-creates-target-not-source ()
+  "Creating a new target is durable, but its capture source remains a draft."
+  (supertag-reference-capf-test--isolated
+   (let* ((source (expand-file-name "capture.org" tmp))
+          (target (expand-file-name "concepts.org" tmp))
+          (org-capture-templates
+           `(("r" "Reference" entry (file ,source) "* Captured\n%?")))
+          (org-capture-mode-hook nil)
+          (org-capture-before-finalize-hook nil)
+          (org-capture-prepare-finalize-hook nil)
+          (org-capture-after-finalize-hook nil))
+     (with-temp-file source (insert "#+title: Inbox\n"))
+     (save-window-excursion
+       (unwind-protect
+           (progn
+             (org-capture nil "r")
+             (insert "【【Fresh")
+             (let* ((capf (supertag-reference-capf-test--capf))
+                    (row (supertag-reference-capf-test--candidate
+                          (nth 2 capf) nil "Create new node")))
+               (should row)
+               (delete-region (nth 0 capf) (nth 1 capf))
+               (insert row)
+               (cl-letf (((symbol-function 'supertag-template-read)
+                          (lambda () (list :key "c" :name "Concept"
+                                           :target-file target :tags nil
+                                           :properties nil :body "")))
+                         ((symbol-function 'supertag-node-identity-new)
+                          (lambda () "fresh-id")))
+                 (funcall (plist-get (nthcdr 3 capf) :exit-function)
+                          (substring-no-properties row) 'finished)))
+             (should org-capture-mode)
+             (should (string-match-p (regexp-quote "[[id:fresh-id][Fresh]]")
+                                     (buffer-string)))
+             (should (supertag-node-get "fresh-id"))
+             (should (file-exists-p target))
+             (should (equal "#+title: Inbox\n"
+                            (with-temp-buffer
+                              (insert-file-contents source) (buffer-string))))
+             (org-capture-kill))
+         (when (bound-and-true-p org-capture-mode)
+           (org-capture-kill)))))))
+
+(provide 'reference-capf-commit-test)
 ;;; reference-capf-commit-test.el ends here

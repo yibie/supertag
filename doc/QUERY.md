@@ -24,7 +24,7 @@ Examples:
 
 ```elisp
 (and (tag "task")
-     (not (field "status" "done")))
+     (not (property "status" "done")))
 
 (or (tag "work")
     (tag "personal"))
@@ -34,7 +34,7 @@ Examples:
 
 ```elisp
 (tag NAME)
-(field KEY VALUE)
+(property KEY VALUE)
 (term WORD)
 (task STATE...)
 (priority PRIORITY...)
@@ -68,7 +68,7 @@ matching `TARGET-QUERY`.
 
 ```elisp
 (link work/tasks
-      (field "status" "blocked"))
+      (property "status" "blocked"))
 ```
 
 ### Reverse traversal
@@ -117,7 +117,7 @@ ambiguous rather than selecting a relation by accident.
   (link work/tasks
         (and
           (tag "task")
-          (field "status" "blocked"))))
+          (property "status" "blocked"))))
 ```
 
 Nested traversal:
@@ -125,7 +125,7 @@ Nested traversal:
 ```elisp
 (link work/projects
       (link work/tasks
-            (field "status" "blocked")))
+            (property "status" "blocked")))
 ```
 
 Negation:
@@ -142,7 +142,7 @@ Reverse composition:
 (and
   (tag "task")
   (reverse-link work/tasks
-                (field "status" "active")))
+                (property "status" "active")))
 ```
 
 ## Result modifiers
@@ -195,3 +195,5 @@ The parser rejects:
 - ambiguous Link names or keys.
 
 A traversal that is valid but has no matching instances returns an empty list.
+
+`field` remains accepted as an older input spelling of `property`. New queries should use `property`. Property conditions read synchronized Org properties from the Store, not unsaved file edits.

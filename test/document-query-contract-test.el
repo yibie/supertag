@@ -305,7 +305,7 @@
           (with-temp-file script
             (insert ";;; -*- lexical-binding: t; -*-\n")
             (prin1 `(setq qa-root ,root qa-tmp ,tmp qa-stage ',stage qa-case ',scenario
-                          qa-symbols '(supertag-note-query-normalize-property-key supertag-note-query-read-node supertag-query-link--relation-name supertag-query-link--parse-binary supertag-query-link--parse-unary supertag-query-link--unique supertag-query-link--execute-forward supertag-query-link--execute-reverse supertag-query-link--execute-has-out supertag-query-link--execute-has-in supertag-query-normalize-property-key supertag-query-node supertag-query-tag-descriptors supertag-query-tags supertag-query-node-ids-by-tag supertag-query-automations supertag-query-tag-occurrences supertag-query-relations supertag-query-resolved-fields supertag-query-field-value supertag-query-property-value supertag-query-relations-from supertag-query-relations-to supertag-query-named-links-from supertag-query-named-links-to supertag-query-ordinary-references-from supertag-query-ordinary-references-to supertag-query-relations-among supertag-query-node-tags supertag-query-node-properties supertag-query-node-detail supertag-query supertag-query-nodes supertag-query-node-ids supertag-query-evaluate supertag-query-sexp supertag-query-fields supertag-query-validate supertag-query-date-valid-p supertag-query-expand supertag-query--date-arg supertag-query--modifier-ast-p supertag-query--parse-sexp supertag-query--execute-ast supertag-query--get-all-node-ids supertag-query--ast-modifiers supertag-query--numeric supertag-query--value< supertag-query--sort-value supertag-query--sort-node-ids supertag-query--aggregate-values supertag-query--group-values supertag-query--apply-modifiers supertag-query-modifiers supertag-query--find-nodes-by-field-indexed supertag-query--resolve-date-string supertag-query--get-fields-from-ast)) (current-buffer))
+                          qa-symbols '(supertag-note-query-normalize-property-key supertag-note-query-read-node supertag-query-link--relation-name supertag-query-link--parse-binary supertag-query-link--parse-unary supertag-query-link--unique supertag-query-link--execute-forward supertag-query-link--execute-reverse supertag-query-link--execute-has-out supertag-query-link--execute-has-in supertag-query-normalize-property-key supertag-query-node supertag-query-tag-descriptors supertag-query-tags supertag-query-node-ids-by-tag supertag-query-automations supertag-query-tag-occurrences supertag-query-relations supertag-query-property-value supertag-query-relations-from supertag-query-relations-to supertag-query-named-links-from supertag-query-named-links-to supertag-query-ordinary-references-from supertag-query-ordinary-references-to supertag-query-relations-among supertag-query-node-tags supertag-query-node-properties supertag-query-node-detail supertag-query supertag-query-nodes supertag-query-node-ids supertag-query-evaluate supertag-query-sexp supertag-query-properties supertag-query-validate supertag-query-date-valid-p supertag-query-expand supertag-query--date-arg supertag-query--modifier-ast-p supertag-query--parse-sexp supertag-query--execute-ast supertag-query--get-all-node-ids supertag-query--ast-modifiers supertag-query--numeric supertag-query--value< supertag-query--sort-value supertag-query--sort-node-ids supertag-query--aggregate-values supertag-query--group-values supertag-query--apply-modifiers supertag-query-modifiers supertag-query--resolve-date-string supertag-query--get-properties-from-ast)) (current-buffer))
             (insert "\n")
             (let ((print-length nil) (print-level nil))
               (prin1 `(condition-case err
@@ -1023,7 +1023,7 @@
           (with-temp-file script
             (insert ";;; -*- lexical-binding: t; -*-\n")
             (prin1 `(setq qd-root ,root qd-tmp ,tmp qd-stage ',stage qd-case ',scenario
-                          qd-functions '(supertag-query-block--format-table supertag-query-block--parse-columns supertag-query-block--normalize-sort-key supertag-query-block--normalize-order supertag-query-block--normalize-limit supertag-query-block--sort-value supertag-query-block--numeric supertag-query-block--value< supertag-query-block--apply-sort supertag-query-block--row supertag-query-block--aggregate-headers-and-rows supertag-query-block--headers-and-rows supertag-query-block--render supertag-add-query-block org-babel-execute:supertag-query-block org-dblock-write:supertag-query supertag-query-block--render-results supertag-query-block--completing-read-operator supertag-query-block--annotate-operator supertag-query-block--live-tag-names supertag-query-block--live-field-names supertag-query-block--read-tag-name supertag-query-block--read-field-name supertag-query-block--read-link-reference supertag-query-block--read-date supertag-query-block--make-condition supertag-query-block--combine-conditions supertag-query-block--build-condition supertag-query-block--present-built-query supertag-query-build supertag-query-describe-syntax) qd-constants '(supertag-query-block--operators supertag-query-block--syntax-reference-text)) (current-buffer))
+                          qd-functions '(supertag-query-block--format-table supertag-query-block--parse-columns supertag-query-block--normalize-sort-key supertag-query-block--normalize-order supertag-query-block--normalize-limit supertag-query-block--sort-value supertag-query-block--numeric supertag-query-block--value< supertag-query-block--apply-sort supertag-query-block--row supertag-query-block--aggregate-headers-and-rows supertag-query-block--headers-and-rows supertag-query-block--render supertag-add-query-block org-babel-execute:supertag-query-block org-dblock-write:supertag-query supertag-query-block--render-results supertag-query-block--completing-read-operator supertag-query-block--annotate-operator supertag-query-block--live-tag-names supertag-query-block--live-property-names supertag-query-block--read-tag-name supertag-query-block--read-property-name supertag-query-block--read-link-reference supertag-query-block--read-date supertag-query-block--make-condition supertag-query-block--combine-conditions supertag-query-block--build-condition supertag-query-block--present-built-query supertag-query-build supertag-query-describe-syntax) qd-constants '(supertag-query-block--operators supertag-query-block--syntax-reference-text)) (current-buffer))
             (insert "\n")
             (let ((print-length nil) (print-level nil))
               (prin1 `(condition-case err
@@ -1088,13 +1088,13 @@
       (let ((disk (supertag-document-test-disk file)) (live (buffer-string))
             (dirty (buffer-modified-p)) (facts (prin1-to-string supertag--store))
             (ids (prin1-to-string org-id-locations)))
-        (dolist (tag '(nil "missing" "other"))
-          (should (equal "first" (supertag-view-api-node-field-in-tag "document-node" tag "aLpHa")))
-          (should (equal "" (supertag-view-api-node-field-in-tag "document-node" tag "EMPTY")))
-          (should-not (supertag-view-api-node-field-in-tag "document-node" tag "MISSING")))
+        (progn
+          (should (equal "first" (supertag-view-api-node-property "document-node" "aLpHa")))
+          (should (equal "" (supertag-view-api-node-property "document-node" "EMPTY")))
+          (should-not (supertag-view-api-node-property "document-node" "MISSING")))
         (dolist (bad '(nil "" 1 :ALPHA))
-          (should-error (supertag-view-api-node-field-in-tag "document-node" nil bad)))
-        (should-not (supertag-view-api-node-field-in-tag "absent" nil "ALPHA"))
+          (should-error (supertag-view-api-node-property "document-node" bad)))
+        (should-not (supertag-view-api-node-property "absent" "ALPHA"))
         (should (equal disk (supertag-document-test-disk file)))
         (should (equal live (buffer-string))) (should (eq dirty (buffer-modified-p)))
         (should (equal facts (prin1-to-string supertag--store)))
@@ -1232,7 +1232,7 @@
             (insert ";;; -*- lexical-binding: t; -*-\n")
             (prin1 `(setq qe-root ,root qe-tmp ,tmp qe-stage ',stage qe-case ',scenario
                           qe-forms '(supertag-view-api-list-entity-ids supertag-view-api-get-entity
-                                     supertag-view-api-get-entities supertag-view-api-node-field-in-tag))
+                                     supertag-view-api-get-entities supertag-view-api-node-property))
                    (current-buffer))
             (insert "\n")
             (let ((print-length nil) (print-level nil))

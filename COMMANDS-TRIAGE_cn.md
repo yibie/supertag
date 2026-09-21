@@ -265,7 +265,7 @@ Embark情景等产品门已解决。
 | 删 | `supertag-change-tag-at-point` | 旧独立入口退出；不据此禁止“更换当前标签”能力。后续按 WHERE/WHAT/ACTION 评估为 Embark 情景动作，最终符号与行为未定，本轮不恢复旧入口 |
 | 删 | `supertag-complete-tag` | 已确认：退出独立补全入口，保留输入补全、add-tag 与 add-link；验证 TAB 和现有补全触发 |
 | 删 | `supertag-completion-debug` | 已确认：退出日常入口，保留内部诊断或自动刷新能力；不是删除仍被调用的内部函数 |
-| 留 | `supertag-concept-link-mode` | 已确认：保留视图局部操作、模式或对象适配能力，不要求用户记忆独立命令；必要 interactive 和清理逻辑保留 |
+| 留 | `supertag-mention-mode` | 已确认：保留视图局部操作、模式或对象适配能力，不要求用户记忆独立命令；必要 interactive 和清理逻辑保留 |
 | 留 | `supertag-concept-open-at-mouse` | 已确认：保留视图局部操作、模式或对象适配能力，不要求用户记忆独立命令；必要 interactive 和清理逻辑保留 |
 | 留 | `supertag-concept-open-at-point` | 已确认：保留视图局部操作、模式或对象适配能力，不要求用户记忆独立命令；必要 interactive 和清理逻辑保留 |
 | 删 | `supertag-concept-refresh` | 已确认：退出日常入口，保留内部诊断或自动刷新能力；不是删除仍被调用的内部函数 |
@@ -377,7 +377,7 @@ Embark情景等产品门已解决。
 | 能力 | 涉及原命令 | 建议 |
 |---|---|---|
 | 初始化 | supertag-init | 保留一次性设置/初始化入口，不列日常操作；内部仍须按新模型改造，退出 field/schema、权威数据库及 embed 的旧初始化路径 |
-| 补全、概念显示与当前库提示 | supertag-ui-completion-mode、supertag-concept-link-mode、supertag-vault-indicator-mode | 保留配置和模式生命周期，不要求用户每次进入笔记手动启动；不新增“启用/停用”两套日常入口 |
+| 补全、概念显示与当前库提示 | supertag-ui-completion-mode、supertag-mention-mode、supertag-vault-indicator-mode | 保留配置和模式生命周期，不要求用户每次进入笔记手动启动；不新增“启用/停用”两套日常入口 |
 | 打开概念 | supertag-concept-open-at-point、supertag-concept-open-at-mouse | 保留键盘、鼠标和 Embark 的对象操作；鼠标事件函数是适配代码，不要求用户记它的名字 |
 | node view | supertag-view-node、supertag-view-node--hide-side、supertag-view-node-refresh、supertag-view-node-mode | 保留一个打开/关闭入口，关闭和刷新作为局部操作；mode 保留。hide-side 仍用于清理订阅，不可只隐藏窗口而留下运行状态 |
 | stream | supertag-view-stream、supertag-view-stream-mode、supertag-view-stream-next-node、supertag-view-stream-previous-node、supertag-view-stream-open-node-view、supertag-view-stream-edit、supertag-view-stream-edit-finish、supertag-view-stream-edit-abort、supertag-view-stream-edit-mode、supertag-view-stream-quit | 保留完整集合浏览与编辑往返。现有 n/p、e、v、q、编辑中的 C-c C-c/C-c C-k 已形成完整局部流程；不需要为减少符号数移除这些动作。建议取消编辑在帮助中写“取消本次修改”，明确其恢复原内容的效果 |
@@ -471,7 +471,7 @@ Stream 现有 n/p、e、v、q 和编辑中的 C-c C-c/C-c C-k 是保留流程的
 | Git 设置与克隆 | `supertag-git-setup`、`supertag-git-clone` | 配置或接入同步库；同步 Org 文本；文档投影可重建，非重建数据另受保护 |
 | Git 同步 | `supertag-git-sync-now`、`supertag-git-sync-mode` | 手动同步或配置自动同步；冲突暂停当前库自动 Git 同步，进入可编辑冲突界面，用户解决后继续 |
 
-必要配置模式保留 `supertag-ui-completion-mode`、`supertag-concept-link-mode`、`supertag-vault-indicator-mode`。配置一次并按生命周期工作，不要求用户每次进入笔记手动启动。Promote 模板选择键和自定义直达快捷键属于用户配置，不默认生成 Person／Contact／Project 全套公共命令。
+必要配置模式保留 `supertag-ui-completion-mode`、`supertag-mention-mode`、`supertag-vault-indicator-mode`。配置一次并按生命周期工作，不要求用户每次进入笔记手动启动。Promote 模板选择键和自定义直达快捷键属于用户配置，不默认生成 Person／Contact／Project 全套公共命令。
 
 ### 5.5 文档投影恢复与检查：三个入口
 

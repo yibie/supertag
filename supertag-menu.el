@@ -96,7 +96,7 @@
 
 ;; supertag-tag.el / supertag-concept.el (display toggles use feature wrappers below)
 (declare-function supertag-toggle-tag-style "supertag-tag" ())
-(declare-function supertag-concept-link-mode "supertag-concept" (&optional arg))
+(declare-function supertag-mention-mode "supertag-concept" (&optional arg))
 
 ;; Setup and Automation commands are loaded by their feature wrappers below.
 (declare-function supertag-setup "supertag-vault" ())
@@ -244,8 +244,8 @@ errors propagate unchanged. DOC is the generated wrapper's docstring."
   supertag-automation supertag-automation-list-templates
   "List the available automation templates.")
 
-(supertag-menu--defwrapper supertag-menu--toggle-concept-links
-  supertag-concept supertag-concept-link-mode
+(supertag-menu--defwrapper supertag-menu--toggle-mentions
+  supertag-concept supertag-mention-mode
   "Toggle dynamic concept-mention highlighting.")
 
 (supertag-menu--defwrapper supertag-menu--setup
@@ -291,7 +291,7 @@ errors propagate unchanged. DOC is the generated wrapper's docstring."
    ["Additional views"
     ("s" "Stream view"                 supertag-menu--view-stream)]
    ["Display"
-    ("c" "Toggle concept links" supertag-menu--toggle-concept-links)]
+    ("c" "Toggle mentions" supertag-menu--toggle-mentions)]
    ])
 
 ;;;###autoload

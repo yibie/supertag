@@ -52,4 +52,33 @@ supertag_test_deps_loadpath_resolve() {
   export SUPERTAG_DEPS_LOADPATH
 }
 
+# Native compilation in `emacs -Q' children.
+#
+# A test that mocks a primitive (`read-string', `completing-read') makes a
+# native-comp Emacs compile a trampoline, and linking it needs gcc's own
+# library directory (libemutls_w.a). Homebrew's emacs-plus hands that directory
+# to libgccjit from site-start.el, which `-Q' skips, so every such child dies
+# with "ld: library 'emutls_w' not found". LIBRARY_PATH reaches the driver
+# regardless of `-Q'.
+#
+# Best effort: without a Homebrew gcc there is nothing to add, and an Emacs
+# built without native compilation never asks for it.
+supertag_test_native_comp_library_path() {
+  local gcc emutls directory
+  gcc=$(ls /opt/homebrew/opt/gcc/bin/gcc-[0-9]* /usr/local/opt/gcc/bin/gcc-[0-9]* 2>/dev/null | sort -V | tail -1 || true)
+  [ -n "$gcc" ] || return 0
+  emutls=$("$gcc" -print-file-name=libemutls_w.a 2>/dev/null || true)
+  case "$emutls" in
+    */*) directory=$(dirname "$emutls") ;;
+    *) return 0 ;;
+  esac
+  [ -d "$directory" ] || return 0
+  case ":${LIBRARY_PATH:-}:" in
+    *":$directory:"*) ;;
+    *) LIBRARY_PATH="$directory${LIBRARY_PATH:+:$LIBRARY_PATH}" ;;
+  esac
+  export LIBRARY_PATH
+}
+
 supertag_test_deps_loadpath_resolve
+supertag_test_native_comp_library_path

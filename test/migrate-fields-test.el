@@ -71,8 +71,10 @@
 
 (ert-deftest supertag-migrate-automation-read-only ()
   (supertag-document-test-with-vault
-    (let* ((rule (supertag-automation-create
-                  '(:name "Field rule" :trigger :on-field-change
+    ;; Seed a persisted legacy rule: new rule creation rejects this vocabulary.
+    (let* ((rule (supertag-store-put-entity
+                  :automations "legacy-field-rule"
+                  '(:id "legacy-field-rule" :name "Field rule" :trigger :on-field-change
                     :condition (and (field-equals "x" "y") (field-changed "x"))
                     :actions ((supertag-field-set "x" "y")))))
            (before (copy-tree rule))

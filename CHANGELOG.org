@@ -1,5 +1,32 @@
 * Changelog
 * [Unreleased]
+** Smooth Node View following
+- Node View follow no longer rebuilds the side pane synchronously inside
+  =post-command-hook= whenever point crosses an Org heading. It coalesces
+  cursor motion and refreshes after a short idle delay instead.
+- Pending follow timers are cancelled when a local follow subscription is
+  cleaned up or auto-show is disabled.
+
+** Reference completion in Org capture
+- Accept file-backed Org capture indirect buffers for =[[= and =【【=
+  reference completion. Replace the candidate with an Org ID link without
+  prematurely saving, synchronizing or creating an ID for the capture source.
+- Capture finalize/abort retains control of the draft. Ordinary file-buffer
+  references keep their existing save-and-project behavior.
+
+** Query and Automation property terminology
+- Renamed =supertag-query-fields= to =supertag-query-properties= and
+  =supertag-view-api-node-field-in-tag= to =supertag-view-api-node-property=
+  (now NODE-ID and PROPERTY-NAME only); no Lisp compatibility aliases.
+- Removed =supertag-query-resolved-fields= and =supertag-query-field-value=;
+  use =supertag-query-node-properties= and =supertag-query-property-value=.
+- Query builders, help and documentation now say property. =(field ...)=
+  remains a permanent query input alias; capture =:field= remains accepted.
+- Repaired the property-change/update-property and property-equals/move-node
+  templates; all nine templates have event-to-effect regression tests.
+- Rule creation rejects unknown triggers and action types, including nested
+  case actions. Property read/write ownership and matching are unchanged.
+
 ** Field-value provenance and plain-data agent API
 - Field values can carry a provenance record in the new =:field-provenance=
   Store collection (node -> field -> plist): =:origin= (=:agent= or

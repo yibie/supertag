@@ -245,15 +245,17 @@ TEXT is only used to make the failure message readable."
         calls)
     (let ((real-featurep (symbol-function 'featurep)))
       (cl-letf (((symbol-function 'featurep)
-                 (lambda (feature)
-                   (or (eq feature 'evil) (funcall real-featurep feature))))
+                 (lambda (feature &optional subfeature)
+                   (or (eq feature 'evil)
+                       (funcall real-featurep feature subfeature))))
                 ((symbol-function 'evil-set-initial-state)
                  (lambda (mode state) (push (cons mode state) calls))))
         (supertag-view-register-modal-state 'supertag-view-orphan-tags-mode)
         (supertag-view-register-modal-state 'supertag-view-orphan-tags-mode)))
     (should (equal evil-emacs-state-modes '(supertag-view-orphan-tags-mode)))
-    (should (equal calls '((supertag-view-orphan-tags-mode . emacs)
-                           (supertag-view-orphan-tags-mode . emacs))))))
+    ;; Each registration applies immediately and again through the already
+    ;; loaded Evil callback.  Both paths must select the same state.
+    (should (equal calls (make-list 4 '(supertag-view-orphan-tags-mode . emacs))))))
 
 (ert-deftest supertag-orphan-page-quit-restores-the-windows ()
   (supertag-orphan-page-test--vault

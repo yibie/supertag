@@ -8,13 +8,12 @@
 
 ### 核心特性
 
-- ✅ **统一的标签系统**：每一个标签都是一个功能完备的“数据库”，拥有自定义字段和自动化能力。
+- ✅ **统一的标签系统**：标签限定规则范围，可选的 Org 属性提供已保存的值。
 - ✅ **真正的事件驱动**：基于精确的数据变化实时响应，而非轮询扫描。
 - ✅ **自动规则索引**：在后台自动为规则建立高性能索引，无需用户关心性能优化细节。
 - ✅ **多重动作执行**：一条规则可以触发一系列按顺序执行的动作。
 - ✅ **计划任务**：支持基于时间和周期的自动化，由集成的调度器驱动。
 - ✅ **关系与计算**：支持双向关系与 query 的读时 aggregate。
-- ✅ **公式字段**：在表格视图中实时计算和显示数据，无需持久化存储。
 - ✅ **遗留互操作**：在必要时兼容部分旧存储/事件路径（下文会明确指出）。
 
 ## 🏗️ 统一架构 (Automation System 2.0)
@@ -130,52 +129,10 @@ graph LR
 
 ### 已退出的关系行为
 
-关系字段同步和可执行 rollup 已退出。新关系不能再请求 `:sync-fields`、rollup
+关系属性同步和可执行 rollup 已退出。新关系不能再请求 `:sync-fields`、rollup
 配置或原来的 `:sync-field`／`:rollup` 关系类型。Store 中已有的相关元数据作为
-惰性历史数据保留：加载或更新不会传播字段、重算值，也不会把它转换为 Org 属性。
+惰性历史数据保留：加载或更新不会传播属性、重算值，也不会把它转换为 Org 属性。
 汇总请使用 query 的读时 aggregate；其结果不会作为 rollup 写入持久数据。
-
----
-
-## 核心概念：公式字段 (Formula Fields)
-
-公式字段是 `supertag` 的一项创新功能，它允许您在表格视图中定义“虚拟列”，这些列的值是根据其他字段实时计算得出的。公式字段的计算结果**不会**存储在节点的属性中，它们只在表格视图被渲染时计算并显示。
-
-### 如何定义公式字段
-
-您可以在标签定义中，像声明普通字段一样声明公式字段，但其 `:type` 为 `:formula`，并包含一个 `:formula` 属性来定义计算表达式。
-
-```elisp
-(supertag-tag-create
- '(:id "task"
-   :name "Task"
-   :fields ((:name "due_date" :type :date)
-            (:name "completed_date" :type :date)
-            (:name "progress" :type :number)
-            ;; 示例：用于显示的派生数值（不持久化）
-            (:name "days_left" :type :formula
-                   :formula "10 - progress")
-            ;; 示例：计算完成百分比（基础算术）
-            (:name "completion_percentage" :type :formula
-                   :formula "(progress / 100) * 100"))))
-```
-
-### 公式语言与可用函数
-
-公式字段使用统一的中缀语法，与表格公式字段、公式虚拟列、自动化公式字段共享同一个求值器。字段引用直接写字段名；算术为 `+ - * /`（支持括号），`/` 是浮点除法（除零得 0）。
-
-- 示例：`"(done / total) * 100"` 读取当前节点的 `done` 与 `total` 字段值并计算百分比。
-- 未知字段取 schema 默认值（未设置时 nil/0）。
-- 旧的 `{{key}}` 占位符前缀公式（如 `"(- 10 {{:progress}})"`）会自动翻译为中缀语法，存量配置无需改动。
-
-### 公式字段与自动化规则的区别
-
-| 特性 | 公式字段 | 自动化规则 |
-| :--- | :--- | :--- |
-| **目的** | 在**视图中**实时显示计算结果 | 根据事件执行明确的持久化动作 |
-| **触发时机** | 表格视图渲染时 | 数据变更事件（如属性变化、标签增删） |
-| **数据持久化** | **不**存储结果 | 存储明确动作产生的结果 |
-| **适用场景** | 不改变源数据的轻量显示计算 | 明确的事件驱动工作流 |
 
 ---
 
@@ -252,17 +209,16 @@ graph LR
 
 ### 1. 触发器 (Triggers) - `WHEN`
 
-`trigger` 字段定义了“何时”检查这条规则。一个精确的触发器是高性能的基石。
+`trigger` 属性定义了“何时”检查这条规则。一个精确的触发器是高性能的基石。
 
 | 触发器类型 | 格式 | 描述 |
 | :--- | :--- | :--- |
 | **任意变化** | `:on-change` | 当系统识别到 store 变化事件时触发（很宽；建议用条件缩小范围）。 |
-| **属性/字段变化** | `:on-property-change` | 当 property/field/global-field 变化时触发（很宽；建议用 `property-changed` / `field-changed` 缩小范围）。 |
-| **字段变化** | `:on-field-change` | 当全局字段值变化时触发。 |
+| **属性变化** | `:on-property-change` | 当已保存的 Org 属性经同步发生变化时触发；用 `property-changed` 限定属性。 |
 | **标签添加时** | `(:on-tag-added "tag-name")` | 当一个节点被**首次**添加指定标签时触发。 |
 | **标签移除时** | `(:on-tag-removed "tag-name")` | 当一个节点的指定标签被移除时触发。 |
 | **计划任务** | `:on-schedule` | 基于时间的触发器，需要提供 `:schedule` 属性并启动调度器。 |
-| **总是匹配 / 兜底** | `nil` / `:always` | 总是匹配（适用于“由 tag 触发本身就足够明确”的规则场景）。 |
+| **总是匹配 / 兜底** | `:always` | 总是匹配（适用于“由 tag 触发本身就足够明确”的规则场景）。 |
 
 说明：
 - `:on-schedule` 由调度器 runner 执行，不依赖 store 变化事件匹配。
@@ -270,7 +226,7 @@ graph LR
 
 ### 2. 条件 (Conditions) - `IF`
 
-`condition` 字段定义了规则要执行所必须满足的“前提条件”。它是一个 Lisp 风格的逻辑表达式。
+`condition` 属性定义了规则要执行所必须满足的“前提条件”。它是一个 Lisp 风格的逻辑表达式。
 
 | 条件类型 | 格式 | 描述 |
 | :--- | :--- | :--- |
@@ -279,23 +235,19 @@ graph LR
 | **Org 本地属性** | `(property "STAGE" "ready")` | 精确匹配已保存并已同步的 Org 属性文本；属性名统一为大写，空字符串与属性缺失不同。 |
 | **属性等于** | `(property-equals :prop-name "value")` | 检查节点的某个属性是否等于一个特定的值。 |
 | **属性已改变**| `(property-changed :prop-name)` | 检查本次事件是否是由指定属性的变化引起的。 |
-| **属性测试**| `(property-test :prop-name #'> 8)` | 使用一个函数来对属性值进行测试。 |
-| **字段等于** | `(field-equals "field-name" "value")` | 把显示名或 ID 解析到稳定全局字段，再检查字段值。 |
-| **字段发生变化** | `(field-changed "field-name")` | 把显示名或 ID 解析到稳定全局字段，再检查本次是否改变了它。 |
-| **全局字段等于** | `(global-field-equals "field-id" "value")` | 检查全局字段值（field-id 为全局字段的 slug/id）。 |
-| **全局字段发生变化** | `(global-field-changed "field-id")` | 检查本次事件是否改变了该全局字段。 |
-| **全局字段测试** | `(global-field-test "field-id" #'pred ...)` | 使用函数测试全局字段值。 |
+| **属性测试**| `(property-test :STATUS #'stringp)` | 使用一个函数来对属性值进行测试。 |
 
-`property` 与 `field` 不同：它只读取 Org 属性的投影文本，不解析或回退到旧字段。
+属性条件只读取 Store 中 Org 属性的投影文本，属性名统一为大写；值是文本而非 schema 类型。
+`:update-property` 写入 Org 文件，再由同步投影回 Store。
 Query 与 Automation 条件读取已同步的数据库快照，不读取尚未保存的 Org 草稿。
 
 真实 Org 变更保存并经增量同步处理后，可以触发一次匹配规则；未变化的投影是
 no-op。`supertag-reindex-org` 则只负责重建投影：它可以刷新 query 结果，但不会
 执行 Automation 动作，也不会把这些动作回写到 Org。
 
-#### `:condition`（规则字段）
+#### `:condition`（规则属性）
 
-在规则 plist 中，`:condition` 是 **IF** 部分。它是可选字段，并且必须是 Lisp 列表形式：
+在规则 plist 中，`:condition` 是 **IF** 部分。它是可选属性，并且必须是 Lisp 列表形式：
 
 ```elisp
 (supertag-automation-create
@@ -308,13 +260,13 @@ no-op。`supertag-reindex-org` 则只负责重建投影：它可以刷新 query 
 - 可选：省略或设为 `nil` 表示永远通过（只要 `:trigger` 匹配就会执行）。
 - 形式：引擎只支持一组内置谓词（`has-tag`、`property-equals` 等）以及 `and/or/not`（不是任意 `eval`）。
 - 引号：`:condition (and ...)` 和 `:condition '(and ...)` 都可用；引擎会自动解开最外层的一次 `quote`。如果整个规则已经用 `'(...)` 引用，一般不需要再给 `:condition` 单独加 `'`。
-- `property-changed` / `field-changed` 这类“依赖事件”的条件会读取事件的 `:path`（见下方“事件上下文”），因此要配合正确的 `:trigger`（如 `:on-property-change` / `:on-field-change`）使用。
+- `property-changed` 这类“依赖事件”的条件会读取事件的 `:path`（见下方“事件上下文”），因此要配合正确的 `:trigger`（如 `:on-property-change`）使用。
 
 > 本指南不定义“条件级公式 DSL”。复杂逻辑建议用现有条件组合，或迁移到 `:call-function` 动作中实现。
 
 ### 3. 动作 (Actions) - `THEN`
 
-`actions` 字段（注意是复数）定义了当触发器和条件都满足时，系统应该按顺序执行的一个或多个动作。它是一个**动作列表**。
+`actions` 属性（注意是复数）定义了当触发器和条件都满足时，系统应该按顺序执行的一个或多个动作。它是一个**动作列表**。
 
 每个动作都是一个 `plist`，格式为 `(:action :action-type :params (...))`。
 
@@ -326,8 +278,7 @@ no-op。`supertag-reindex-org` 则只负责重建投影：它可以刷新 query 
 | **`:remove-tag`** | `(:tag "tag-name")` | 从当前节点移除一个标签。 |
 | **`:call-function`** | `(:function #'your-function :args (...))` | 调用一个您自己定义的 Emacs Lisp 函数。这是实现复杂逻辑的“终极武器”。函数会接收 `(node-id context &rest args)` 参数。 |
 | **`:create-node`** | `(:title "..." :tags '("...") :target-file "/absolute/path/to/notes.org")` | 在既有本地 Org 文件末尾追加带 ID 的一级标题，保存后再投影。`:tags` 写入 Org Tag Occurrence；只有已存在的 Semantic Tag 才会解析进数据库投影。标题保留 Org 原生语法。必须显式提供绝对目标路径；缺少目标的旧规则会失败，需手动补充。 |
-| **`:update-field`** | `(:tag "tag-id" :field "field-name" :value v)` | 通过 Tag schema 解析字段，并更新该 node 的全局字段值。 |
-| **`:case`** | `(:on (:field "层级") :branches '((:equals "20" :actions ((:action :update-field ...))) (:default t :actions ((:action :call-function ...)))))` | 根据 `:on` 解析出的值执行首个匹配分支。每个分支可使用 `:equals`、`:in`、`:match`（正则/函数）或 `:test` 进行匹配，并包含自己的 `:actions` 列表。通过 `:default t` 指定兜底分支。 |
+| **`:case`** | `(:on (:property "层级") :branches ((:equals "20" :actions ((:action :update-property ...))) (:default t :actions ((:action :call-function ...)))))` | 根据 `:on` 解析出的值执行首个匹配分支。每个分支可使用 `:equals`、`:in`、`:match`（正则/函数）或 `:test` 进行匹配，并包含自己的 `:actions` 列表。通过 `:default t` 指定兜底分支。 |
 
 #### 事件上下文（重要）
 
@@ -343,7 +294,6 @@ no-op。`supertag-reindex-org` 则只负责重建投影：它可以刷新 query 
 引擎常见的 `:path` 形态：
 
 - 节点属性变化：`(:nodes NODE-ID :properties :some-prop)`
-- 全局字段值变化：`(:field-values NODE-ID "field-id")`
 
 `(property-changed ...)` 依赖 `:path` 足够精确（例如 `(:nodes NODE-ID :properties :hours)`），因此事件路由链路必须保留这种精度。
 
@@ -363,7 +313,7 @@ no-op。`supertag-reindex-org` 则只负责重建投影：它可以刷新 query 
 
 这个例子将展示一些原生 Org Mode 难以或无法实现的功能，体现新系统的独特价值。
 
-*(注：此示例假设已预定义了带有 `status`, `priority`, `hours` 字段的 `#task` 标签，以及一个名为 `depends_on` 的 `task` 到 `task` 的一对一关系。)*
+*(注：此示例假设已有 `#task` 节点，可选的 `STATUS`、`PRIORITY`、`HOURS` 属性保存在 Org 中，以及一个名为 `depends_on` 的 `task` 到 `task` 的一对一关系。)*
 
 #### 1. 创建真正“智能”的自动化规则
 
@@ -422,71 +372,46 @@ no-op。`supertag-reindex-org` 则只负责重建投影：它可以刷新 query 
 
 ### 示例：使用 `:case` 做层级映射
 
-当您需要把某个字段的取值映射成另一字段时，不必再写多条规则或自定义函数。下面的规则监控 `#contact` 节点的“层级”字段，根据取值自动设置推荐的“联系频率”。如果遇到意料之外的层级，默认分支会给出兜底值，保证数据保持一致。
+当您需要把某个属性的取值映射成另一属性时，不必再写多条规则或自定义函数。下面的规则监控 `#contact` 节点的“层级”属性，根据取值自动设置推荐的“联系频率”。如果遇到意料之外的层级，默认分支会给出兜底值，保证数据保持一致。
 
 ```elisp
 (supertag-automation-create
  '(:name "contact-tier-frequency"
-   :trigger :on-field-change
-   ;; 在全局字段模型下，规则直接以字段为中心，
-   ;; 这里的 field-changed 会映射到对应的全局字段。
-   :condition '(and (has-tag "contact")
-                    (field-changed "层级"))
+   :trigger :on-property-change
+   :condition (and (has-tag "contact")
+                    (property-changed "层级"))
    :actions
-   '((:action :case
+   ((:action :case
       :params
-      (:on (:field "层级")
+      (:on (:property "层级")
        :branches
        ((:equals "20"
-         :actions ((:action :update-field
-                            :params (:tag "contact" :field "联系频率" :value "30d"))))
+         :actions ((:action :update-property
+                            :params (:property "联系频率" :value "30d"))))
         (:equals "50"
-         :actions ((:action :update-field
-                            :params (:tag "contact" :field "联系频率" :value "90d"))))
+         :actions ((:action :update-property
+                            :params (:property "联系频率" :value "90d"))))
         (:equals "150"
-         :actions ((:action :update-field
-                            :params (:tag "contact" :field "联系频率" :value "180d"))))
+         :actions ((:action :update-property
+                            :params (:property "联系频率" :value "180d"))))
         (:default t
-         :actions ((:action :update-field
-                            :params (:tag "contact" :field "联系频率" :value "90d"))))))))))
+         :actions ((:action :update-property
+                            :params (:property "联系频率" :value "90d"))))))))))
 ```
 
 每个分支内都是独立的 `:actions` 列表，因而还能继续追加更多动作（例如加标签、更新属性或调用函数），从而把复杂分支逻辑收敛到单条自动化规则中。
 
-### 字段为中心的规则（Field-Centric Rules）
+### 以属性为条件的规则
 
-全局字段模型始终启用：字段不再绑定在某个单一 tag 上，而是作为一等实体存在。自动化 DSL 支持写“以字段为中心”的规则——即规则主要由字段变化驱动，而不是由 tag 决定：
-
-- `field-equals` / `field-changed` —— 把第一个字符串参数作为稳定全局字段 ID 或显示名解析。
-- `global-field-equals` / `global-field-changed` —— 显式的全局字段版本，如果你希望语义完全清晰。
-
-例如，下面这条规则会在任意节点的全局字段 `status` 变为 `"done"` 时触发，与节点上挂了哪些 tag 无关：
-
-```elisp
-(supertag-automation-create
- '(:name "status-done-anywhere"
-   :trigger :on-field-change
-   :condition '(field-equals "status" "done")
-   :actions ((:action :call-function
-              :params (:function
-                       (lambda (node-id _ctx &rest _)
-                         (message "节点 %s 的 status 变为 done" node-id)))))))
-```
-
-当然，你仍然可以把字段条件和 tag 条件组合起来，用于缩小规则的适用范围：
-
-```elisp
-:condition '(and (has-tag "task")
-                 (field-equals "status" "doing"))
-```
-
-在内部实现上，`field-equals` / `field-changed` 按稳定全局字段 ID 建立索引，因此修改显示名不会搬动已有值，也不会让新规则与 `:field-values` 事件失联。
+使用 `:on-property-change` 监听已保存并同步的 Org 属性变化，
+用 `(property "STATUS" "done")` 匹配当前值，或用
+`(property-changed "STATUS")` 限定变化的属性。无需定义 Tag schema。
 
 ### 示例2：项目与任务联动
 
 这个例子展示关系（Relation）与一条明确的 Automation 规则。
 
-*(注：此示例假设已预定义带有 `status` 字段的 `#Project` 标签，以及一个名为 `tasks`、从 `Project` 到 `task` 的一对多关系。)*
+*(注：此示例假设已有带可选 `STATUS` Org 属性的 `#Project` 节点，以及一个名为 `tasks`、从 `Project` 到 `task` 的一对多关系。)*
 
 #### 1. 创建自动化规则
 
@@ -563,7 +488,7 @@ no-op。`supertag-reindex-org` 则只负责重建投影：它可以刷新 query 
 
 经过我们的重构，系统的核心理念变得更加清晰：
 
-1.  **标签是核心**：所有数据结构（字段）和行为（自动化）都围绕标签来组织。
+1.  **标签是核心**：标签可以限定规则范围；Org 属性属于文档，不属于标签 schema。
 2.  **规则是声明式**：您只需要在规则中用 `:trigger` 和 `:condition` “声明”它关心的事件和目标，系统会自动把它应用到正确的地方。
 3.  **后台是智能的**：您无需关心性能。系统会自动为您的规则建立索引，确保即使有成百上千条规则，响应速度依然飞快。
 4.  **无阶级之分**：任何标签，无论简单还是复杂，都可以拥
@@ -835,7 +760,7 @@ Automation System 2.0 的核心性能优势来自于智能索引系统：
 
 ```elisp
 ;; 注意：`:trigger` 必须拼写正确且能匹配当前事件，否则规则不会执行。
-;; （例如写成 `:on-field-chang` 会被视为未知 trigger，从而不会触发。）
+;; （例如写成 `:on-property-chang` 会被视为未知 trigger，从而不会触发。）
 
 ;; 好的做法：使用具体的触发器
 (supertag-automation-create
@@ -1054,8 +979,7 @@ Automation System 2.0 的核心性能优势来自于智能索引系统：
 ;; 启用 automation 的 verbose 诊断日志（常规 trace、SKIP/no-op 等）
 (setq supertag-automation-verbose t)
 
-;; 可选：打印 sync bridge 的字段事件日志
-(setq supertag-debug-log-field-events t)
+;; 可选：打印 sync bridge 的属性事件日志
 ```
 
 ### 系统健康检查
@@ -1333,14 +1257,14 @@ Automation System 2.0 的核心性能优势来自于智能索引系统：
 ;; task-personal-work-high-priority-urgent-due-tomorrow
 ```
 
-#### 2. 标准化的字段命名
-使用一致的字段命名约定。
+#### 2. 标准化的属性命名
+使用一致的属性命名约定。
 
 ```elisp
 ;; 好的做法：标准化命名
-;; 日期字段：created_date, due_date, completed_date
-;; 状态字段：status, priority, progress
-;; 关系字段：parent_id, assigned_to, depends_on
+;; 日期属性：created_date, due_date, completed_date
+;; 状态属性：status, priority, progress
+;; 关系属性：parent_id, assigned_to, depends_on
 
 ;; 避免的做法：不一致的命名
 ;; create_time, dueDate, finished_at, stat, prio, prog
@@ -1398,3 +1322,19 @@ Automation System 2.0 的核心性能优势来自于智能索引系统：
       (insert ")\n"))
     (message "Configuration backed up to %s" backup-file)))
 ```
+
+## 内置模板
+
+通过 `M-x supertag-automation-insert-template` 创建规则。
+
+1. `:tag-added-set-todo-state` — 添加标签 → 设置 TODO 状态
+2. `:tag-added-set-property` — 添加标签 → 设置属性
+3. `:tag-added-add-tag` — 添加标签 → 添加另一标签
+4. `:tag-removed-remove-tag` — 移除标签 → 移除派生标签
+5. `:property-change-update-property` — 指定标签内属性变化 → 设置另一属性
+6. `:property-equals-move-node` — 属性等于指定值 → 移动节点到文件（标签范围可选）
+7. `:property-equals-add-tag` — 属性等于指定值 → 添加标签
+8. `:daily-set-property-for-tag` — 每天定时 → 设置带指定标签节点的属性
+9. `:tag-added-create-followup-node` — 添加标签 → 创建后续节点（不自动建立链接）
+
+创建规则时拒绝未知 trigger 和 action（包括 case 分支内的动作）；已有存储规则里的未知 trigger 仍不匹配事件。

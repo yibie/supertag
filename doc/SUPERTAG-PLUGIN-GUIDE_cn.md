@@ -86,10 +86,10 @@ View Data API 是 **内部公开（internal public）** 且 **UI 无关** 的数
   query helper。若缺少所需读取能力，只在现有 query Module 中补最小领域查询。
   删除该入口由 ownership-separation `task026` 跟踪。
 
-**字段读取**
+**属性读取**
 
-- `(supertag-view-api-node-field-in-tag NODE-ID TAG-ID FIELD-NAME) -> value`  
-  读取 node 在某个 tag 语境下的 field value。
+- `(supertag-view-api-node-property NODE-ID PROPERTY-NAME) -> value`
+  读取 Store 投影中的 Org 属性值，无需 tag 语境。
 
 **订阅**
 

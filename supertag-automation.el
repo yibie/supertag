@@ -61,7 +61,7 @@ skips. Errors and warnings are still reported regardless of this flag."
 
 (defun supertag-automation--ensure-plist (data)
   "Return a plist copy of DATA, converting hash tables when necessary.
-This function preserves all data including tags and fields."
+This function preserves all data including tags and properties."
   (cond
    ((null data) nil)
    ((hash-table-p data)
@@ -278,7 +278,29 @@ Returns the normalized trigger."
   (unless (plist-get data :trigger)
     (error "Automation missing required :trigger field: %S" data))
   (unless (plist-get data :actions)
-    (error "Automation missing required :actions field: %S" data)))
+    (error "Automation missing required :actions field: %S" data))
+  (let ((trigger (supertag-automation--normalize-trigger
+                  (plist-get data :trigger))))
+    (unless (or (memq trigger '(:always :on-change :on-property-change
+                               :on-schedule :manual))
+                (pcase trigger
+                  (`(:on-tag-added ,(pred stringp)) t)
+                  (`(:on-tag-removed ,(pred stringp)) t)))
+      (error "Unknown automation trigger: %S" trigger)))
+  (supertag-automation--validate-actions (plist-get data :actions)))
+
+(defun supertag-automation--validate-actions (actions)
+  "Reject unknown action types in ACTIONS, including nested case branches."
+  (dolist (spec actions)
+    (let ((action (plist-get spec :action)))
+      (unless (memq action '(:update-property :update-todo-state :add-tag
+                             :remove-tag :create-node :move-node
+                             :call-function :case))
+        (error "Unknown automation action: %S" action))
+      (when (eq action :case)
+        (dolist (branch (plist-get (plist-get spec :params) :branches))
+          (supertag-automation--validate-actions
+           (plist-get branch :actions)))))))
 
 
 ;;; --- Core CRUD Operations ---
@@ -702,19 +724,18 @@ Uses the same Org-first path as UI commands."
       node-id)))
 
 
-;;; --- Formula Field Engine ---
+;;; --- Formula Evaluation ---
 
-(defun supertag-automation-calculate-formula (entity-id formula-field)
-  "Calculate formula field value for an entity.
+(defun supertag-automation-calculate-formula (entity-id formula-config)
+  "Calculate a formula value for an entity.
 ENTITY-ID is the target entity.
-FORMULA-FIELD is the field configuration with formula."
-  (let* ((formula (plist-get formula-field :formula))
-         (field-name (plist-get formula-field :name)))
+FORMULA-CONFIG is a plist containing :formula."
+  (let ((formula (plist-get formula-config :formula)))
 
     (when formula
       (let ((result (supertag-automation--evaluate-formula formula entity-id)))
         (when result
-          ;; Formula fields are for view-time rendering only in System 2.0
+          ;; Return the computed value without persisting it.
           result)))))
 
 (defun supertag-automation--evaluate-formula (formula entity-id)
@@ -1623,9 +1644,9 @@ Prevents thundering herd by running only one daily task per cycle."
 ;;; --- :call-function target used by the scheduled template ---
 ;;
 ;; Scheduled (:on-schedule) rules only ever run :call-function actions
-;; (see Commentary above), so any "update a property/field on every node
-;; with a tag, once a day" template must go through a real function
-;; symbol rather than a plain :update-property action spec.
+;; (see Commentary above), so any "update a property on every node with
+;; a tag, once a day" template must go through a real function symbol
+;; rather than a plain :update-property action spec.
 
 (defun supertag-automation-templates--scheduled-set-property (node-id context tag property value)
   "Set PROPERTY to VALUE on every node tagged TAG.
@@ -1723,56 +1744,56 @@ unused here because scheduled rules are not scoped to a single node."
                      :actions (list (list :action :remove-tag
                                           :params (list :tag derived-tag)))))))
 
-   ;; 5. Field change -> update a tag field on the same node -------------
+   ;; 5. Property change -> update another property on the same node -----
    (list
-    :id :field-change-update-field
-    :name "Field change -> update another field"
-    :description "Scoped to a tag: whenever one field on a node changes, set another field on that node to a fixed value."
+    :id :property-change-update-property
+    :name "Property change -> update another property"
+    :description "Scoped to a tag: whenever one property on a node changes, set another property on that node to a fixed value."
     :params '((scope-tag "Only run for nodes with this tag (e.g. task)" tag)
-              (source-field "Field whose change triggers the rule (e.g. status)" string)
-              (target-tag "Tag ID that defines the field to update (usually same as scope tag)" tag)
-              (target-field "Field to update (e.g. last-touched)" string)
-              (target-value "Value to set on the target field" value))
+              (source-property "Property whose change triggers the rule (e.g. STATUS)" property)
+              (target-property "Property to update (e.g. LAST-TOUCHED)" property)
+              (target-value "Value to set on the target property" value))
     :build (lambda (params)
              (let* ((scope-tag (supertag-automation-templates--param params 'scope-tag))
-                    (source-field (supertag-automation-templates--param params 'source-field))
-                    (target-tag (supertag-automation-templates--param params 'target-tag))
-                    (target-field (supertag-automation-templates--param params 'target-field))
-                    (target-value (supertag-automation-templates--param params 'target-value)))
-               (list :name (format "%s/%s change updates %s" scope-tag source-field target-field)
-                     :description (format "On nodes tagged '%s', a change to field '%s' sets field '%s' to %s."
-                                          scope-tag source-field target-field target-value)
-                     :trigger :on-field-change
+                    (source-property (supertag-automation-templates--param params 'source-property))
+                    (target-property (supertag-automation-templates--param params 'target-property))
+                    (target-value (supertag-automation-templates--param params 'target-value))
+                    (source-kw (supertag-automation-templates--keywordize source-property)))
+               (list :name (format "%s/%s change updates %s" scope-tag source-property target-property)
+                     :description (format "On nodes tagged '%s', a change to property '%s' sets property '%s' to %s."
+                                          scope-tag source-property target-property target-value)
+                     :trigger :on-property-change
                      :condition (list 'and
                                       (list 'has-tag scope-tag)
-                                      (list 'field-changed source-field))
-                     :actions (list (list :action :update-field
-                                          :params (list :tag target-tag
-                                                        :field target-field
+                                      (list 'property-changed source-kw))
+                     :actions (list (list :action :update-property
+                                          :params (list :property target-property
                                                         :value target-value)))))))
 
-   ;; 6. Field equals value -> move node to an archive file --------------
+   ;; 6. Property equals value -> move node to an archive file -----------
    (list
-    :id :field-equals-move-node
-    :name "Field equals value -> move node to file"
-    :description "Whenever a field is set to a specific value, move the node into an archive (or any target) file."
+    :id :property-equals-move-node
+    :name "Property equals value -> move node to file"
+    :description "Whenever a property is set to a specific value, move the node into an archive (or any target) file."
     :params '((scope-tag "Only run for nodes with this tag (leave blank for any node)" tag)
-              (field "Field to test (e.g. status)" string)
+              (property "Property to test (e.g. STATUS)" property)
               (value "Value that triggers the move (e.g. archived)" value)
               (target-file "Absolute path of the file to move matching nodes into" file))
     :build (lambda (params)
              (let* ((scope-tag (string-trim (or (supertag-automation-templates--param params 'scope-tag) "")))
-                    (field (supertag-automation-templates--param params 'field))
+                    (property (supertag-automation-templates--param params 'property))
                     (value (supertag-automation-templates--param params 'value))
                     (target-file (supertag-automation-templates--param params 'target-file))
-                    (field-cond (list 'field-equals field value))
+                    (property-cond (list 'property-equals
+                                         (supertag-automation-templates--keywordize property)
+                                         value))
                     (condition (if (string-empty-p scope-tag)
-                                   field-cond
-                                 (list 'and (list 'has-tag scope-tag) field-cond))))
-               (list :name (format "%s=%s moves to %s" field value (file-name-nondirectory target-file))
-                     :description (format "When field '%s' equals %s, move the node into %s."
-                                          field value target-file)
-                     :trigger :on-field-change
+                                   property-cond
+                                 (list 'and (list 'has-tag scope-tag) property-cond))))
+               (list :name (format "%s=%s moves to %s" property value (file-name-nondirectory target-file))
+                     :description (format "When property '%s' equals %s, move the node into %s."
+                                          property value target-file)
+                     :trigger :on-property-change
                      :condition condition
                      :actions (list (list :action :move-node
                                           :params (list :target-file target-file)))))))

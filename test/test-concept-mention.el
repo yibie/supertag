@@ -86,7 +86,7 @@
     (with-temp-buffer
       (org-mode)
       (insert "注意力机制 and Attention\n[[id:concept-id][注意力机制]]\n")
-      (supertag-concept-link-mode 1)
+      (supertag-mention-mode 1)
       (font-lock-ensure)
       (goto-char (point-min))
       (search-forward "注意力机制")
@@ -110,6 +110,46 @@
       (let ((link-desc-pos (point)))
         (should-not (get-text-property link-desc-pos 'supertag-concept-node-id))))))
 
+(ert-deftest mention-mode-preserves-explicit-reference-presentation ()
+  "Mention fontification must not replace an explicit Org reference's UI."
+  (concept-test--with-env
+    (concept-test--create-node "concept-id" "注意力机制")
+    (with-temp-buffer
+      (org-mode)
+      (insert "[[id:concept-id][注意力机制]]\n")
+      (font-lock-ensure)
+      (goto-char (point-min))
+      (search-forward "注意力机制")
+      (let* ((pos (match-beginning 0))
+             (expected-face (get-text-property pos 'face))
+             (expected-keymap (get-text-property pos 'keymap))
+             (expected-help (get-text-property pos 'help-echo))
+             (expected-mouse-face (get-text-property pos 'mouse-face)))
+        (should (eq expected-face 'org-link))
+        (supertag-mention-mode 1)
+        (font-lock-ensure)
+        (dolist (_ '(enabled refreshed))
+          (should (equal (get-text-property pos 'face) expected-face))
+          (should (equal (get-text-property pos 'keymap) expected-keymap))
+          (should (equal (get-text-property pos 'help-echo) expected-help))
+          (should (equal (get-text-property pos 'mouse-face)
+                         expected-mouse-face))
+          (should-not (get-text-property pos 'supertag-concept-node-id))
+          (font-lock-flush)
+          (font-lock-ensure))
+        (supertag-mention-mode -1)
+        (font-lock-ensure)
+        (should (equal (get-text-property pos 'face) expected-face))
+        (should (equal (get-text-property pos 'keymap) expected-keymap))
+        (should (equal (get-text-property pos 'help-echo) expected-help))
+        (should (equal (get-text-property pos 'mouse-face)
+                       expected-mouse-face))))))
+
+(ert-deftest mention-mode-retires-concept-link-mode-name ()
+  "Expose the display feature as mention mode, without a legacy alias."
+  (should (commandp 'supertag-mention-mode))
+  (should-not (fboundp 'supertag-concept-link-mode)))
+
 (ert-deftest concept-mention-mode-prefers-longest-match ()
   "Overlapping concept terms prefer the longest title."
   (concept-test--with-env
@@ -118,7 +158,7 @@
     (with-temp-buffer
       (org-mode)
       (insert "大语言模型微调")
-      (supertag-concept-link-mode 1)
+      (supertag-mention-mode 1)
       (font-lock-ensure)
       (goto-char (point-min))
       (should (equal (get-text-property (point) 'supertag-concept-node-id)
@@ -131,7 +171,7 @@
     (with-temp-buffer
       (org-mode)
       (insert "~注意力机制~ =注意力机制=\n# 注意力机制\n* COMMENT 注意力机制\n* Normal\nPlain 注意力机制\n")
-      (supertag-concept-link-mode 1)
+      (supertag-mention-mode 1)
       (font-lock-ensure)
       (goto-char (point-min))
       (dotimes (_ 4)
@@ -166,7 +206,7 @@
                 (with-current-buffer buffer
                   (org-mode)
                   (insert "注意力机制 plain prose\n")
-                  (supertag-concept-link-mode 1))))
+                  (supertag-mention-mode 1))))
             ;; The three activations above each scanned; the all-buffers
             ;; refresh must reuse one scan for all three buffers.
             (setq scans 0)
@@ -221,7 +261,7 @@
       (org-mode)
       (insert "注意力机制 one\n注意力机制 two\n注意力机制 three\n"
               "#+begin_embed:\n注意力机制 four\n#+end_embed\n")
-      (supertag-concept-link-mode 1)
+      (supertag-mention-mode 1)
       (let ((calls 0)
             (real (symbol-function 'supertag-mention-service--protected-ranges))
             other)
@@ -276,7 +316,7 @@
               ":PROPERTIES:\n:ID: anchor\n:NOTE: 注意力机制\n:END:\n"
               "#+begin_src emacs-lisp\n注意力机制\n#+end_src\n"
               "#+begin_embed:\n注意力机制\n#+end_embed\n")
-      (supertag-concept-link-mode 1)
+      (supertag-mention-mode 1)
       (font-lock-ensure)
       (goto-char (point-min))
       (search-forward "注意力机制 prose")

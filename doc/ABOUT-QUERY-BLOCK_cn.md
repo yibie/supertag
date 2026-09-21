@@ -26,10 +26,10 @@
 (tag "work")
 ```
 
-#### 字段查询
+#### 属性查询
 
 ```supertag-query-block
-(field "status" "active")
+(property "status" "active")
 ```
 
 #### 全文搜索
@@ -44,7 +44,7 @@
 
 ##### AND 组合
 ```supertag-query-block
-(and (tag "project") (field "priority" "high"))
+(and (tag "project") (property "priority" "high"))
 ```
 
 ##### OR 组合
@@ -60,7 +60,7 @@
 ##### 嵌套逻辑组合
 ```supertag-query-block
 (or 
-  (and (tag "project") (field "status" "active"))
+  (and (tag "project") (property "status" "active"))
   (and (tag "task") (after "2025-06-01")))
 ```
 
@@ -68,7 +68,7 @@
 ```supertag-query-block
 (and 
   (or (tag "work") (tag "project"))
-  (not (field "status" "completed"))
+  (not (property "status" "completed"))
   (after "2025-01-01"))
 ```
 
@@ -113,16 +113,16 @@
 
 ```supertag-query-block
 (or 
-  (and (tag "project") (field "status" "active"))
+  (and (tag "project") (property "status" "active"))
   (and (tag "task") (after "2025-06-01")))
 ```
 
 ### 查询结果格式
 
-查询结果默认以表格形式展示，包含节点标题、标签和查询的字段值：
+查询结果默认以表格形式展示，包含节点标题、标签和查询的属性值：
 
 ```supertag-query-block
-(field "priority" "high")
+(property "priority" "high")
 ```
 
 #### 查询结果样式示例
@@ -201,3 +201,4 @@
 查询块的结果可以导出为 Org 表格，交互式查询的结果可以导出为包含链接的新文件。
 
 这样的设计既满足了重命名的需求，又保持了系统的完整性和向后兼容性。
+`field` 仍作为 `property` 的旧输入拼写被接受；新查询请使用 `property`。属性条件读取 Store 中已同步的 Org properties，不读取未保存的文件修改。

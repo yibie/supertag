@@ -35,11 +35,15 @@
     ("vault" ("test/vault-test.el" . "^supertag-vault-"))
     ("view-framework" ("test/view-framework-test.el" . t)
      ("test/view-palette-test.el" . t))
-    ("automation-actions" ("test/automation-create-node-test.el" . t) ("test/automation-move-action-test.el" . t) ("test/automation-property-write-test.el" . t) ("test/automation-tag-action-test.el" . t))
+    ("automation-actions" ("test/automation-create-node-test.el" . t) ("test/automation-move-action-test.el" . t) ("test/automation-property-write-test.el" . t) ("test/automation-tag-action-test.el" . t)
+     ("test/automation-templates-test.el" . "^supertag-automation-template-"))
     ("extractor" ("test/extractor-test.el" . t) ("test/generated-reference-exclusion-test.el" . t))
     ("persistence-restore" ("test/supertag-persistence-test.el" . t) ("test/supertag-restore-test.el" . t))
     ("mention-extra" ("test/test-concept-mention.el" . t) ("test/test-denote-reference.el" . t))
-    ("node-view-extra" ("test/text-link-node-view-test.el" . t) ("test/test-file-node-display.el" . t))
+    ("node-view-extra" ("test/text-link-node-view-test.el" . t)
+     ("test/test-file-node-display.el" . t)
+     ("test/test-view-node-runtime.el" .
+      "^supertag-view-node-follow-defers-refresh-until-idle$"))
     ("contract"
      ("test/storage-save-boundary-test.el" . "^supertag-storage-")
      ("test/document-query-contract-test.el" . "^supertag-document-query-")
@@ -73,5 +77,5 @@
     ("archive"
      ("test/node-identity-test.el" . (member node-location-navigates-file-node-identities-with-empty-cache node-location-ui-graph-and-board-use-store-with-empty-cache node-location-board-reports-missing-node))
      ("test/query-model-test.el" .
-                "^supertag-query-model-\\(resolves-fields-and-values\\|builds-board-detail-for-the-serializer\\)$"))))
+                "^supertag-query-model-\\(resolves-properties-and-values\\|builds-board-detail-for-the-serializer\\)$"))))
 (provide 'renovation-suites)

@@ -30,7 +30,7 @@ Org dynamic blocks, not the old Babel language.
 #### Field Query
 
 ```supertag-query-block
-(field "status" "active")
+(property "status" "active")
 ```
 
 #### Full-text Search
@@ -45,7 +45,7 @@ Logical combinations are a powerful feature of Query-Block, supporting complex q
 
 ##### AND Combination
 ```supertag-query-block
-(and (tag "project") (field "priority" "high"))
+(and (tag "project") (property "priority" "high"))
 ```
 
 ##### OR Combination
@@ -61,7 +61,7 @@ Logical combinations are a powerful feature of Query-Block, supporting complex q
 ##### Nested Logical Combinations
 ```supertag-query-block
 (or 
-  (and (tag "project") (field "status" "active"))
+  (and (tag "project") (property "status" "active"))
   (and (tag "task") (after "2025-06-01")))
 ```
 
@@ -69,7 +69,7 @@ Logical combinations are a powerful feature of Query-Block, supporting complex q
 ```supertag-query-block
 (and 
   (or (tag "work") (tag "project"))
-  (not (field "status" "completed"))
+  (not (property "status" "completed"))
   (after "2025-01-01"))
 ```
 
@@ -114,16 +114,16 @@ Time queries support multiple time-related conditions:
 
 ```supertag-query-block
 (or 
-  (and (tag "project") (field "status" "active"))
+  (and (tag "project") (property "status" "active"))
   (and (tag "task") (after "2025-06-01")))
 ```
 
 ### Query Result Format
 
-Query results are displayed in table format by default, including node titles, tags, and queried field values:
+Query results are displayed in table format by default, including node titles, tags, and queried property values:
 
 ```supertag-query-block
-(field "priority" "high")
+(property "priority" "high")
 ```
 
 #### Query Result Style Example
@@ -202,3 +202,4 @@ The interactive query window saves query history for easy reuse of common querie
 Query block results can be exported as Org tables, and interactive query results can be exported as new files containing links.
 
 This design satisfies the renaming requirements while maintaining system integrity and backward compatibility.
+`field` remains accepted as an older input spelling of `property`. New queries should use `property`. Property conditions read synchronized Org properties from the Store, not unsaved file edits.

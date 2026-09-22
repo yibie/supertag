@@ -63,16 +63,8 @@ dev-note/
 .ruff_cache/
 IMPROVEMENT_PLAN.md
 
-# archive/ext/board-ui build artifacts and dependencies
-archive/ext/board-ui/node_modules/
-archive/ext/board-ui/.next/
-archive/ext/board-ui/out/
-
-# archive/ext/graph-ui build artifacts and dependencies
-archive/ext/graph-ui/node_modules/
-archive/ext/graph-ui/build/
-archive/ext/graph-ui/.next/
-archive/ext/graph-ui/out/
+# Local development history; intentionally not published.
+/archive/
 
 # YoYo AI version control directory
 .yoyo/

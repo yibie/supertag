@@ -1,5 +1,3 @@
-# Supertag
-
 > 中文: [README_CN.md](README_CN.md)
 
 ## Where V2 came from

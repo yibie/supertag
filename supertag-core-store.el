@@ -121,7 +121,7 @@ ARGS are the arguments to pass to the event handlers."
     (let ((callbacks (gethash event-type supertag--subscribers)))
       (when callbacks
         (dolist (callback callbacks)
-          ;; 直接调用回调函数，不捕获错误
+          ;; Call callbacks directly and let errors propagate.
           (apply callback args))))))
 
 (defun supertag-notify (event-type &rest args)
@@ -261,7 +261,7 @@ projection.  Node `:tags' remains the authoritative membership projection.
 
 Bumped 5.0.0 -> 6.0.0 (P1-8, see
 archive/legacy-v2/2026-08-25-phrase/phases/phase-git-sync-20260713/PLAN.md
-\"S2 规范化序列化\", 修订 2026-07-13): the S2 canonical, line-per-entity
+\"S2 Canonical Serialization\", revised 2026-07-13): the S2 canonical, line-per-entity
 serialization is NOT actually readable by pre-6.0 (<= 5.9.x) builds the way
 the original S2 writeup assumed. Those builds'
 `supertag--persistence--try-read-store'

@@ -106,8 +106,8 @@ repeated Tag so the walk still terminates."
                         'face 'supertag-view-accent)
             (make-string (* 2 (plist-get row :depth)) ?\s)
             name
-            (format "  (%d 个节点)" count)
-            (if extra (format "  别名: %s" (string-join extra ", ")) "")
+            (format "  (%d node%s)" count (if (= count 1) "" "s"))
+            (if extra (format "  Aliases: %s" (string-join extra ", ")) "")
             (if (plist-get row :orphan) "  [Orphan: missing parent]" ""))))
 
 (defun supertag-view-tags--row-widget (row)

@@ -17,7 +17,7 @@
 (require 'supertag-link)
 (require 'supertag-view-framework)
 
-;;; 候选扫描
+;;; Candidate scanning
 
 (defgroup supertag-mention nil
   "Unlinked mention discovery for Supertag."
@@ -452,7 +452,7 @@ records are copied so callers cannot mutate the cached read model."
                    supertag-mention-service--result-cache)
           results)))))
 
-;;; 候选操作
+;;; Candidate actions
 
 (defun supertag-mention--source-buffer-and-position (candidate)
   "Return (BUFFER . POSITION) for CANDIDATE's source heading."
@@ -590,7 +590,7 @@ a standalone interactive command."
                      #'string<)
                " "))
 
-;;; 节点视图段
+;;; Node View section
 
 (declare-function supertag-goto-node "supertag-node"
                   (node-id &optional other-window))

@@ -288,7 +288,7 @@ non-nil when any record's disposition changed."
               (user-error "Data version %s is newer than this build (%s); upgrade Supertag instead of migrating"
                           version supertag-data-version))
              ((version<= "5.0.0" version) nil)
-             (t (user-error "Unsupported data version %s; 请用 supertag 6.x 先升级" version)))
+             (t (user-error "Unsupported data version %s; upgrade to Supertag 6.x first" version)))
             (when (supertag-dirty-p)
               (user-error "Save or discard pending Store changes before migration"))
             (setq snapshot (supertag-migrate--snapshot version)
@@ -304,7 +304,7 @@ non-nil when any record's disposition changed."
             (let ((fields (length (gethash :legacy-fields supertag--store)))
                   (extends (gethash :legacy-extends supertag--store)))
               (when (or (> fields 0) (and extends (> (hash-table-count extends) 0)))
-                (message "%d 项旧字段/%d 个子标签待导出，M-x supertag-migrate-preview"
+                (message "Pending export: legacy fields=%d, child tags=%d; run M-x supertag-migrate-preview"
                          fields (if extends (hash-table-count extends) 0))))
             t)
         (error
@@ -499,48 +499,48 @@ non-nil when any record's disposition changed."
         (dolist (node (plist-get report :nodes))
           (unless (equal last-file (plist-get node :file))
             (setq last-file (plist-get node :file))
-            (insert (format "\n文件 %s\n" last-file)))
+            (insert (format "\nFile %s\n" last-file)))
           (insert (format "%s [%s]\n" (plist-get node :title) (plist-get node :id)))
           (dolist (pair (plist-get node :writes))
             (insert (format "  %s = %s\n" (car pair) (cdr pair))))
           (dolist (pair (plist-get node :pending))
-            (insert (format "  待保存/待投影 %s = %s\n" (car pair) (cdr pair))))
+            (insert (format "  Pending save/projection %s = %s\n" (car pair) (cdr pair))))
           (dolist (conflict (plist-get node :conflicts))
             (if (eq (plist-get conflict :type) :key-conflict)
-                (insert (format "  同键冲突 %s: %S\n" (plist-get conflict :key)
+                (insert (format "  Key conflict %s: %S\n" (plist-get conflict :key)
                                 (plist-get conflict :fields)))
-              (insert (format "  冲突 %s: Org=%s 字段=%s\n"
+              (insert (format "  Conflict %s: Org=%s field=%s\n"
                               (plist-get conflict :key) (plist-get conflict :org)
                               (plist-get conflict :field))))))
-        (insert "\n来源记录（保留未能解释的原值）\n")
+        (insert "\nSource records (uninterpreted original values are preserved)\n")
         (dolist (entry (gethash :legacy-fields supertag--store))
           (insert (format "%s node=%S tag=%S %s = %S\n"
                           (plist-get entry :source) (plist-get entry :node)
                           (plist-get entry :tag) (plist-get entry :name)
                           (if (plist-member entry :value) (plist-get entry :value)
                             (list :raw (plist-get entry :raw))))))
-        (dolist (group '((:empty-name . "空名") (:empty-value . "空值跳过")
-                         (:reserved . "保留键") (:unlocatable . "无法定位")))
+        (dolist (group '((:empty-name . "Empty name") (:empty-value . "Empty value (skipped)")
+                         (:reserved . "Reserved key") (:unlocatable . "Unlocatable")))
           (insert (format "\n%s\n" (cdr group)))
           (dolist (item (plist-get report :skipped))
             (when (eq (plist-get item :reason) (car group))
               (insert (format "  %s %s %s\n" (plist-get item :file)
                               (plist-get item :id) (plist-get item :field))))))
-        (insert "\n将写入的父子关系（DB-only，写入标签 :extends，无需确认）\n")
+        (insert "\nParent relationships to write (DB-only; written to tag :extends without confirmation)\n")
         (let ((pending (gethash :legacy-extends supertag--store)))
           (when pending
             (maphash
              (lambda (key entry)
                (if (plist-get entry :conflict)
-                   (insert (format "  未解析 %s → %s：%s\n" key
+                   (insert (format "  Unresolved %s -> %s: %s\n" key
                                    (or (plist-get entry :parent) "?")
                                    (plist-get entry :conflict)))
                  (insert (format "  %s → %s\n" key (or (plist-get entry :parent) "?")))))
              pending)))
-        (insert "\nAutomation 字段引用（请手动修改）\n")
+        (insert "\nAutomation field references (edit manually)\n")
         (dolist (rule (plist-get report :automations))
           (insert (format "%s: %S\n" (plist-get rule :name) (plist-get rule :references))))
-        (insert (format "\n写入 %d 键 / %d 节点，待保存/待投影 %d，冲突 %d，跳过 %d\n"
+        (insert (format "\nMigration summary: keys=%d, nodes=%d, pending save/projection=%d, conflicts=%d, skipped=%d\n"
                         (plist-get report :write-count) (plist-get report :node-count)
                         (plist-get report :pending-count)
                         (plist-get report :conflict-count) (length (plist-get report :skipped)))))
@@ -562,7 +562,7 @@ fallback, then retire completed records."
     (supertag-mark-dirty)
     (unless (supertag-save-store) (error "Migration bookkeeping save deferred")))
   (let ((report (supertag-migrate-preview)))
-    (when (yes-or-no-p (format "写入 %d 键，待保存/待投影 %d；保存并重投影？ "
+    (when (yes-or-no-p (format "Write migration data (keys=%d, pending save/projection=%d); save and reproject? "
                               (plist-get report :write-count) (plist-get report :pending-count)))
       (dolist (node (plist-get report :nodes))
         (let ((id (plist-get node :id)))

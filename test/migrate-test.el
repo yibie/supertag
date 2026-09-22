@@ -228,7 +228,7 @@
         (supertag-load-store)
         (supertag-load-store)
         (supertag-migrate-run))
-      (should (= 1 (cl-count-if (lambda (s) (string-match-p "项旧字段/.*个子标签待导出" s)) messages))))))
+      (should (= 1 (cl-count-if (lambda (s) (string-match-p "Pending export: legacy fields=.*child tags=" s)) messages))))))
 
 (defun supertag-migrate-test-hierarchy-store (file)
   "Build a synthetic 6.1 Store whose `:legacy-extends' covers every

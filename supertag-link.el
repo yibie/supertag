@@ -724,7 +724,7 @@ When LINK-TYPE is nil, preserve the node's ordinary id or denote format."
           (regexp-quote (supertag-node-link-type id))
           (regexp-quote id)))
 
-;;; 引用查询
+;;; Reference queries
 
 (defgroup supertag-reference nil
   "Reference and contextual backlink support for Supertag."
@@ -1076,7 +1076,7 @@ Signal an error when TERM names more than one node."
       (1 (car matches))
       (_ (user-error "Reference title is ambiguous: %s" clean)))))
 
-;;; 命名链接查询
+;;; Named-link queries
 
 (defun supertag-link-service-node-title (node-id)
   "Return a readable title for NODE-ID."
@@ -1105,7 +1105,7 @@ Signal an error when TERM names more than one node."
                      (format "%s/%s" (plist-get b :label)
                              (plist-get b :other-title)))))))
 
-;;; 写入与恢复
+;;; Write and recovery
 
 (define-error 'supertag-link-error
   "Add Link retained document state but could not finish")
@@ -1403,7 +1403,7 @@ private helper is the materializer's only low-level buffer mutation."
           #'supertag-reference-retry-source-projection
           (list from-id file to-id link-type) cause))))))
 
-;;; 补全
+;;; Completion
 
 (defvar supertag-reference-history nil
   "Minibuffer history for create-or-link reference commands.")
@@ -1741,7 +1741,7 @@ See `supertag-reference-shorthand-openers' for the recognised openers."
         (setq selected (and (equal choice create) create))))
     (cons input selected)))
 
-;;; 命令
+;;; Commands
 
 ;;;###autoload
 (defun supertag-add-link (&optional named)
@@ -1881,7 +1881,7 @@ Returns the ID of the selected node to unlink."
             (supertag-ui--reproject-containing-node from-id)))
         (message "Reference to node %s removed." to-id)))))
 
-;;; 节点视图段
+;;; Node View section
 
 
 (defun supertag-view-reference--kind-summary (item)

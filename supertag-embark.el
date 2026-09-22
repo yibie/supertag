@@ -30,14 +30,14 @@
 (defvar embark-target-finders)
 (defvar embark-keymap-alist)
 
-;;; 配置
+;;; Configuration
 (defcustom supertag-embark-integration t
   "Register Supertag contextual actions when optional Embark is loaded.
 Set this to nil before loading Supertag (or restart Emacs).
 An already registered integration stays active for the current session."
   :type 'boolean :group 'supertag)
 
-;;; 对象识别（WHERE）
+;;; Object recognition (WHERE)
 (defun supertag-embark--property-bounds (position property)
   "Return (BEGIN . END) of the PROPERTY run containing POSITION."
   (let ((value (get-text-property position property)))
@@ -186,7 +186,7 @@ carry the card property (OPEN, relation lines, semantic hits)."
       (cl-list* (intern (concat "supertag-" (substring (symbol-name kind) 1)))
              label (plist-get target :begin) (plist-get target :end)))))
 
-;;; 动作适配器（WHAT）
+;;; Action adapters (WHAT)
 (defun supertag-embark--require-target (kind)
   "Re-read the object at point and require its KIND."
   (let ((target (supertag-embark--target-at-point)))
@@ -387,7 +387,7 @@ Delegates to the single physical-link writer in supertag-link."
   (supertag-embark--require-target :region)
   (call-interactively #'supertag-promote))
 
-;;; Embark 注册
+;;; Embark registration
 (defvar-keymap supertag-embark-node-map
   "RET" #'supertag-embark-node-view
   "v" #'supertag-embark-node-view

@@ -317,20 +317,20 @@ errors propagate unchanged. DOC is the generated wrapper's docstring."
 ;;;###autoload
 (transient-define-prefix supertag-menu ()
   "Open Supertag commands grouped by the user's current task."
-  [["记录 Capture & Write"
+  [["Capture & Write"
     ("l" "Add link" supertag-menu--add-link)
     ("e" "Extract properties (AI)" supertag-menu--extract-properties)
     ("w" "More writing..."          supertag-menu-write-more)]
-   ["整理 Organize"
+   ["Organize"
     ("g" "Add tag"               supertag-menu--add-tag)
     ("r" "Remove tag from node"  supertag-menu--remove-tag)
     ("o" "More organize..."      supertag-menu-organize-more)]
-   ["查找 Find & View"
+   ["Find & View"
     ("s" "Discovery"           supertag-menu--discovery)
     ("n" "Find node"           supertag-menu--find-node)
     ("v" "Node view"           supertag-menu--view-node)
     ("V" "More find & view..." supertag-menu-find-more)]
-   ["维护 Maintain"
+   ["Maintain"
     ("u" "Sync status"         supertag-menu--sync-status)
     ("x" "Full rescan"         supertag-menu--full-rescan)
     ("M" "More maintenance..." supertag-menu-maintain-more)]])

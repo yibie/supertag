@@ -146,12 +146,12 @@
             (with-current-buffer buffer
               (should (derived-mode-p 'supertag-view-tags-mode))
               (let ((text (buffer-string)))
-                (should (string-match-p "^  media  (1 个节点)$" text))
-                (should (string-match-p "^    book  (1 个节点)$" text))
+                (should (string-match-p "^  media  (1 node)$" text))
+                (should (string-match-p "^    book  (1 node)$" text))
                 (should (string-match-p
-                         "^      novel  (0 个节点)  别名: fiction$" text))
-                (should (string-match-p "^  work  (0 个节点)$" text))
-                (should (string-match-p "^  ghost  (0 个节点)  \\[Orphan" text)))
+                         "^      novel  (0 nodes)  Aliases: fiction$" text))
+                (should (string-match-p "^  work  (0 nodes)$" text))
+                (should (string-match-p "^  ghost  (0 nodes)  \\[Orphan" text)))
               (supertag-view-tags-quit))))
       (supertag-tag-manager-test--kill-buffers))))
 
@@ -170,7 +170,7 @@
               (should (equal (list "media")
                              (supertag-tag-parents
                               (supertag-tag-resolve-occurrence "book"))))
-              (should (string-match-p "^    book  (0 个节点)$" (buffer-string)))
+              (should (string-match-p "^    book  (0 nodes)$" (buffer-string)))
               (supertag-view-tags-quit))))
       (supertag-tag-manager-test--kill-buffers))))
 
@@ -183,13 +183,13 @@
           (let ((buffer (supertag-view-tags)))
             (with-current-buffer buffer
               (goto-char (point-min))
-              (should (string-match-p "^  book  (0 个节点)$" (buffer-string)))
+              (should (string-match-p "^  book  (0 nodes)$" (buffer-string)))
               (search-forward "book")
               (cl-letf (((symbol-function 'completing-read-multiple)
                          (lambda (&rest _) (list "media"))))
                 (supertag-view-tags-set-parent))
               (should (equal (list "media") (supertag-tag-parents "book")))
-              (should (string-match-p "^    book  (0 个节点)$" (buffer-string)))
+              (should (string-match-p "^    book  (0 nodes)$" (buffer-string)))
               (supertag-view-tags-quit))))
       (supertag-tag-manager-test--kill-buffers))))
 
@@ -210,10 +210,10 @@
                                (length
                                 (seq-filter
                                  (lambda (line)
-                                   (string-match-p "^    emacs  (0 个节点)$" line))
+                                   (string-match-p "^    emacs  (0 nodes)$" line))
                                  (split-string text "\n")))))
-                (should (string-match-p "^  tools  (0 个节点)$" text))
-                (should (string-match-p "^  topics  (0 个节点)$" text))
+                (should (string-match-p "^  tools  (0 nodes)$" text))
+                (should (string-match-p "^  topics  (0 nodes)$" text))
                 (should (string-match-p " Tag Manager   3 tags" header-line-format)))
               (supertag-view-tags-quit))))
       (supertag-tag-manager-test--kill-buffers))))
@@ -230,7 +230,7 @@
                              (plist-get (supertag-tag-get
                                          (supertag-tag-resolve-occurrence "media"))
                                         :name)))
-              (should (string-match-p "^  media  (0 个节点)$" (buffer-string)))
+              (should (string-match-p "^  media  (0 nodes)$" (buffer-string)))
               ;; `/' creates the whole chain under the new root.
               (cl-letf (((symbol-function 'read-string)
                          (lambda (&rest _) "media/book")))
@@ -239,7 +239,7 @@
                 (should book)
                 (should (equal (list (supertag-tag-resolve-occurrence "media"))
                                (supertag-tag-parents book)))
-                (should (string-match-p "^    book  (0 个节点)$" (buffer-string))))
+                (should (string-match-p "^    book  (0 nodes)$" (buffer-string))))
               (supertag-view-tags-quit))))
       (supertag-tag-manager-test--kill-buffers))))
 
@@ -262,8 +262,8 @@
                 (should fiction)
                 (should (equal (list "media") (supertag-tag-parents book)))
                 (should (equal (list book) (supertag-tag-parents fiction))))
-              (should (string-match-p "^    book  (0 个节点)$" (buffer-string)))
-              (should (string-match-p "^      fiction  (0 个节点)$" (buffer-string)))
+              (should (string-match-p "^    book  (0 nodes)$" (buffer-string)))
+              (should (string-match-p "^      fiction  (0 nodes)$" (buffer-string)))
               (supertag-view-tags-quit))))
       (supertag-tag-manager-test--kill-buffers))))
 
@@ -283,7 +283,7 @@
                              (sort (supertag-view-tags--extra-aliases
                                     (supertag-tag-get "book") "book")
                                    #'string<)))
-              (should (string-match-p "别名: fiction, novel" (buffer-string)))
+              (should (string-match-p "Aliases: fiction, novel" (buffer-string)))
               (supertag-view-tags-quit))))
       (supertag-tag-manager-test--kill-buffers))))
 

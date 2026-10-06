@@ -25,6 +25,7 @@
     ("tag-manager" ("test/tag-manager-test.el" . t))
     ("named-link-query" ("test/named-link-query-test.el" . "^supertag-named-link-query-"))
     ("tag-change" ("test/tag-rename-delete-test.el" . t)
+     ("test/tag-rename-record-test.el" . "^supertag-tag-rename-record-")
      ("test/delete-everywhere-text-test.el" . "^supertag-delete-everywhere-text-")
      ("test/orphan-bulk-cleanup-test.el" . "^supertag-view-orphan-tags-")
      ("test/orphan-view-page-test.el" . "^supertag-orphan-page-")

@@ -114,13 +114,21 @@
           (should (string-match-p "Canonical" (buffer-string)))))
       (should-not (supertag-tag-get "old")))))
 
-(ert-deftest supertag-tag-change-own-alias-rejects-without-writing ()
+(ert-deftest supertag-tag-change-own-alias-promotes-the-alias ()
+  "Renaming a Tag onto its own alias makes that alias the canonical name.
+The old guard rejected any token that already resolved to the Tag, which also
+blocked resuming an interrupted rename; only a token that is already the
+Tag's canonical `:name' is a no-op now."
   (supertag-tag-change-test--vault
-    (let ((before (supertag-tag-change-test--snapshot (list file plain))))
-      (cl-letf (((symbol-function 'read-string) (lambda (&rest _) "alias"))
-                ((symbol-function 'yes-or-no-p) (lambda (&rest _) (ert-fail "Own alias must reject before confirmation"))))
-        (should-error (supertag-tag-rename "old") :type 'user-error))
-      (should (equal before (supertag-tag-change-test--snapshot (list file plain)))))))
+    (cl-letf (((symbol-function 'read-string) (lambda (&rest _) "alias"))
+              ((symbol-function 'yes-or-no-p) (lambda (&rest _) t)))
+      (should (supertag-tag-rename "old")))
+    (let ((id (supertag-tag-resolve-occurrence "alias")))
+      (should id)
+      (should (equal "alias" (plist-get (supertag-tag-get id) :name)))
+      (should-not (supertag-tag-resolve-occurrence "old"))
+      (dolist (node-id '("file-node" "alias-node" "path-node"))
+        (should (member id (plist-get (supertag-node-get node-id) :tags)))))))
 
 (ert-deftest supertag-tag-change-resolution-change-rejects-before-writing ()
   (supertag-tag-change-test--vault
@@ -263,72 +271,95 @@ local record (.scratch/tasks/reports/report-keyword-line-affiliation.md, not shi
         (should (equal before-disk (supertag-document-test-disk file)))))))
 
 (ert-deftest supertag-tag-change-retry-after-save-failure ()
-  (dolist (operation '(rename delete))
-    (supertag-tag-change-test--vault
-      (let ((save (symbol-function 'supertag-service-org--save-current-buffer))
-            (failed nil) first-target
-            (first-disk (supertag-document-test-disk file))
-            (second-disk (supertag-document-test-disk plain)))
-        (cl-letf (((symbol-function 'read-string) (lambda (&rest _) "new"))
-                  ((symbol-function 'yes-or-no-p)
-                   (lambda (prompt)
-                     (when (and failed (eq operation 'rename))
-                       (should (string-prefix-p "Merge" prompt))
-                       (should (string-match-p (regexp-quote first-target) prompt)))
-                     t))
-                  ((symbol-function 'supertag-service-org--save-current-buffer)
-                   (lambda ()
-                     (if (and (equal (buffer-file-name) plain) (not failed))
-                         (progn (setq failed t) (error "Second file save fails once"))
-                       (funcall save)))))
-          (cl-flet ((run () (if (eq operation 'rename) (supertag-tag-rename "old")
-                             (supertag-delete-tag-everywhere "old"))))
-            (should-error (run))
-            (when (eq operation 'rename)
-              (setq first-target (supertag-tag-resolve-occurrence "new"))
-              (should first-target))
-            (should-not (equal first-disk (supertag-document-test-disk file)))
-            (should-not (member "old" (plist-get (supertag-node-get "file-node") :tags)))
-            (should (equal second-disk (supertag-document-test-disk plain)))
-            (should (buffer-modified-p (find-file-noselect plain)))
-            (should (member "old" (plist-get (supertag-node-get "alias-node") :tags)))
-            (supertag-tag-change-preview "old" (and (eq operation 'rename) "new"))
-            (with-current-buffer "*Supertag Tag Change*"
-              ;; The text preview reports the occurrence that is still on disk;
-              ;; the old node-based preview reported it as 待保存/待投影 instead.
-              (should (string-match-p "WILL CHANGE: 1" (buffer-string))))
-            (run)
-            (should-not (supertag-tag-get "old"))
-            (should-not (supertag-find-nodes-by-tag "old"))
-            (dolist (id '("file-node" "alias-node" "path-node"))
-              (should (equal (and (eq operation 'rename) (list first-target))
-                             (plist-get (supertag-node-get id) :tags))))
-            (dolist (path (list file plain))
-              (with-current-buffer (find-file-noselect path)
-                (should-not (buffer-modified-p))
-                (should (equal (buffer-string) (supertag-document-test-disk path)))))
-            (should-not (supertag-tag-change-preview "old"))
-            ;; No occurrence of the old token survives in the text.
-            (should-not (supertag-tag--text-records-for-tag
-                         "old" (supertag-tag--text-scan (list file plain))))))))))
+  "A save failure leaves the Tag holding both tokens; a second run finishes it.
+The Tag is not deleted and recreated: it is rekeyed once and then keeps its ID
+across the failed run, so the resumed run continues the same rename."
+  (supertag-tag-change-test--vault
+    (let ((save (symbol-function 'supertag-service-org--save-current-buffer))
+          (failed nil) first-target
+          (first-disk (supertag-document-test-disk file))
+          (second-disk (supertag-document-test-disk plain)))
+      (cl-letf (((symbol-function 'read-string) (lambda (&rest _) "new"))
+                ((symbol-function 'yes-or-no-p)
+                 (lambda (prompt)
+                   (when failed
+                     ;; The interrupted rename is a plain continuation, never a
+                     ;; merge into a half-created new Tag.
+                     (should (string-prefix-p "Rename" prompt)))
+                   t))
+                ((symbol-function 'supertag-service-org--save-current-buffer)
+                 (lambda ()
+                   (if (and (equal (buffer-file-name) plain) (not failed))
+                       (progn (setq failed t) (error "Second file save fails once"))
+                     (funcall save)))))
+        (should-error (supertag-tag-rename "old"))
+        ;; The Tag was rekeyed before the write, so both tokens name it and the
+        ;; Tag itself still exists under the fresh ID.
+        (setq first-target (supertag-tag-resolve-occurrence "new"))
+        (should first-target)
+        (should (equal first-target (supertag-tag-resolve-occurrence "old")))
+        (should-not (supertag-tag-get "old"))
+        (should-not (equal first-disk (supertag-document-test-disk file)))
+        (should (equal second-disk (supertag-document-test-disk plain)))
+        (should (buffer-modified-p (find-file-noselect plain)))
+        (should (member first-target (plist-get (supertag-node-get "alias-node") :tags)))
+        ;; The buffer the failed save left modified is a blocker: the resume is
+        ;; refused rather than saving the user's buffer for them.
+        (should-not (supertag-tag-rename "old"))
+        (should (buffer-modified-p (find-file-noselect plain)))
+        (with-current-buffer (find-file-noselect plain) (save-buffer))
+        ;; The still-unsaved occurrence is listed before the resume.
+        (supertag-tag-change-preview first-target "new")
+        (with-current-buffer "*Supertag Tag Change*"
+          (should (string-match-p "\\* Alias #alias" (buffer-string))))
+        (should (equal first-target (supertag-tag-rename "old")))
+        (should-not (supertag-tag-get "old"))
+        (should-not (supertag-find-nodes-by-tag "old"))
+        (dolist (id '("file-node" "alias-node" "path-node"))
+          (should (equal (list first-target) (plist-get (supertag-node-get id) :tags))))
+        (dolist (path (list file plain))
+          (with-current-buffer (find-file-noselect path)
+            (should-not (buffer-modified-p))
+            (should (equal (buffer-string) (supertag-document-test-disk path)))))
+        (should (cl-every (lambda (record) (equal "new" (plist-get record :token)))
+                          (supertag-tag-change-preview first-target)))
+        ;; No occurrence of the old token survives in the text.
+        (should-not (supertag-tag--text-records-for-tag
+                     "old" (supertag-tag--text-scan (list file plain))))))))
 
-(ert-deftest supertag-tag-change-unrelated-draft-does-not-request-repair ()
-  "A normal token requests no repair, even when the buffer has an unrelated draft."
-  (dolist (operation '(rename delete))
-    (supertag-tag-change-test--vault
-      (with-current-buffer (find-file-noselect plain) (goto-char (point-max)) (insert "Unrelated draft"))
-      (let ((writer (symbol-function 'supertag-service-org--update-buffer-and-resync)) (calls 0))
-        (cl-letf (((symbol-function 'read-string) (lambda (&rest _) "new"))
-                  ((symbol-function 'yes-or-no-p) (lambda (&rest _) t))
-                  ((symbol-function 'supertag-service-org--update-buffer-and-resync)
-                   (lambda (id function &optional repair tags-only)
-                     (should-not repair) (cl-incf calls)
-                     (funcall writer id function repair tags-only))))
-          (if (eq operation 'rename) (supertag-tag-rename "old")
-            (supertag-delete-tag-everywhere "old")))
-        (should (= calls 3))))))
+(ert-deftest supertag-tag-change-unsaved-buffer-blocks-without-being-saved ()
+  "A source file with unsaved changes is refused, never saved by the rename."
+  (supertag-tag-change-test--vault
+    (with-current-buffer (find-file-noselect plain)
+      (goto-char (point-max))
+      (insert "Unrelated draft"))
+    (let* ((before-disk (supertag-document-test-disk plain))
+           (before-store (prin1-to-string supertag--store))
+           (writer (symbol-function 'supertag-service-org--update-buffer-and-resync))
+           (calls 0))
+      (cl-letf (((symbol-function 'read-string) (lambda (&rest _) "new"))
+                ((symbol-function 'yes-or-no-p)
+                 (lambda (&rest _) (ert-fail "A blocked rename must not confirm")))
+                ((symbol-function 'supertag-service-org--update-buffer-and-resync)
+                 (lambda (id function &optional repair tags-only)
+                   (cl-incf calls)
+                   (funcall writer id function repair tags-only))))
+        (should-not (supertag-tag-rename "old")))
+      (should (= 0 calls))
+      ;; The draft is still only in the buffer, and the Store is untouched.
+      (should (equal before-disk (supertag-document-test-disk plain)))
+      (with-current-buffer (find-file-noselect plain)
+        (should (buffer-modified-p))
+        (should (string-match-p "Unrelated draft" (buffer-string))))
+      (should (equal before-store (prin1-to-string supertag--store)))
+      (should (supertag-tag-get "old"))
+      ;; The preview named the blocked file before any confirmation.
+      (with-current-buffer "*Supertag Tag Change*"
+        (should (string-match-p "BLOCKED" (buffer-string)))
+        (should (string-match-p "unsaved changes" (buffer-string)))))))
 
 (ert-deftest supertag-tag-change-unowned-entities-can-change ()
+  "A Tag with no Org occurrence keeps its identity when only its name changes."
   (supertag-tag-change-test--vault
     (let ((id (plist-get (supertag-tag-create '(:name "lonely")) :id))
           (disk (mapcar #'supertag-document-test-disk (list file plain)))
@@ -336,8 +367,10 @@ local record (.scratch/tasks/reports/report-keyword-line-affiliation.md, not shi
       (cl-letf (((symbol-function 'read-string) (lambda (&rest _) "new-lonely"))
                 ((symbol-function 'yes-or-no-p) (lambda (&rest _) t)))
         (setq new-id (supertag-tag-rename id))
-        (should-not (supertag-tag-get id))
-        (should (equal "new-lonely" (plist-get (supertag-tag-get new-id) :name)))
+        ;; The Tag is renamed in place: same ID, new canonical name.
+        (should (equal id new-id))
+        (should (equal "new-lonely" (plist-get (supertag-tag-get id) :name)))
+        (should-not (supertag-tag-resolve-occurrence "lonely"))
         (supertag-delete-tag-everywhere new-id))
       (should-not (supertag-tag-get new-id))
       (should (equal disk (mapcar #'supertag-document-test-disk (list file plain)))))))

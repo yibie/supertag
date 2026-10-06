@@ -161,16 +161,18 @@ ON-PROMPT runs after the preview was captured."
 (ert-deftest supertag-rename-merge-text-rescan-aborts-only-changed-file ()
   "A file edited after the preview is left alone and keeps the old entity."
   (supertag-rename-merge-text--vault
-    (let ((state (cons nil nil)))
-      (should (supertag-rename-merge-text--rename
-               "old" "new" state
-               (lambda ()
-                 ;; An accepted position: prose in the no-ID heading.
-                 (with-current-buffer (find-file-noselect file)
-                   (goto-char (point-min))
-                   (search-forward "Prose #old")
-                   (end-of-line)
-                   (insert "\nLate #old")))))
+    (let ((state (cons nil nil))
+          result)
+      (setq result
+            (supertag-rename-merge-text--rename
+             "old" "new" state
+             (lambda ()
+               ;; An accepted position: prose in the no-ID heading.
+               (with-current-buffer (find-file-noselect file)
+                 (goto-char (point-min))
+                 (search-forward "Prose #old")
+                 (end-of-line)
+                 (insert "\nLate #old")))))
       (with-current-buffer (find-file-noselect file)
         (should (buffer-modified-p))
         (should (string-match-p "Late #old" (buffer-string)))
@@ -178,7 +180,13 @@ ON-PROMPT runs after the preview was captured."
       (let ((copy (supertag-document-test-disk plain)))
         (should (string-match-p "\\* Stale copy #new" copy))
         (should-not (string-match-p "#old" copy)))
-      (should (supertag-tag-get "old"))
+      ;; The Tag survives under the rekeyed ID, still named `old', because the
+      ;; aborted file keeps its occurrences.
+      (should result)
+      (should (supertag-tag-get result))
+      (should (equal "old" (plist-get (supertag-tag-get result) :name)))
+      (should (equal result (supertag-tag-resolve-occurrence "old")))
+      (should (equal result (supertag-tag-resolve-occurrence "new")))
       (should (string-match-p "NOT RENAMED" (supertag-rename-merge-text--preview-text)))
       (should (string-match-p "still name it" (supertag-rename-merge-text--preview-text))))))
 

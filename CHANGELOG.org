@@ -29,6 +29,27 @@
   when transporting persisted rules, including nested case actions. Preserve
   the original data and enabled state without executing or migrating rules.
 - Keep V2 rule creation strict and reject unknown vocabulary with the rule ID.
+** Renaming a Tag keeps the Tag
+- =supertag-tag-rename= now changes the Tag's =:name= and keeps its stable ID,
+  so =:extends= edges, node membership, aliases, description and stored
+  references survive; no tag-added/tag-removed event is produced.
+- Preview the Tag record and its references (child Tags, automation rules,
+  saved queries, boards and view configs) and list query blocks that need a
+  hand edit; rekey a legacy Tag whose ID is its old name in one transaction.
+- Merging onto an existing Tag repoints child Tags and stored references and
+  moves the source's tokens to the target before the source is deleted.
+- Refuse a source file whose buffer has unsaved changes instead of saving it,
+  keep point, mark and narrowing in open buffers, and close only buffers the
+  command opened itself.
+- Show the preview without moving focus into it, and put the user's window
+  layout, selected window and current buffer back after a completed or
+  declined rename; a blocked or partial result keeps the preview visible.
+- Rewrite Supertag query text inside Org files under the same command:
+  the `tag' / `has-tag' / `has-any-tag' / `has-all-tags' string literals in a
+  `supertag-query-block' src body and in a `supertag-query' dynamic block's
+  `:query' option follow the new name or ID, with every other byte of the
+  block preserved; an unreadable block stays listed for a hand edit and a
+  `#+RESULTS:' section is never touched.
 
 
 * [0.1.1] - 2026-10-02

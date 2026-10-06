@@ -348,9 +348,11 @@
         (should (string-match-p (regexp-quote "* Source #renamed") text))
         (should (string-match-p (regexp-quote "* Other #renamed") text))
         (should-not (string-match-p "#old\\b" text)))
-      (should-not (supertag-tag-get old-id))
+      ;; The Tag entity itself is renamed in place, never replaced.
+      (should (equal "renamed" (plist-get (supertag-tag-get old-id) :name)))
+      (should (equal old-id (supertag-tag-resolve-occurrence "renamed")))
       (should (equal (plist-get (supertag-node-get "other") :tags)
-                     (list (supertag-tag-resolve-occurrence "renamed")))))))
+                     (list old-id))))))
 
 (ert-deftest supertag-embark-node-view-tag-delete-everywhere-removes-all ()
   (supertag-document-test-with-vault

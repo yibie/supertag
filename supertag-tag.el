@@ -96,6 +96,10 @@
 (defvar supertag-sync-directories-mode)
 (defvar supertag-sync-exclude-directories)
 (defvar supertag-sync-file-pattern)
+;; Automation answers Store events only when this is non-nil.  The rename
+;; command binds it to nil: a rename is a record change, not a tag edit, and
+;; must not run `(:on-tag-added ...)' rules for Tags that never moved.
+(defvar supertag-automation-sync--enabled)
 (autoload 'supertag-sync--effective-directories "supertag-services-sync")
 (declare-function supertag-sync--effective-directories "supertag-services-sync" ())
 (autoload 'supertag-sync--parse-filetags "supertag-services-sync")
@@ -3247,6 +3251,756 @@ and TODO keyword if any)"
                  (const :tag "Beginning of headline" beginning))
   :group 'supertag)
 
+;;; --- Tag rename: the Tag record and its references ---
+;;
+;; A Tag is identified by an opaque stable ID; its `:name' and `:aliases' are
+;; the occurrence tokens that resolve to it (`supertag-tag--tokens').  A rename
+;; therefore normally keeps the ID and changes `:name'.  `:extends' edges, node
+;; membership and every reference that stores the ID stay valid, and no node's
+;; membership changes, so no tag-added or tag-removed event is produced.
+;;
+;; Two cases need more than that.  A Tag whose ID is still its old name is
+;; rekeyed to a fresh stable ID, and a rename onto an existing Tag is a merge;
+;; both rewrite every stored reference in the same operation.  References are
+;; stored by ID (Automation triggers written through completion, view
+;; configurations) and by name (Automation conditions and actions, saved query
+;; text), so both spellings are carried over.
+
+(defconst supertag-tag-rename--reference-slot-keys
+  '(:tag :tags :tag-id :target-tag :source-tag :scope-tag :base-tag
+    :from-tag :to-tag :valid-for)
+  "Structured plist keys whose values name a Tag.
+Narrower than `supertag-tag-merge--tag-slot-keys' by `:valid-for', which is how
+an in-memory view configuration names the Tags it applies to.")
+
+(defconst supertag-tag-rename--query-block-regexp
+  (concat "^[ \t]*#\\+BEGIN\\(?:_SRC\\|:\\)[ \t]+\\("
+          "supertag-query-block\\|supertag-query\\)\\_>")
+  "Start of an Org block whose body may name a Tag in a query.
+Org text is not rewritten inside these blocks; the preview lists them instead.")
+
+(defun supertag-tag-rename--map-token-value (value func)
+  "Return VALUE with FUNC applied to each Tag identifier at this position.
+VALUE is a string, a symbol, a list of those, or anything else, which is
+returned unchanged.  The symbol spelling is included because a hand-written
+Automation condition may use `(has-tag old)' rather than a string."
+  (cond
+   ((or (stringp value) (symbolp value)) (funcall func value))
+   ((consp value)
+    (mapcar (lambda (item) (supertag-tag-rename--map-token-value item func))
+            value))
+   (t value)))
+
+(defun supertag-tag-rename--map-form (form func)
+  "Return FORM with FUNC applied at every Tag identifier position.
+Only the positions that can name a Tag are visited: the argument of `has-tag',
+`tag', `has-any-tag' and `has-all-tags'; the value of an `(:on-tag-added X)'
+or `(:on-tag-removed X)' trigger; and plist values under
+`supertag-tag-rename--reference-slot-keys'.  Generic recursion never applies
+FUNC to a bare atom, so a rule title, a property value, a term string or any
+other string that merely reads like a Tag token is left alone."
+  (cond
+   ((atom form) form)
+   ((memq (car form) '(has-tag tag))
+    (cons (car form)
+          (cons (supertag-tag-rename--map-token-value (cadr form) func)
+                (mapcar (lambda (item) (supertag-tag-rename--map-form item func))
+                        (cddr form)))))
+   ((memq (car form) '(has-any-tag has-all-tags))
+    (cons (car form)
+          (mapcar (lambda (item) (supertag-tag-rename--map-token-value item func))
+                  (cdr form))))
+   ((and (memq (car form) '(:on-tag-added :on-tag-removed))
+         (= 2 (length form)))
+    (list (car form) (supertag-tag-rename--map-token-value (cadr form) func)))
+   ((supertag-tag-merge--plist-p form)
+    (let (result)
+      (while form
+        (let ((key (pop form))
+              (value (pop form)))
+          (push key result)
+          (push (cond
+                 ((memq key supertag-tag-rename--reference-slot-keys)
+                  (supertag-tag-rename--map-token-value value func))
+                 ((consp value) (supertag-tag-rename--map-form value func))
+                 (t value))
+                result)))
+      (nreverse result)))
+   ((consp form)
+    (mapcar (lambda (item) (supertag-tag-rename--map-form item func)) form))
+   (t form)))
+
+(defun supertag-tag-rename--form-tokens (form mapping)
+  "Return the exact tokens in FORM that MAPPING names."
+  (let (found)
+    (supertag-tag-rename--map-form
+     form
+     (lambda (value)
+       (when (assoc value mapping) (push value found))
+       value))
+    (delete-dups (nreverse found))))
+
+(defun supertag-tag-rename--token-mapping (tag-id new-token new-id)
+  "Return the exact-token replacement alist for renaming TAG-ID.
+The ID maps to NEW-ID, which differs from TAG-ID only for a rekey.  The old
+`:name' maps to NEW-TOKEN unless it is the ID itself.  Aliases are not mapped:
+they stay attached to the Tag, so a reference that used one keeps resolving.
+Each token is also listed in its symbol spelling, because a hand-written
+Automation condition may use `(has-tag old)' rather than a string."
+  (let* ((tag (supertag--ensure-plist (supertag-tag-get tag-id)))
+         (old-name (plist-get tag :name))
+         (pairs (list (cons tag-id new-id))))
+    (when (and (stringp old-name) (not (equal old-name tag-id)))
+      (push (cons old-name new-token) pairs))
+    (let (mapping)
+      (dolist (pair pairs)
+        (push pair mapping)
+        (when (and (stringp (car pair)) (not (string-empty-p (car pair))))
+          (push (cons (intern (car pair)) (intern (format "%s" (cdr pair))))
+                mapping)))
+      (nreverse mapping))))
+
+(defun supertag-tag-rename--rewrite-fn (mapping)
+  "Return the token function that applies MAPPING."
+  (lambda (value) (or (cdr (assoc value mapping)) value)))
+
+(defun supertag-tag-rename--rewrite-collection (collection func)
+  "Rewrite every value in COLLECTION with FUNC; return the number changed.
+The collection is written back only when something changed."
+  (let ((bucket (supertag-store-get-collection collection))
+        (changed 0))
+    (when (hash-table-p bucket)
+      (let ((result (make-hash-table :test 'equal)))
+        (maphash
+         (lambda (id value)
+           (let ((rewritten (supertag-tag-rename--map-form value func)))
+             (unless (equal value rewritten) (cl-incf changed))
+             (puthash id rewritten result)))
+         bucket)
+        (when (> changed 0)
+          (supertag-update (list collection) result))))
+    changed))
+
+(defun supertag-tag-rename--saved-query-rewrites (mapping)
+  "Return (NAME OLD-TEXT NEW-TEXT) for saved queries MAPPING changes.
+A query that does not read as one complete form is left alone, because a
+rewrite of partial text could change its meaning."
+  (let (updates)
+    (when (boundp 'supertag-query-saved)
+      (dolist (entry supertag-query-saved)
+        (let ((name (car entry))
+              (text (cdr entry)))
+          (when (stringp text)
+            (condition-case nil
+                (pcase-let* ((`(,form . ,end) (read-from-string text))
+                             (tail (substring text end))
+                             (rewritten
+                              (supertag-tag-rename--map-form
+                               form (supertag-tag-rename--rewrite-fn mapping))))
+                  (when (and (string-match-p "\\`[[:space:]]*\\'" tail)
+                             (not (equal form rewritten)))
+                    (push (list name text (prin1-to-string rewritten)) updates)))
+              (error nil))))))
+    (nreverse updates)))
+
+(defun supertag-tag-rename--saved-query-mentions (tokens)
+  "Return the names of saved queries whose text names one of TOKENS."
+  (let (found)
+    (when (boundp 'supertag-query-saved)
+      (dolist (entry supertag-query-saved)
+        (let ((name (car entry))
+              (text (cdr entry)))
+          (when (and (stringp text)
+                     (cl-some (lambda (token)
+                                (string-match-p
+                                 (concat "\"" (regexp-quote token) "\"") text))
+                              tokens))
+            (push name found)))))
+    (nreverse found)))
+
+(defun supertag-tag-rename--apply-reference-rewrite (mapping)
+  "Rewrite every stored Tag reference named by MAPPING.
+Automation and Board data, loaded view configurations and saved queries are
+rewritten.  Nothing in Org text is touched.  Returns the number of rewritten
+values."
+  (let ((func (supertag-tag-rename--rewrite-fn mapping))
+        (changed 0))
+    (dolist (collection '(:automations :boards))
+      (cl-incf changed (supertag-tag-rename--rewrite-collection collection func)))
+    (when (and (boundp 'supertag--view-configs)
+               (hash-table-p supertag--view-configs))
+      (maphash
+       (lambda (id config)
+         (let ((rewritten (supertag-tag-rename--map-form config func)))
+           (unless (equal config rewritten)
+             (cl-incf changed)
+             (puthash id rewritten supertag--view-configs))))
+       supertag--view-configs))
+    (when (boundp 'supertag-query-saved)
+      (dolist (update (supertag-tag-rename--saved-query-rewrites mapping))
+        (when-let* ((cell (assoc (car update) supertag-query-saved)))
+          (setcdr cell (caddr update))
+          (cl-incf changed))))
+    changed))
+
+(defun supertag-tag-rename--rekey (old-id new-id)
+  "Give the Tag OLD-ID the fresh stable ID NEW-ID.
+Every `:extends' edge and every node `:tags' entry that names OLD-ID is
+rewritten in the same transaction, so nothing is left pointing at the old ID.
+The old ID is dropped from the Tag's own aliases.  Returns NEW-ID."
+  (supertag-with-transaction
+    (let ((tags (supertag-store-get-collection :tags))
+          (result (make-hash-table :test 'equal)))
+      (maphash
+       (lambda (tag-id raw)
+         (let* ((tag (copy-tree (supertag--ensure-plist raw)))
+                (parents (supertag-tag--tag-parents tag)))
+           (when (cl-member old-id parents :test #'equal)
+             (setq tag (plist-put
+                        tag :extends
+                        (mapcar (lambda (parent)
+                                  (if (equal parent old-id) new-id parent))
+                                parents))))
+           (when (equal tag-id old-id)
+             (setq tag (plist-put tag :id new-id))
+             (setq tag (plist-put tag :aliases
+                                  (supertag-tag--normalize-aliases
+                                   (remove old-id (plist-get tag :aliases))))))
+           (let ((id (if (equal tag-id old-id) new-id tag-id)))
+             (when (gethash id result)
+               (error "Tag rekey produced duplicate id '%s'" id))
+             (puthash id tag result))))
+       tags)
+      (supertag-update '(:tags) result))
+    (supertag-tag-rename--rewrite-nodes (list (cons old-id new-id))))
+  new-id)
+
+(defun supertag-tag-rename--repoint-extends (old-id new-id)
+  "Rewrite every Tag `:extends' edge that names OLD-ID to NEW-ID.
+Returns the number of Tags changed."
+  (let ((changed 0))
+    (maphash
+     (lambda (tag-id raw)
+       (let* ((tag (supertag--ensure-plist raw))
+              (parents (supertag-tag--tag-parents tag)))
+         (when (and (not (equal tag-id old-id))
+                    (cl-member old-id parents :test #'equal))
+           (let ((rewritten
+                  (seq-remove (lambda (parent) (equal parent tag-id))
+                              (mapcar (lambda (parent)
+                                        (if (equal parent old-id) new-id parent))
+                                      parents))))
+             (supertag-tag-update
+              tag-id
+              (lambda (current)
+                (plist-put current :extends rewritten)))
+             (cl-incf changed)))))
+     (supertag-store-get-collection :tags))
+    changed))
+
+(defun supertag-tag-rename--add-token (tag-id token)
+  "Make TOKEN resolve to TAG-ID by adding it to the Tag's aliases.
+Adding the token before the text rewrite is what lets each node's resync map
+`#TOKEN' back to the existing Tag instead of creating a new one."
+  (supertag-tag-update
+   tag-id
+   (lambda (tag)
+     (plist-put tag :aliases (append (plist-get tag :aliases) (list token)))))
+  tag-id)
+
+(defun supertag-tag-rename--finish (tag-id token)
+  "Set TAG-ID's `:name' to TOKEN and drop its old name from the aliases."
+  (let* ((tag (supertag--ensure-plist (supertag-tag-get tag-id)))
+         (old-name (plist-get tag :name)))
+    (supertag-tag-update
+     tag-id
+     (lambda (current)
+       (plist-put (plist-put current :name token)
+                  :aliases (remove old-name (plist-get current :aliases)))))))
+
+(defun supertag-tag-rename--source-aliases (source-id target-id)
+  "Return SOURCE-ID's occurrence tokens that TARGET-ID does not already own.
+After a merge every token that used to name the source must still resolve, so
+the source's own name and private aliases move to the target; only its dead ID
+and tokens the target already answers to are left out."
+  (let* ((source (supertag--ensure-plist (supertag-tag-get source-id)))
+         (target (supertag--ensure-plist (supertag-tag-get target-id)))
+         (owned (cons source-id (copy-sequence (plist-get target :aliases)))))
+    (seq-remove (lambda (alias) (member alias owned))
+                (copy-sequence (plist-get source :aliases)))))
+
+(defun supertag-tag-rename--add-aliases (tag-id aliases)
+  "Add ALIASES to TAG-ID's occurrence tokens; return how many were new."
+  (when aliases
+    (supertag-tag-update
+     tag-id
+     (lambda (tag)
+       (plist-put tag :aliases (append (plist-get tag :aliases) aliases)))))
+  (length aliases))
+
+(defun supertag-tag-rename--store-references (mapping)
+  "Return a description of the Automation and Board references MAPPING names."
+  (let (found)
+    (dolist (collection '(:automations :boards))
+      (let ((bucket (supertag-store-get-collection collection)))
+        (when (hash-table-p bucket)
+          (maphash
+           (lambda (id value)
+             (dolist (key '(:trigger :condition :actions))
+               (let ((tokens (supertag-tag-rename--form-tokens (plist-get value key) mapping)))
+                 (when tokens
+                   (push (format "%s '%s' %s %s"
+                                 (if (eq collection :automations) "rule" "board")
+                                 (or (plist-get value :name) id)
+                                 (substring (symbol-name key) 1)
+                                 (string-join (mapcar (lambda (token) (format "%s" token))
+                                                      (delete-dups tokens))
+                                              ", "))
+                         found)))))
+           bucket))))
+    (nreverse found)))
+
+(defun supertag-tag-rename--view-references (mapping)
+  "Return a description of the view-configuration references MAPPING names."
+  (let (found)
+    (when (and (boundp 'supertag--view-configs)
+               (hash-table-p supertag--view-configs))
+      (maphash
+       (lambda (id config)
+         (let ((tokens (supertag-tag-rename--form-tokens config mapping)))
+           (when tokens
+             (push (format "view '%s' %s" id
+                           (string-join (mapcar (lambda (token) (format "%s" token))
+                                                (delete-dups tokens))
+                                        ", "))
+                   found))))
+       supertag--view-configs))
+    (nreverse found)))
+
+;;; Supertag query text inside Org files
+;;
+;; `(tag "old")' in a `#+BEGIN_SRC supertag-query-block' body or in the
+;; `:query' option of a `#+BEGIN: supertag-query' dynamic block is a stored
+;; reference like any other.  The rewrite replaces exactly the string literals
+;; at Tag positions and leaves everything else byte for byte: the form is never
+;; read and printed back.  A block whose query does not read, or a dynamic
+;; block with no readable `:query' string, is left alone and listed in the
+;; preview as "not changed, edit by hand".  A `#+RESULTS:' section is never
+;; touched.
+
+(defun supertag-tag-rename--query-skip-space (text position)
+  "Return TEXT's position after whitespace and `;' comments at POSITION."
+  (let ((length (length text)) (pos position) char)
+    (while (and (< pos length)
+                (progn
+                  (setq char (aref text pos))
+                  (or (memq char '(?\s ?\t ?\n ?\r ?\f)) (eq char ?\;))))
+      (if (eq char ?\;)
+          (setq pos (if (string-match "\n" text pos) (match-end 0) length))
+        (cl-incf pos)))
+    pos))
+
+(defun supertag-tag-rename--query-string-end (text start)
+  "Return the position just past the string literal of TEXT starting at START.
+Signal an error when the literal is unterminated."
+  (let ((length (length text)) (pos (1+ start)) (done nil))
+    (while (and (< pos length) (not done))
+      (let ((char (aref text pos)))
+        (cond
+         ((eq char ?\\) (cl-incf pos 2))
+         ((eq char ?\") (setq done t) (cl-incf pos))
+         (t (cl-incf pos)))))
+    (unless done (error "Unterminated string literal"))
+    (min pos length)))
+
+(defun supertag-tag-rename--query-read (text position)
+  "Read one positioned datum from TEXT at POSITION.
+Return (NODE . END), where NODE is (:atom START END VALUE) or
+(:list START END CHILDREN).  Signal an error on anything unreadable."
+  (let ((start (supertag-tag-rename--query-skip-space text position)))
+    (when (>= start (length text))
+      (error "Unexpected end of query text"))
+    (let ((char (aref text start)))
+      (cond
+       ((eq char ?\()
+        (let ((cursor (1+ start)) children child)
+          (while (progn
+                   (setq cursor (supertag-tag-rename--query-skip-space text cursor))
+                   (and (< cursor (length text)) (not (eq (aref text cursor) ?\)))))
+            (setq child (supertag-tag-rename--query-read text cursor))
+            (push (car child) children)
+            (setq cursor (cdr child)))
+          (when (>= cursor (length text))
+            (error "Unterminated list in query text"))
+          (cons (list :list start (1+ cursor) (nreverse children)) (1+ cursor))))
+       ((eq char ?\))
+        (error "Unexpected `)' in query text"))
+       ((eq char ?\')
+        (let* ((inner (supertag-tag-rename--query-read text (1+ start)))
+               (quote-atom (list :atom start (1+ start) 'quote)))
+          (cons (list :list start (cdr inner) (list quote-atom (car inner)))
+                (cdr inner))))
+       ((eq char ?\")
+        (let ((end (supertag-tag-rename--query-string-end text start)))
+          (cons (list :atom start end
+                      (car (read-from-string (substring text start end))))
+                end)))
+       ((memq char '(?\[ ?\# ??))
+        (error "Unsupported query syntax `%c'" char))
+       (t
+        (let ((end start))
+          (while (and (< end (length text))
+                      (not (memq (aref text end)
+                                 '(?\s ?\t ?\n ?\r ?\f ?\( ?\) ?\" ?\; ?\'))))
+            (cl-incf end))
+          (when (= end start)
+            (error "Unreadable query text"))
+          (cons (list :atom start end
+                      (car (read-from-string (substring text start end))))
+                end)))))))
+
+(defun supertag-tag-rename--query-parse (text)
+  "Return the one positioned form TEXT holds, or signal an error.
+Trailing whitespace and `;' comments are allowed; anything else is an error."
+  (let* ((result (supertag-tag-rename--query-read text 0))
+         (tail (supertag-tag-rename--query-skip-space text (cdr result))))
+    (unless (= tail (length text))
+      (error "Trailing text after the query form"))
+    (car result)))
+
+(defun supertag-tag-rename--query-plist-p (children)
+  "Return non-nil when positioned CHILDREN form a keyword plist."
+  (and children
+       (zerop (% (length children) 2))
+       (eq (car (car children)) :atom)
+       (keywordp (nth 3 (car children)))))
+
+(defun supertag-tag-rename--query-scan-node (node mapping)
+  "Return (:targets T :mentions M) for the positioned NODE.
+T is (START END NEW-VALUE OLD-VALUE) for each string literal at a Tag position
+that MAPPING renames.  M is every Tag-position atom whose value MAPPING names,
+including a symbol spelling that Org query text does not rewrite.  The visited
+positions mirror `supertag-tag-rename--map-form'."
+  (let (targets mentions)
+    (cl-labels
+        ((record-atom (n)
+           (let ((value (nth 3 n)))
+             (when (assoc value mapping)
+               (push value mentions)
+               (when (stringp value)
+                 (push (list (nth 1 n) (nth 2 n) (cdr (assoc value mapping)) value)
+                       targets)))))
+         (record-value (n)
+           (cond
+            ((eq (car n) :atom) (record-atom n))
+            ((eq (car n) :list)
+             (dolist (child (nth 3 n)) (record-value child)))))
+         (head-is (child symbols)
+           (and (eq (car child) :atom) (memq (nth 3 child) symbols)))
+         (walk (n)
+           (when (eq (car n) :list)
+             (let ((children (nth 3 n)))
+               (cond
+                ((and children (head-is (car children) '(has-tag tag))
+                      (cdr children))
+                 (record-value (cadr children))
+                 (dolist (child (cddr children)) (walk child)))
+                ((and children (head-is (car children) '(has-any-tag has-all-tags)))
+                 (dolist (child (cdr children)) (record-value child)))
+                ((and children
+                      (head-is (car children) '(:on-tag-added :on-tag-removed))
+                      (= 2 (length children)))
+                 (record-value (cadr children)))
+                ((supertag-tag-rename--query-plist-p children)
+                 (let ((cursor children))
+                   (while cursor
+                     (let ((key (pop cursor))
+                           (value (pop cursor)))
+                       (if (and (eq (car key) :atom)
+                                (memq (nth 3 key)
+                                      supertag-tag-rename--reference-slot-keys))
+                           (record-value value)
+                         (walk value))))))
+                (t (dolist (child children) (walk child))))))))
+      (walk node))
+    (list :targets (nreverse targets)
+          :mentions (delete-dups (nreverse mentions)))))
+
+(defun supertag-tag-rename--query-rewrite-body (text mapping)
+  "Return (:targets T :mentions M :text NEW) for the query TEXT.
+T is (START END NEW-VALUE OLD-VALUE) relative to TEXT.  NEW is TEXT with every
+target literal replaced in place, so every other byte, including comments,
+line breaks and indentation, is preserved; the form is never printed back.
+Signal an error when TEXT is not one readable query form."
+  (let* ((node (supertag-tag-rename--query-parse text))
+         (scan (supertag-tag-rename--query-scan-node node mapping))
+         (targets (plist-get scan :targets))
+         (result text))
+    (dolist (target (sort (copy-sequence targets)
+                          (lambda (a b) (> (car a) (car b)))))
+      (setq result (concat (substring result 0 (nth 0 target))
+                           (prin1-to-string (nth 2 target))
+                           (substring result (nth 1 target)))))
+    (list :targets targets :mentions (plist-get scan :mentions) :text result)))
+
+(defun supertag-tag-rename--query-text-mentions-p (text tokens)
+  "Return non-nil when TEXT quotes one of TOKENS.
+The optional backslashes also match a token inside a dynamic block's `:query'
+string, where the quotes are escaped."
+  (cl-some (lambda (token)
+             (string-match-p (concat "\\\\?\"" (regexp-quote token) "\\\\?\"")
+                             text))
+           tokens))
+
+(defun supertag-tag-rename--query-line-text (position)
+  "Return the line around POSITION as plain text."
+  (buffer-substring-no-properties
+   (save-excursion (goto-char position) (line-beginning-position))
+   (save-excursion (goto-char position) (line-end-position))))
+
+(defun supertag-tag-rename--query-string-region-at (position)
+  "Return (START . END) of the single-line string literal at POSITION, or nil."
+  (let ((text (buffer-substring-no-properties position (line-end-position))))
+    (condition-case nil
+        (cons position (+ position (supertag-tag-rename--query-string-end text 0)))
+      (error nil))))
+
+(defun supertag-tag-rename--query-dynamic-literal (block-start header-end)
+  "Return (START . END) of a dynamic block's `:query' string, or nil.
+BLOCK-START and HEADER-END bound the `#+BEGIN: supertag-query' line."
+  (save-excursion
+    (goto-char block-start)
+    (when (re-search-forward "[ \t]:query[ \t]+\"" header-end t)
+      (supertag-tag-rename--query-string-region-at (1- (match-end 0))))))
+
+(defun supertag-tag-rename--query-manual-pair (file-key block-start)
+  "Return (:manual . (FILE . LINE)) for the block starting at BLOCK-START."
+  (list :manual (cons file-key (line-number-at-pos block-start))))
+
+(defun supertag-tag-rename--query-src-block (file-key block-start header-end
+                                                      mapping tokens)
+  "Describe the `#+BEGIN_SRC supertag-query-block' block at BLOCK-START.
+Return (:records . RECORDS), (:manual . (FILE . LINE)), or nil."
+  (let ((end-start (save-excursion
+                     (goto-char (1+ header-end))
+                     (when (re-search-forward "^[ \t]*#\\+END_SRC\\_>" nil t)
+                       (line-beginning-position)))))
+    (if (null end-start)
+        ;; Unterminated block: never guess at its bounds.
+        (supertag-tag-rename--query-manual-pair file-key block-start)
+      (let* ((body-begin (min (1+ header-end) (point-max)))
+             (body (buffer-substring-no-properties body-begin end-start))
+             (result (unless (string-match-p "^[ \t]*#\\+RESULTS:" body)
+                       (condition-case nil
+                           (supertag-tag-rename--query-rewrite-body body mapping)
+                         (error nil)))))
+        (if (and result (plist-get result :targets))
+            (list :records
+                  (mapcar (lambda (target)
+                            (let ((begin (+ body-begin (nth 0 target)))
+                                  (end (+ body-begin (nth 1 target))))
+                              (list :file file-key
+                                    :begin begin
+                                    :end end
+                                    :token (nth 3 target)
+                                    :replacement (prin1-to-string (nth 2 target))
+                                    :kind :query
+                                    :block block-start
+                                    :line (line-number-at-pos begin)
+                                    :line-text (supertag-tag-rename--query-line-text begin)
+                                    :context :query
+                                    :node-id nil
+                                    :resolution nil)))
+                          (plist-get result :targets)))
+          (when (or (and result (plist-get result :mentions))
+                    (supertag-tag-rename--query-text-mentions-p body tokens))
+            (supertag-tag-rename--query-manual-pair file-key block-start)))))))
+
+(defun supertag-tag-rename--query-dynamic-block (file-key block-start header-end
+                                                          mapping tokens)
+  "Describe the `#+BEGIN: supertag-query' block at BLOCK-START.
+Only the `:query' string literal is edited; the generated body is never
+touched.  Return (:records . RECORDS), (:manual . (FILE . LINE)), or nil."
+  (let* ((region (supertag-tag-rename--query-dynamic-literal block-start header-end))
+         (raw (and region (buffer-substring-no-properties (car region) (cdr region))))
+         (value (and raw (condition-case nil (car (read-from-string raw)) (error nil))))
+         (result (and (stringp value)
+                      (condition-case nil
+                          (supertag-tag-rename--query-rewrite-body value mapping)
+                        (error nil)))))
+    (if (and result (plist-get result :targets))
+        (list :records
+              (list (list :file file-key
+                          :begin (car region)
+                          :end (cdr region)
+                          :token raw
+                          :replacement (prin1-to-string (plist-get result :text))
+                          :kind :query
+                          :block block-start
+                          :line (line-number-at-pos block-start)
+                          :line-text (supertag-tag-rename--query-line-text block-start)
+                          :context :query
+                          :node-id nil
+                          :resolution nil)))
+      (when (or (and result (plist-get result :mentions))
+                (supertag-tag-rename--query-text-mentions-p
+                 (or raw (buffer-substring-no-properties block-start header-end))
+                 tokens))
+        (supertag-tag-rename--query-manual-pair file-key block-start)))))
+
+(defun supertag-tag-rename--query-blocks-in-buffer (file-key mapping)
+  "Return (:records RECORDS :manual MANUAL) for the current buffer.
+MAPPING is the rename's token mapping.  Only a token MAPPING actually renames
+makes an unrewritable block an edit-by-hand entry, so an alias that keeps
+resolving is not reported."
+  (let ((tokens (delete-dups
+                 (delq nil (mapcar (lambda (pair)
+                                     (and (stringp (car pair)) (car pair)))
+                                   mapping)))))
+    (save-restriction
+      (widen)
+      (save-excursion
+        (let (records manual)
+          (goto-char (point-min))
+          (while (re-search-forward supertag-tag-rename--query-block-regexp nil t)
+            (let* ((block-start (line-beginning-position))
+                   (header-end (line-end-position))
+                   (entry (if (string-match-p "_SRC" (match-string 0))
+                              (supertag-tag-rename--query-src-block
+                               file-key block-start header-end mapping tokens)
+                            (supertag-tag-rename--query-dynamic-block
+                             file-key block-start header-end mapping tokens))))
+              (pcase (car entry)
+                (:records (setq records (nconc records (cadr entry))))
+                (:manual (push (cadr entry) manual)))))
+          (list :records records :manual (nreverse manual)))))))
+
+(defun supertag-tag-rename--query-blocks (files mapping)
+  "Return (:records RECORDS :manual MANUAL) for the query blocks in FILES.
+A file already open is read as-is; any other file is read into a temporary
+buffer, so the preview opens nothing the command would have to clean up."
+  (let (records manual)
+    (dolist (file files)
+      (let ((buffer (find-buffer-visiting file)))
+        (if buffer
+            (with-current-buffer buffer
+              (let ((scan (supertag-tag-rename--query-blocks-in-buffer file mapping)))
+                (setq records (nconc records (plist-get scan :records)))
+                (setq manual (nconc manual (plist-get scan :manual)))))
+          (with-temp-buffer
+            (when (file-readable-p file) (insert-file-contents file))
+            (let ((scan (supertag-tag-rename--query-blocks-in-buffer file mapping)))
+              (setq records (nconc records (plist-get scan :records)))
+              (setq manual (nconc manual (plist-get scan :manual))))))))
+    (list :records records :manual manual)))
+
+(defun supertag-tag-rename--record-lines (tag-id new-token new-id merge-p manual)
+  "Return the preview's Tag-record and reference lines for renaming TAG-ID.
+The listing is the visible contract of the command: what carries over, which
+child Tags and stored references point at the Tag, and which query blocks need
+a hand edit.  MERGE-P adds what the source Tag loses.  MANUAL is the
+(FILE . LINE) list of query blocks that name a token but cannot be rewritten."
+  (let* ((tag (supertag--ensure-plist (supertag-tag-get tag-id)))
+         (old-name (plist-get tag :name))
+         (mapping (supertag-tag-rename--token-mapping tag-id new-token new-id))
+         (aliases (seq-remove (lambda (alias) (member alias (list tag-id old-name)))
+                              (plist-get tag :aliases)))
+         (parents (supertag-tag--tag-parents tag))
+         (children
+          (let (ids)
+            (maphash
+             (lambda (other-id raw)
+               (let ((other (supertag--ensure-plist raw)))
+                 (when (and (not (equal other-id tag-id))
+                            (cl-member tag-id (supertag-tag--tag-parents other)
+                                       :test #'equal))
+                   (push (or (plist-get other :name) other-id) ids))))
+             (supertag-store-get-collection :tags))
+            (sort (delete-dups ids) #'string<)))
+         (stored (supertag-tag-rename--store-references mapping))
+         (views (supertag-tag-rename--view-references mapping))
+         (tokens (delete-dups (append (list tag-id old-name)
+                                      (copy-sequence (plist-get tag :aliases)))))
+         (queries (supertag-tag-rename--saved-query-mentions tokens)))
+    (append
+     (list (format "RECORD  %s -> %s (ID %s%s)"
+                   old-name new-token tag-id
+                   (if (equal old-name tag-id) ", rekeyed" "")))
+     (list (format "  carries over: description %s | aliases %s | parents %s"
+                   (if (plist-get tag :description) "yes" "none")
+                   (if aliases (string-join aliases ", ") "none")
+                   (if parents
+                       (string-join (mapcar #'supertag-tag--name parents) ", ")
+                     "none")))
+     (list (format "  child Tags (%d): %s" (length children)
+                   (if children (string-join children ", ") "none")))
+     (list (format "  stored references (%d): %s" (length stored)
+                   (if stored (string-join stored "; ") "none")))
+     (list (format "  view configs (%d): %s" (length views)
+                   (if views (string-join views "; ") "none")))
+     (list (format "  saved queries (%d): %s" (length queries)
+                   (if queries (string-join queries ", ") "none")))
+     (when merge-p
+       (list (format "  source loses: description %s | parents %s | aliases move to the target"
+                     (if (plist-get tag :description) "yes" "none")
+                     (if parents (string-join (mapcar #'supertag-tag--name parents) ", ")
+                       "none"))))
+     (when manual
+       (list (format "  not changed, edit by hand (%d): %s"
+                     (length manual)
+                     (string-join (mapcar (lambda (entry)
+                                            (format "%s:%d" (car entry) (cdr entry)))
+                                          manual)
+                                  ", ")))))))
+
+(defun supertag-tag-rename--remaining (tag-id token records)
+  "Return occurrence RECORDS for TAG-ID that do not already use TOKEN."
+  (cl-remove-if (lambda (record) (equal token (plist-get record :token)))
+                (supertag-tag--text-records-for-tag tag-id records)))
+
+(defun supertag-tag-rename--blockers (tag-id records)
+  "Return (FILE . REASON) blockers for renaming TAG-ID.
+The write path saves every file it touches, so a file whose visiting buffer
+has unsaved changes is refused up front rather than saved; the same applies to
+a missing or unwritable source file."
+  (let (blockers)
+    (dolist (file (delete-dups
+                   (append (mapcar (lambda (record) (plist-get record :file)) records)
+                           (delq nil (mapcar (lambda (pair)
+                                               (plist-get (cdr pair) :file))
+                                             (supertag-find-nodes-by-tag tag-id))))))
+      (when (stringp file)
+        (let ((buffer (find-buffer-visiting file)))
+          (cond
+           ((not (file-exists-p file))
+            (push (cons file "file is missing") blockers))
+           ((and buffer (buffer-modified-p buffer))
+            (push (cons file "buffer has unsaved changes") blockers))
+           ((not (file-writable-p file))
+            (push (cons file "file is not writable") blockers))))))
+    (nreverse blockers)))
+
+(defun supertag-tag-rename--kill-opened-buffers (before)
+  "Kill file buffers opened since BEFORE, leaving pre-existing buffers alone.
+A buffer that is still modified is kept: the command never discards an edit."
+  (dolist (buffer (buffer-list))
+    (when (and (not (member (buffer-name buffer) before))
+               (buffer-file-name buffer)
+               (not (buffer-modified-p buffer)))
+      (kill-buffer buffer))))
+
+(defun supertag-tag-rename--restore-windows (config)
+  "Put the user's window layout back after a finished rename.
+CONFIG is a window configuration captured before the preview was shown, so
+restoring it closes the preview window and reselects the window and buffer the
+user had.  The preview is deliberately shown with `display-buffer', which never
+selects it, so the user's point never leaves their buffer in the first place."
+  (when (window-configuration-p config)
+    (set-window-configuration config)
+    (let ((buffer (window-buffer (selected-window))))
+      (when (buffer-live-p buffer)
+        (set-buffer buffer)))))
+
 (defun supertag-tag-change--collect (tag-id)
   "Return TAG-ID's live Org-text occurrences as range records.
 Reads the shared text enumerator, so a heading without `:ID:', a duplicate-ID
@@ -3279,16 +4033,23 @@ Return the records the preview was built from, or nil when TAG-ID is unknown."
       records)))
 
 (defun supertag-tag-rename (&optional old-id new-name)
-  "Preview and confirm renaming OLD-ID in Org text, then update its projection.
+  "Preview and confirm renaming OLD-ID in Org text, then update its record.
 Occurrences come from Org text through the same enumerator
 `supertag-delete-tag-everywhere' uses, so a heading without `:ID:', a
 heading's body prose, a duplicate-ID copy and a `#+FILETAGS:' entry are all
 renamed, and text that only looks like a tag is listed as not changed.
-NEW-NAME supplies the proposed name; confirmation is still required.
-When NEW-NAME resolves to an existing Tag this is a merge: every occurrence is
-rewritten to that Tag's canonical token and the nodes' membership is
-derived from the rewritten text, so a node that carried both Tags ends up
-with the target once, never twice.
+The Tag normally keeps its ID and only `:name' changes, so `:extends' edges,
+node membership and every ID-shaped reference stay valid and no tag-added or
+tag-removed event is produced.  A Tag whose ID is still its old name is
+rekeyed to a fresh stable ID first.  NEW-NAME supplies the proposed name;
+confirmation is still required.
+When NEW-NAME resolves to a different existing Tag this is a merge: every
+occurrence is rewritten to that Tag's canonical token, the source's extra
+aliases move to the target, and child Tags and stored references are
+repointed.  A node that carried both Tags ends up with the target once.
+A source file whose buffer has unsaved changes is listed as a blocker and the
+rename is refused before anything is written, because the write path saves the
+whole buffer; the user's unrelated edits are never saved.
 On failure, earlier files remain committed; preview and confirm again to resume.
 Preview is always shown before confirmation, whatever the caller."
   (interactive)
@@ -3300,72 +4061,189 @@ Preview is always shown before confirmation, whatever the caller."
          (name (and old-id (or new-name (read-string (format "New name for '%s': " old))))))
     (when (and name (not (string-empty-p name)))
       (let* ((token (supertag-sanitize-tag-name name))
-             (target-id (supertag-tag-resolve-occurrence token))
-             (_ (when (equal target-id old-id)
+             (tag (supertag--ensure-plist (supertag-tag-get old-id)))
+             (old-name (plist-get tag :name))
+             ;; Only a token that is already this Tag's canonical name is a
+             ;; no-op; its own alias can be promoted to the canonical name.
+             (_ (when (equal token old-name)
                   (user-error "'%s' already names tag '%s'" name old-id)))
-             (actual (if target-id (supertag-service-org--tag-token target-id) token))
+             (target-id (supertag-tag-resolve-occurrence token))
+             (merge-p (and target-id (not (equal target-id old-id))))
+             (actual (if merge-p (supertag-service-org--tag-token target-id) token))
+             (rekey-p (and (not merge-p) (not (supertag-tag-stable-id-p old-id))))
+             (new-id (cond (merge-p target-id)
+                           (rekey-p (supertag-tag--new-stable-id))
+                           (t old-id)))
+             (live-id (if merge-p old-id new-id))
+             (mapping (supertag-tag-rename--token-mapping old-id actual new-id))
              (files (supertag-tag--text-files-for-tag old-id))
              (scan (supertag-tag--text-scan files))
-             (records (supertag-tag--text-records-for-tag old-id scan))
+             (tag-records (supertag-tag--text-records-for-tag old-id scan))
              (near (supertag-tag--text-near-misses-for-tag old-id scan))
-             (file-count (length (supertag-tag--text-group-by-file records))))
+             ;; Supertag query text inside Org files is rewritten in the same
+             ;; pass, so a query block that names the old token but no tag
+             ;; occurrence still counts for blockers and the preview.
+             (query-scan (supertag-tag-rename--query-blocks files mapping))
+             (records (append tag-records (plist-get query-scan :records)))
+             (manual (plist-get query-scan :manual))
+             (file-count (length (supertag-tag--text-group-by-file records)))
+             (tag-count (length tag-records))
+             (blockers (supertag-tag-rename--blockers old-id records))
+             (notes (supertag-tag-rename--record-lines old-id actual new-id merge-p manual))
+             ;; Remember the user's windows before the preview is shown, so a
+             ;; completed or declined rename can put them back exactly.  A
+             ;; blocked or partial result keeps the preview visible instead.
+             (origin (current-window-configuration)))
         (supertag-tag--text-preview
-         (if target-id
+         (if merge-p
              (format "Merge '%s' into existing Tag '%s' (token '%s')"
                      old target-id actual)
            (format "Rename '%s' to '%s'" old actual))
          (list (cons "WILL CHANGE" records)
                (cons "NOT CHANGED" near))
-         (format "%d occurrence(s) / %d file(s); %d candidate(s) will not be touched"
-                 (length records) file-count (length near))
-         t)
-        (when (yes-or-no-p
-               (if target-id
-                   (format "Merge '%s' into existing tag '%s' (token '%s') in %d occurrence(s) / %d file(s)? "
-                           old target-id actual (length records) file-count)
-                 (format "Rename '%s' to '%s' in %d occurrence(s) / %d file(s)? "
-                         old actual (length records) file-count)))
-          (unless (and (equal target-id (supertag-tag-resolve-occurrence token))
-                       (or (null target-id)
-                           (equal actual (supertag-service-org--tag-token target-id))))
-            (user-error "Tag resolution changed; preview again"))
-          (let* ((new-id (or target-id (supertag-tag-ensure token)))
-                 (result (supertag-tag--text-write
-                          records
-                          (lambda ()
-                            (supertag-tag--text-records-for-tag
-                             old-id (supertag-tag--text-scan-current-buffer)))
-                          (lambda (candidate)
-                            (supertag-service-org--token-identifies-p candidate old-id))
-                          actual))
-                 (after (supertag-tag--text-scan files))
-                 (remaining (supertag-tag--text-records-for-tag old-id after))
-                 (aborted (plist-get result :aborted)))
-            ;; A node whose text no longer carries the old name has a stale
-            ;; membership; refresh it rather than leaving the old Tag attached.
-            (supertag-tag--text-repair-owners old-id after)
-            (if (or remaining aborted)
-                (progn
-                  (supertag-tag--text-preview
-                   (format "Not renamed: '%s' to '%s'" old actual)
-                   (list (cons "NOT RENAMED" remaining)
-                         (cons "NOT CHANGED" near))
-                   (format "Tag '%s' kept: %d occurrence(s) still name it; %d file(s) left untouched"
-                           old (length remaining) (length aborted))
-                   t)
-                  (message "Tag '%s' kept: %d occurrence(s) still name it%s"
-                           old (length remaining)
-                           (if aborted
-                               (format " (%d file(s) changed since the preview; preview again)"
-                                       (length aborted))
-                             ""))
-                  new-id)
-              (when (and (not (equal old-id new-id))
-                         (not (supertag-find-nodes-by-tag old-id)))
-                (supertag-tag-delete old-id))
-              (message "Renamed '%s' to '%s': rewrote %d occurrence(s) in %d file(s)"
-                       old actual (plist-get result :occurrences) (plist-get result :files))
-              new-id)))))))
+         (format "%d occurrence(s)%s / %d file(s); %d candidate(s) will not be touched"
+                 tag-count
+                 (let ((blocks (length (delete-dups
+                                        (delq nil (mapcar (lambda (record)
+                                                            (plist-get record :block))
+                                                          (plist-get query-scan :records)))))))
+                   (if (zerop blocks) "" (format ", %d query block(s)" blocks)))
+                 file-count (length near))
+         t
+         (append (when blockers
+                   (list (format "BLOCKED - nothing will be written; save or close (%d): %s"
+                                 (length blockers)
+                                 (string-join
+                                  (mapcar (lambda (blocker)
+                                            (format "%s (%s)"
+                                                    (car blocker) (cdr blocker)))
+                                          blockers)
+                                  ", "))))
+                 notes))
+        (if blockers
+            (progn
+              (message "Tag '%s' not renamed: %d source file(s) have unsaved changes, are missing or are not writable"
+                       old (length blockers))
+              nil)
+          (if (not (yes-or-no-p
+                    (if merge-p
+                        (format "Merge '%s' into existing tag '%s' (token '%s') in %d occurrence(s) / %d file(s)? "
+                                old target-id actual (length records) file-count)
+                      (format "Rename '%s' to '%s' in %d occurrence(s) / %d file(s)? "
+                              old actual (length records) file-count))))
+              ;; Declined: nothing was written, so the preview window goes away
+              ;; again and the user's layout is exactly as it was.
+              (progn
+                (supertag-tag-rename--restore-windows origin)
+                nil)
+            (unless (and (equal target-id (supertag-tag-resolve-occurrence token))
+                         (or (not merge-p)
+                             (equal actual (supertag-service-org--tag-token target-id))))
+              (user-error "Tag resolution changed; preview again"))
+            (let* ((supertag-automation-sync--enabled nil)
+                   (opened (mapcar #'buffer-name (buffer-list)))
+                   (rekeyed (and rekey-p (not (equal old-id live-id))))
+                   result after remaining aborted (references 0))
+              (unwind-protect
+                  (progn
+                    (when rekeyed
+                      (supertag-tag-rename--rekey old-id new-id)
+                      (cl-incf references
+                               (supertag-tag-rename--apply-reference-rewrite
+                                (supertag-tag-rename--token-mapping
+                                 old-id actual new-id))))
+                    ;; The new token must resolve to the live Tag before the
+                    ;; text is rewritten so each node's resync maps it back.
+                    (unless merge-p
+                      (supertag-tag-rename--add-token live-id actual))
+                    (setq result
+                          (supertag-tag--text-write
+                           records
+                           (lambda ()
+                             (append
+                              (supertag-tag--text-records-for-tag
+                               live-id (supertag-tag--text-scan-current-buffer))
+                              (plist-get
+                               (supertag-tag-rename--query-blocks-in-buffer
+                                (supertag-tag--text-file-key (buffer-file-name))
+                                mapping)
+                               :records)))
+                           (lambda (candidate)
+                             (supertag-service-org--token-identifies-p candidate live-id))
+                           actual))
+                    (setq after (supertag-tag--text-scan files))
+                    (setq remaining
+                          (supertag-tag-rename--remaining live-id actual after))
+                    (setq aborted (plist-get result :aborted))
+                    ;; A node whose text no longer carries the Tag has a stale
+                    ;; membership; refresh it rather than leaving it attached.
+                    (supertag-tag--text-repair-owners live-id after)
+                    (if (or remaining aborted)
+                        (progn
+                          (supertag-tag--text-preview
+                           (format "Not renamed: '%s' to '%s'" old actual)
+                           (list (cons "NOT RENAMED" remaining)
+                                 (cons "NOT CHANGED" near))
+                           (format "Tag '%s' kept: %d occurrence(s) still name it; %d file(s) left untouched"
+                                   old (length remaining) (length aborted))
+                           t)
+                          (message "Tag '%s' kept%s: %d occurrence(s) still name it%s"
+                                   old
+                                   (if rekeyed " (rekeyed to a stable ID)" "")
+                                   (length remaining)
+                                   (if aborted
+                                       (format " (%d file(s) changed since the preview; preview again)"
+                                               (length aborted))
+                                     ""))
+                          live-id)
+                      (when merge-p
+                        (cl-incf references
+                                 (supertag-tag-rename--apply-reference-rewrite
+                                  (supertag-tag-rename--token-mapping
+                                   old-id actual target-id)))
+                        (cl-incf references
+                                 (supertag-tag-rename--repoint-extends old-id target-id)))
+                      (unless (or merge-p rekeyed)
+                        ;; The ID is unchanged, so only the old `:name' token
+                        ;; has to be carried over to the new one.
+                        (cl-incf references
+                                 (supertag-tag-rename--apply-reference-rewrite
+                                  (supertag-tag-rename--token-mapping
+                                   old-id actual live-id))))
+                      (cond
+                       (merge-p
+                        (if (supertag-find-nodes-by-tag old-id)
+                            (progn
+                              (message "Merged '%s' into '%s': rewrote %d occurrence(s) in %d file(s); %d node(s) still carry the source Tag"
+                                       old actual (plist-get result :occurrences)
+                                       (plist-get result :files)
+                                       (length (supertag-find-nodes-by-tag old-id)))
+                              live-id)
+                          ;; The source must go before its aliases move: until
+                          ;; then it still owns them and the target's uniqueness
+                          ;; check would refuse them.
+                          (let ((moved (supertag-tag-rename--source-aliases
+                                        old-id target-id)))
+                            (supertag-tag-delete old-id)
+                            (supertag-tag-rename--add-aliases target-id moved)
+                            (supertag-tag-rename--restore-windows origin)
+                            (message "Merged '%s' into '%s': rewrote %d occurrence(s) in %d file(s); %d query block(s); %d reference(s) rewritten"
+                                     old actual (plist-get result :occurrences)
+                                     (plist-get result :files)
+                                     (plist-get result :query-blocks) references)
+                            target-id)))
+                       (t
+                        (supertag-tag-rename--finish live-id actual)
+                        (supertag-tag-rename--restore-windows origin)
+                        (message "Renamed '%s' to '%s': rewrote %d occurrence(s) in %d file(s); %d query block(s); %d reference(s) rewritten%s"
+                                 old actual (plist-get result :occurrences)
+                                 (plist-get result :files)
+                                 (plist-get result :query-blocks) references
+                                 (if rekeyed
+                                     (format " (rekeyed %s -> %s)" old-id new-id)
+                                   ""))
+                        live-id))))
+                (supertag-tag-rename--kill-opened-buffers opened)))))))))
 
 (cl-defun supertag-tag-set-parent
     (&optional (tag-id nil tag-id-supplied-p) (parent-ids nil parent-ids-supplied-p))
@@ -3814,18 +4692,25 @@ trailing punctuation run, but never an alphanumeric or CJK continuation."
         (:unprojected-id "heading :ID: not projected")
         (:duplicate-id "duplicate :ID: (Store points at another file)")
         (:id (format "heading :ID: %s" (plist-get record :node-id)))
+        (:query "query block")
         (context (format "%s" context)))))
 
-(defun supertag-tag--text-preview (title sections summary &optional display)
+(defun supertag-tag--text-preview (title sections summary &optional display notes)
   "Render the text preview in `*Supertag Tag Change*' and return it.
-SECTIONS is a list of (LABEL . RECORDS).  DISPLAY non-nil pops to the buffer;
-nil leaves it unshown for a caller that inspects it programmatically.  Nothing
-is written here."
+SECTIONS is a list of (LABEL . RECORDS).  DISPLAY non-nil shows the buffer
+without selecting it (`display-buffer'); nil leaves it unshown for a caller
+that inspects it programmatically.  NOTES
+is a list of extra lines describing the Tag record and its references, shown
+between the summary and the sections.  Nothing is written here."
   (let ((buffer (get-buffer-create "*Supertag Tag Change*")))
     (with-current-buffer buffer
       (let ((inhibit-read-only t))
         (erase-buffer)
         (insert (format "%s\n%s\n\n" title summary))
+        (when notes
+          (dolist (line notes)
+            (insert (format "%s\n" line)))
+          (insert "\n"))
         (dolist (section sections)
           (let ((records (cdr section)))
             (insert (format "%s: %d\n" (car section) (length records)))
@@ -3839,7 +4724,10 @@ is written here."
               (insert "\n")))))
       (special-mode)
       (goto-char (point-min)))
-    (when display (pop-to-buffer buffer))
+    ;; Show the preview without selecting it: the user's window keeps focus
+    ;; while the preview is read and confirmed.  `pop-to-buffer' would select
+    ;; it and move the user's point into the preview buffer.
+    (when display (display-buffer buffer))
     buffer))
 
 (defun supertag-tag--text-signature (records)
@@ -3879,22 +4767,29 @@ Groups come back back-to-front so deleting one cannot shift the next."
 DROP-P decides which occurrences of the current file match (inline tokens
 resolve through the same rule the scan used; `#+FILETAGS:' tokens through
 their own).  A matching inline range becomes `#NEW-TOKEN', a matching
-FILETAGS token becomes NEW-TOKEN, and nil NEW-TOKEN deletes both.  Editing
-from the end is what keeps the remaining recorded ranges valid when the
-replacement changes the byte length."
+FILETAGS token becomes NEW-TOKEN, a `:query' record is replaced by its own
+precomputed literal, and nil NEW-TOKEN deletes inline and FILETAGS text.
+Editing from the end is what keeps the remaining recorded ranges valid when
+the replacement changes the byte length."
   (dolist (record (sort (copy-sequence records)
                         (lambda (a b) (> (plist-get a :begin) (plist-get b :begin)))))
-    (if (eq (plist-get record :kind) :filetags)
-        (supertag-service-org--set-filetags
-         ;; `delete-dups' also folds a merge onto a token the line already
-         ;; carries, so FILETAGS never grows a duplicate.
-         (delete-dups
-          (delq nil (mapcar (lambda (token)
-                              (if (funcall drop-p token) new-token token))
-                            (supertag-service-org--filetags)))))
-      (goto-char (plist-get record :begin))
-      (delete-region (point) (plist-get record :end))
-      (when new-token (insert "#" new-token)))))
+    (pcase (plist-get record :kind)
+      (:filetags
+       (supertag-service-org--set-filetags
+        ;; `delete-dups' also folds a merge onto a token the line already
+        ;; carries, so FILETAGS never grows a duplicate.
+        (delete-dups
+         (delq nil (mapcar (lambda (token)
+                             (if (funcall drop-p token) new-token token))
+                           (supertag-service-org--filetags))))))
+      (:query
+       (goto-char (plist-get record :begin))
+       (delete-region (point) (plist-get record :end))
+       (insert (plist-get record :replacement)))
+      (_
+       (goto-char (plist-get record :begin))
+       (delete-region (point) (plist-get record :end))
+       (when new-token (insert "#" new-token))))))
 
 (defun supertag-tag--text-write (records rescan-fn drop-p &optional new-token)
   "Rewrite RECORDS in Org text, file by file, back to front.
@@ -3903,34 +4798,45 @@ differs from the planned records, that file is left untouched and reported.
 DROP-P decides which occurrences match.  NEW-TOKEN renames them (the caller
 passes the target's canonical token and the inline `#' is added here); nil
 NEW-TOKEN deletes them.
-Returns a plist (:occurrences N :files N :aborted ((FILE . REASON) ...))."
+Returns a plist (:occurrences N :files N :query-blocks N :aborted
+\((FILE . REASON) ...))."
   (let ((planned (supertag-tag--text-group-by-file records))
-        (written 0) (files 0) aborted)
+        (written 0) (files 0) (query-blocks 0) aborted)
     (dolist (group planned)
       (let ((file (car group))
             (group-records (cdr group)))
+        ;; A file the user already has open keeps its point, mark, narrowing
+        ;; and scroll position: the buffer is reached, never selected, and
+        ;; every edit happens inside `save-mark-and-excursion'.
         (with-current-buffer (find-file-noselect file t)
-          (save-restriction
-            (widen)
-            (if (not (equal (supertag-tag--text-signature (funcall rescan-fn))
-                            (supertag-tag--text-signature group-records)))
-                (push (cons file "text changed since the preview") aborted)
-              (dolist (owner-group (supertag-tag--text-group-by-owner group-records))
-                (let ((node-id (car owner-group))
-                      (owner-records (cdr owner-group)))
-                  (if node-id
-                      (supertag-service-org--update-buffer-and-resync
-                       node-id
-                       (lambda ()
-                         (supertag-tag--text-edit-records
-                          owner-records drop-p new-token)))
-                    (progn
-                      (supertag-tag--text-edit-records
-                       owner-records drop-p new-token)
-                      (supertag-service-org--save-current-buffer)))))
-              (cl-incf files)
-              (cl-incf written (length group-records)))))))
-    (list :occurrences written :files files :aborted (nreverse aborted))))
+          (save-mark-and-excursion
+            (save-restriction
+              (widen)
+              (if (not (equal (supertag-tag--text-signature (funcall rescan-fn))
+                              (supertag-tag--text-signature group-records)))
+                  (push (cons file "text changed since the preview") aborted)
+                (dolist (owner-group (supertag-tag--text-group-by-owner group-records))
+                  (let ((node-id (car owner-group))
+                        (owner-records (cdr owner-group)))
+                    (if node-id
+                        (supertag-service-org--update-buffer-and-resync
+                         node-id
+                         (lambda ()
+                           (supertag-tag--text-edit-records
+                            owner-records drop-p new-token)))
+                      (progn
+                        (supertag-tag--text-edit-records
+                         owner-records drop-p new-token)
+                        (supertag-service-org--save-current-buffer)))))
+                (cl-incf files)
+                (cl-incf written (length group-records))
+                (cl-incf query-blocks
+                         (length (delete-dups
+                                  (delq nil (mapcar (lambda (record)
+                                                      (plist-get record :block))
+                                                    group-records)))))))))))
+    (list :occurrences written :files files :query-blocks query-blocks
+          :aborted (nreverse aborted))))
 
 (defun supertag-tag--text-repair-owners (tag-id records)
   "Refresh owner nodes whose text no longer carries TAG-ID.

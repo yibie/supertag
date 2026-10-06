@@ -29,6 +29,17 @@
   when transporting persisted rules, including nested case actions. Preserve
   the original data and enabled state without executing or migrating rules.
 - Keep V2 rule creation strict and reject unknown vocabulary with the rule ID.
+** Automation defaults with =:if-missing=
+- =:update-property= accepts an optional =:if-missing= parameter: with it, the
+  value is written only when the live Org property is absent, empty or
+  whitespace-only; otherwise the property is left exactly as it is. Without
+  it the value is written as before, so every existing rule keeps its
+  behaviour.
+- A skipped write edits nothing and refreshes no projection; with
+  =supertag-automation-verbose= it is logged. The check reads the live Org
+  source, not the Store projection, and works inside =:case= branches too.
+- Add the "Tag added -> set a default property" wizard template; the existing
+  "Tag added -> set a property" template still always sets the value.
 ** Renaming a Tag keeps the Tag
 - =supertag-tag-rename= now changes the Tag's =:name= and keeps its stable ID,
   so =:extends= edges, node membership, aliases, description and stored

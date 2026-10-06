@@ -284,5 +284,48 @@ this suite passing by accident."
         (list :name "invalid" :trigger :on-property-change :actions actions))))
     (should-not (supertag-automation-get "auto-invalid"))))
 
+(ert-deftest supertag-automation-template-tag-added-set-default-property ()
+  "Template 3: adding the tag fills an empty property but keeps a set one."
+  (supertag-automation-template-test--with-vault
+    (let ((project (car files))
+          (reference (cadr files)))
+      (supertag-automation-template-test--register-tags)
+      (supertag-automation-template-test--set-property project "RANK" "B")
+      (supertag-automation-template-test--create
+       :tag-added-set-default-property '((tag . "tpl-tag") (property . "RANK")
+                                         (value . "A")))
+      (supertag-automation-template-test--add-tag
+       supertag-ownership-test-node-a "tpl-tag")
+      ;; The value the user already set survives.
+      (should (string-match-p ":RANK:[ \t]+B"
+                              (supertag-automation-template-test--disk project)))
+      (should-not (string-match-p ":RANK:[ \t]+A"
+                                  (supertag-automation-template-test--disk project)))
+      ;; A node that had no value gets the default.
+      (supertag-automation-template-test--add-tag
+       supertag-ownership-test-node-b "tpl-tag")
+      (should (string-match-p ":RANK:[ \t]+A"
+                              (supertag-automation-template-test--disk reference))))))
+
+(ert-deftest supertag-automation-template-if-missing-end-to-end-tag-added ()
+  "A real tag-added event keeps a live value and fills a missing one."
+  (supertag-automation-template-test--with-vault
+    (let ((file (car files)))
+      (supertag-automation-template-test--register-tags)
+      (supertag-automation-template-test--set-property file "STATUS" "reading")
+      (supertag-automation-create
+       '(:name "book defaults"
+         :trigger (:on-tag-added "tpl-tag")
+         :actions ((:action :update-property
+                    :params (:property :STATUS :value "unread" :if-missing t))
+                   (:action :update-property
+                    :params (:property :SOURCE :value "default" :if-missing t)))))
+      (supertag-automation-template-test--add-tag
+       supertag-ownership-test-node-a "tpl-tag")
+      (let ((disk (supertag-automation-template-test--disk file)))
+        (should (string-match-p ":STATUS:[ \t]+reading" disk))
+        (should-not (string-match-p ":STATUS:[ \t]+unread" disk))
+        (should (string-match-p ":SOURCE:[ \t]+default" disk))))))
+
 (provide 'automation-templates-test)
 ;;; automation-templates-test.el ends here

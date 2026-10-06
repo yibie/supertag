@@ -1343,6 +1343,26 @@ and still leaves `supertag-git-sync--in-flight' cleared."
           (supertag-git-metadata-reconcile root)
           (should (equal before (supertag-git-metadata-snapshot))))))))
 
+(ert-deftest supertag-git-metadata-if-missing-roundtrip ()
+  "The `:if-missing' action parameter survives export and import."
+  (supertag-git-test-with-vault
+    (supertag-automation-create
+     '(:name "book default status"
+       :trigger (:on-tag-added "book")
+       :actions ((:action :update-property
+                  :params (:property :status :value "unread" :if-missing t)))))
+    (let ((before (supertag-git-metadata-snapshot)))
+      (supertag-git-metadata-reconcile root t)
+      (should (equal before (supertag-git-metadata-read root)))
+      (let ((supertag--store nil))
+        (supertag--ensure-store)
+        (supertag-git-metadata-reconcile root)
+        (let ((rule (supertag-automation-get "auto-book-default-status")))
+          (should rule)
+          (should (eq t (plist-get
+                         (plist-get (car (plist-get rule :actions)) :params)
+                         :if-missing))))))))
+
 (ert-deftest supertag-git-metadata-unknown-rules-still-refused-with-id ()
   (supertag-git-test-with-vault
     (dolist (rule '((:id "bad-trigger" :name "Bad trigger" :trigger :typo

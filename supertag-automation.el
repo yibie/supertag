@@ -635,14 +635,26 @@ BRANCH can specify :equals (single value or list), :in (list),
       (supertag-automation--execute-actions default-actions node-id context))))
 
 (defun supertag-automation-action-update-property (node-id params)
-  "Update NODE-ID's Org property from PARAMS, then refresh its Projection."
+  "Update NODE-ID's Org property from PARAMS, then refresh its Projection.
+PARAMS carries `:property' and `:value'.  With a non-nil `:if-missing' the
+value is written only when the live Org property is absent, empty or
+whitespace-only; a property that holds any other value is left exactly as it
+is, and the skipped write edits nothing.  The decision is made from the
+authoritative Org source (`supertag-service-org-property-present-p'), not
+from the Store projection."
   (let ((property (plist-get params :property))
-        (value (plist-get params :value)))
+        (value (plist-get params :value))
+        (if-missing (plist-get params :if-missing)))
     (unless node-id
       (user-error "Automation :update-property requires a node ID"))
     (unless property
       (user-error "Automation :update-property requires :property"))
-    (supertag-service-org-set-property node-id property value)))
+    (if (and if-missing
+             (supertag-service-org-property-present-p node-id property))
+        (supertag-automation--log
+         "SKIP(update-property): %s already has a value; :if-missing leaves it"
+         (supertag-service-org--property-name property))
+      (supertag-service-org-set-property node-id property value))))
 
 (defun supertag-automation-action-update-todo-state (node-id params)
   "Update the TODO state of a node.
@@ -1706,12 +1718,32 @@ unused here because scheduled rules are not scoped to a single node."
                     (value (supertag-automation-templates--param params 'value))
                     (prop-kw (supertag-automation-templates--keywordize property)))
                (list :name (format "Tag '%s' sets %s" tag property)
-                     :description (format "Adding tag '%s' sets property %s to %s." tag property value)
+                     :description (format "Adding tag '%s' always sets property %s to %s, replacing any value it already has." tag property value)
                      :trigger (list :on-tag-added tag)
                      :actions (list (list :action :update-property
                                           :params (list :property prop-kw :value value)))))))
 
-   ;; 3. Tag added -> add another tag (implication) ----------------------
+   ;; 3. Tag added -> set a default property -----------------------------
+   (list
+    :id :tag-added-set-default-property
+    :name "Tag added -> set a default property"
+    :description "When a tag is added to a node, fill in an Org property only when it is empty (e.g. adding #book sets STATUS to unread without touching a STATUS the user already set)."
+    :params '((tag "Tag that triggers the rule (e.g. book)" tag)
+              (property "Property to fill in when empty (e.g. STATUS)" property)
+              (value "Default value to assign (e.g. unread)" value))
+    :build (lambda (params)
+             (let* ((tag (supertag-automation-templates--param params 'tag))
+                    (property (supertag-automation-templates--param params 'property))
+                    (value (supertag-automation-templates--param params 'value))
+                    (prop-kw (supertag-automation-templates--keywordize property)))
+               (list :name (format "Tag '%s' defaults %s" tag property)
+                     :description (format "Adding tag '%s' sets property %s to %s only when that property has no value yet." tag property value)
+                     :trigger (list :on-tag-added tag)
+                     :actions (list (list :action :update-property
+                                          :params (list :property prop-kw :value value
+                                                        :if-missing t)))))))
+
+   ;; 4. Tag added -> add another tag (implication) ----------------------
    (list
     :id :tag-added-add-tag
     :name "Tag added -> add another tag (implication)"
@@ -1727,7 +1759,7 @@ unused here because scheduled rules are not scoped to a single node."
                      :actions (list (list :action :add-tag
                                           :params (list :tag implied-tag)))))))
 
-   ;; 4. Tag removed -> remove a derived tag -----------------------------
+   ;; 5. Tag removed -> remove a derived tag -----------------------------
    (list
     :id :tag-removed-remove-tag
     :name "Tag removed -> remove a derived tag"
@@ -1743,7 +1775,7 @@ unused here because scheduled rules are not scoped to a single node."
                      :actions (list (list :action :remove-tag
                                           :params (list :tag derived-tag)))))))
 
-   ;; 5. Property change -> update another property on the same node -----
+   ;; 6. Property change -> update another property on the same node -----
    (list
     :id :property-change-update-property
     :name "Property change -> update another property"
@@ -1769,7 +1801,7 @@ unused here because scheduled rules are not scoped to a single node."
                                           :params (list :property target-property
                                                         :value target-value)))))))
 
-   ;; 6. Property equals value -> move node to an archive file -----------
+   ;; 7. Property equals value -> move node to an archive file -----------
    (list
     :id :property-equals-move-node
     :name "Property equals value -> move node to file"
@@ -1797,7 +1829,7 @@ unused here because scheduled rules are not scoped to a single node."
                      :actions (list (list :action :move-node
                                           :params (list :target-file target-file)))))))
 
-   ;; 7. Property equals value -> add a tag -------------------------------
+   ;; 8. Property equals value -> add a tag -------------------------------
    (list
     :id :property-equals-add-tag
     :name "Property equals value -> add tag"
@@ -1817,7 +1849,7 @@ unused here because scheduled rules are not scoped to a single node."
                      :actions (list (list :action :add-tag
                                           :params (list :tag tag)))))))
 
-   ;; 8. Scheduled daily rule -> update a property on all tagged nodes ---
+   ;; 9. Scheduled daily rule -> update a property on all tagged nodes ---
    (list
     :id :daily-set-property-for-tag
     :name "Scheduled daily -> set property on tagged nodes"
@@ -1841,7 +1873,7 @@ unused here because scheduled rules are not scoped to a single node."
                                           :params (list :function #'supertag-automation-templates--scheduled-set-property
                                                         :args (list tag prop-kw value))))))))
 
-   ;; 9. Tag added -> create a follow-up node -----------------------------
+   ;; 10. Tag added -> create a follow-up node ----------------------------
    (list
     :id :tag-added-create-followup-node
     :name "Tag added -> create follow-up node"

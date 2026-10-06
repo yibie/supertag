@@ -27,12 +27,13 @@
 里也有入口。规则名决定存储 ID（`auto-<规则名>`）：同名会替换已有规则，
 向导遇到同名时会先问你是否继续。
 
-当前模板（9 个）：
+当前模板（10 个）：
 
 | 模板 | 触发 | 作用 |
 |---|---|---|
 | Tag added -> set TODO state | 加上某标签 | 把节点的 TODO 设为指定关键字（如加 `#done` 置为 DONE） |
-| Tag added -> set a property | 加上某标签 | 把某属性设为固定值（如加 `#urgent` 设 PRIORITY=A） |
+| Tag added -> set a property | 加上某标签 | 把某属性设为固定值，已有值会被覆盖（如加 `#urgent` 设 PRIORITY=A） |
+| Tag added -> set a default property | 加上某标签 | 只在属性为空时填默认值（如加 `#book` 设 STATUS=unread，但你已设的 STATUS 保留不动） |
 | Tag added -> add another tag | 加上某标签 | 再补一个标签（蕴含关系，如 `#bug` 蕴含 `#needs-triage`） |
 | Tag removed -> remove a derived tag | 移除某标签 | 连带移除一个派生标签 |
 | Property change -> update another property | 指定标签下的属性变化 | 把该节点另一个属性设为固定值 |
@@ -62,7 +63,7 @@ S-expression，比如 `(property "STATUS" "ready")`、`(term "emacs")`、
 
 | 动作 | 参数 | 说明 |
 |---|---|---|
-| `:update-property` | `:property` `:value` | 写 Org 属性并刷新投影 |
+| `:update-property` | `:property` `:value`，可选 `:if-missing` | 写 Org 属性并刷新投影；带 `:if-missing` 时只在属性缺失时写 |
 | `:update-todo-state` | `:state` | 设置 TODO 关键字 |
 | `:add-tag` | `:tag` | 加标签，必要时先建立标签 |
 | `:remove-tag` | `:tag` | 移除标签；标签无法解析时跳过并记日志 |
@@ -70,6 +71,10 @@ S-expression，比如 `(property "STATUS" "ready")`、`(term "emacs")`、
 | `:move-node` | `:target-file`，可选 `:leave-link` `:target-level` | 移动节点；已在目标文件时跳过 |
 | `:call-function` | `:function`，可选 `:args` | 函数收到 node-id、context 和 `:args` |
 | `:case` | `:on` + `:branches` | 分支动作，见下 |
+
+`:if-missing t` 时，`:update-property` 从实时 Org 源读取该属性，只有在键不存在、或值为空或全空白时才写入，
+因此规则可以表达「默认值」而不是「强制值」。不写这个参数时照旧总是写入，适合要强制某种状态的规则。
+被跳过的写入什么也不改（不动 buffer、不保存、不刷新投影），打开 `supertag-automation-verbose` 时会记日志。
 
 `:case` 的每个分支用 `:equals`／`:in`／`:match`／`:test` 之一匹配，`:actions`
 放该分支的动作（`:do`、`:then` 是别名），另可给一个 `:default` 分支。分支

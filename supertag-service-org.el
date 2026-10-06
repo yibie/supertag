@@ -1102,6 +1102,26 @@ than rebuilding its whole projection."
            (and (null (org-element-property :range-type timestamp))
                 (equal value (org-element-property :raw-value timestamp)))))))
 
+(defun supertag-service-org-property-present-p (node-id property)
+  "Return non-nil when NODE-ID's live Org PROPERTY holds a non-empty value.
+PROPERTY accepts the keyword form or an Org property-name string used by
+`supertag-service-org-set-property' and is normalized the same way.  The
+value is read from the authoritative Org source, never from the Store
+projection.  An absent key, an empty value and a whitespace-only value all
+read as missing.  A node with no readable Org source also reads as missing,
+so the caller's write path reports the real error."
+  (let ((name (supertag-service-org--property-name property))
+        (node (supertag-node-get node-id)))
+    (and node
+         (let ((file (plist-get node :file)))
+           (and (stringp file) (file-exists-p file)))
+         (supertag-service-org--with-node-buffer
+          node-id
+          (lambda ()
+            (let ((live (org-entry-get nil name nil)))
+              (and (stringp live)
+                   (not (string-empty-p (string-trim live))))))))))
+
 (defun supertag-service-org-set-property (node-id property value)
   "Set PROPERTY to scalar VALUE in NODE-ID's authoritative Org heading.
 

@@ -386,7 +386,7 @@
             (should-not (fboundp 'supertag-automation-insert-template))
             (require 'supertag-automation-templates))
         (should-not (featurep 'supertag-automation-templates)))
-      (should (= 9 (length supertag-automation-templates)))
+      (should (= 10 (length supertag-automation-templates)))
       (should (commandp 'supertag-automation-insert-template))
       (should (commandp 'supertag-automation-list-templates))
       (let ((catalog supertag-automation-templates))
@@ -443,7 +443,7 @@
           (princ "AUC-menu-ENTRY\n")
           (with-current-buffer "*Supertag Automation Templates*"
             (should buffer-read-only)
-            (should (= 9 (how-many "  \\[" (point-min) (point-max)))))
+            (should (= 10 (how-many "  \\[" (point-min) (point-max)))))
           (supertag-tag-create '(:id "canonical" :name "Display"))
           (dolist (pair '(("Display" . "canonical") ("new/path" . "new/path") ("" . "")))
             (cl-letf (((symbol-function 'completing-read) (lambda (&rest _) (car pair))))

@@ -347,5 +347,140 @@
                      (plist-get (plist-get (supertag-node-get "node-id") :properties)
                                 :STATUS))))))
 
+;;; `:if-missing' -----------------------------------------------------------------
+
+(ert-deftest supertag-automation-property-if-missing-fills-an-absent-key ()
+  "An absent live key is written even beside a stale Store projection."
+  (supertag-automation-property-test--with-node nil
+    ;; The fixture's projection carries a stale :STATUS "database".
+    (supertag-automation-action-update-property
+     "node-id" '(:property :status :value "unread" :if-missing t))
+    (should (equal "unread"
+                   (supertag-automation-property-test--disk-property file "STATUS")))
+    (should (equal "unread"
+                   (plist-get (plist-get (supertag-node-get "node-id") :properties)
+                              :STATUS)))))
+
+(ert-deftest supertag-automation-property-if-missing-keeps-a-live-value ()
+  "A live value is kept, and the skipped write neither saves nor projects."
+  (supertag-automation-property-test--with-node ":STATUS: reading"
+    (let (calls)
+      (cl-letf (((symbol-function 'save-buffer)
+                 (lambda (&rest _) (push 'save calls)))
+                ((symbol-function 'supertag-service-org--project-current-node)
+                 (lambda (&rest _) (push 'project calls))))
+        (supertag-automation-action-update-property
+         "node-id" '(:property :status :value "unread" :if-missing t)))
+      (should-not calls))
+    (should (equal "reading"
+                   (supertag-automation-property-test--disk-property file "STATUS")))
+    (should-not (buffer-modified-p buffer))
+    ;; The stale projection was never refreshed either.
+    (should (equal "database"
+                   (plist-get (plist-get (supertag-node-get "node-id") :properties)
+                              :STATUS)))))
+
+(ert-deftest supertag-automation-property-if-missing-fills-an-empty-key ()
+  "A key that is present but empty counts as missing."
+  (dolist (line '(":STATUS:" ":STATUS:   "))
+    (supertag-automation-property-test--with-node line
+      (supertag-automation-action-update-property
+       "node-id" '(:property :status :value "unread" :if-missing t))
+      (should (equal "unread"
+                     (supertag-automation-property-test--disk-property file "STATUS"))))))
+
+(ert-deftest supertag-automation-property-without-if-missing-still-overwrites ()
+  "Without `:if-missing' the action replaces a live value as it always did."
+  (supertag-automation-property-test--with-node ":STATUS: reading"
+    (supertag-automation-action-update-property
+     "node-id" '(:property :status :value "unread"))
+    (should (equal "unread"
+                   (supertag-automation-property-test--disk-property file "STATUS")))))
+
+(ert-deftest supertag-automation-property-if-missing-applies-inside-a-case-branch ()
+  "`:if-missing' keeps its meaning inside a `:case' branch."
+  (supertag-automation-property-test--with-node ":STATUS: reading"
+    (let* ((action (list :action :update-property
+                         :params (list :property :status :value "unread"
+                                       :if-missing t)))
+           (case-action (list :action :case
+                              :params (list :on nil
+                                            :branches (list (list :default t
+                                                                  :actions (list action)))))))
+      (supertag-automation--execute-actions (list case-action) "node-id" nil)
+      (should (equal "reading"
+                     (supertag-automation-property-test--disk-property file "STATUS")))
+      ;; A node without the property still gets the default.
+      (supertag-service-org-set-property "node-id" :status nil)
+      (supertag-automation--execute-actions (list case-action) "node-id" nil)
+      (should (equal "unread"
+                     (supertag-automation-property-test--disk-property file "STATUS"))))))
+
+(ert-deftest supertag-automation-property-if-missing-empty-value-is-a-noop-when-empty ()
+  "`:value ""' with `:if-missing' changes nothing on an already-empty key."
+  (supertag-automation-property-test--with-node ":STATUS:"
+    (let ((before (with-temp-buffer (insert-file-contents file) (buffer-string)))
+          (real-save (symbol-function 'save-buffer))
+          (saves 0))
+      (cl-letf (((symbol-function 'save-buffer)
+                 (lambda (&rest args) (cl-incf saves) (apply real-save args))))
+        (supertag-automation-action-update-property
+         "node-id" '(:property :status :value "" :if-missing t)))
+      (should (= 0 saves))
+      (should (equal before (with-temp-buffer (insert-file-contents file) (buffer-string)))))))
+
+(ert-deftest supertag-automation-property-if-missing-empty-value-creates-the-key ()
+  "`:value ""' with `:if-missing' creates the empty placeholder when absent."
+  (supertag-automation-property-test--with-node nil
+    (supertag-automation-action-update-property
+     "node-id" '(:property :status :value "" :if-missing t))
+    (should (string-match-p ":STATUS:[ \t]*\n"
+                            (with-temp-buffer (insert-file-contents file) (buffer-string))))))
+
+(ert-deftest supertag-automation-property-if-missing-logs-a-skipped-write ()
+  "With `supertag-automation-verbose' the skip is logged and explained."
+  (supertag-automation-property-test--with-node ":STATUS: reading"
+    (let (messages)
+      (cl-letf (((symbol-function 'message)
+                 (lambda (format-string &rest args)
+                   (when (stringp format-string)
+                     (push (apply #'format format-string args) messages)))))
+        (let ((supertag-automation-verbose t))
+          (supertag-automation-action-update-property
+           "node-id" '(:property :status :value "unread" :if-missing t))))
+      (should (cl-some (lambda (text) (string-match-p "SKIP(update-property)" text))
+                       messages))
+      (should (cl-some (lambda (text) (string-match-p "STATUS" text)) messages)))))
+
+(ert-deftest supertag-automation-property-if-missing-survives-creation-validation ()
+  "Rule creation accepts the parameter and still refuses unknown vocabulary."
+  (supertag-automation-property-test--with-node ":STATUS: reading"
+    ;; Accepted by rule creation validation; an error here fails the test.
+    (supertag--validate-automation-data
+     '(:name "defaults" :trigger (:on-tag-added "book")
+       :actions ((:action :update-property
+                  :params (:property :status :value "unread" :if-missing t)))))
+    (let ((rule (supertag-automation-create
+                 '(:name "defaults-store" :trigger (:on-tag-added "book")
+                   :actions ((:action :update-property
+                              :params (:property :status :value "unread"
+                                                 :if-missing t)))))))
+      (should (eq t (plist-get (plist-get (car (plist-get rule :actions)) :params)
+                               :if-missing)))
+      (should (eq t (plist-get (plist-get (car (plist-get (supertag-automation-get
+                                                           (plist-get rule :id))
+                                                          :actions))
+                                         :params)
+                               :if-missing)))
+      (supertag-automation-delete (plist-get rule :id)))
+    (should-error
+     (supertag--validate-automation-data
+      '(:name "bad action" :trigger (:on-tag-added "book")
+        :actions ((:action :set-status :params (:status "x"))))))
+    (should-error
+     (supertag--validate-automation-data
+      '(:name "bad trigger" :trigger :typo
+        :actions ((:action :add-tag :params (:tag "book"))))))))
+
 (provide 'automation-property-write-test)
 ;;; automation-property-write-test.el ends here

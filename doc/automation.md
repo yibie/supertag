@@ -30,12 +30,13 @@ To browse the templates first, use `M-x supertag-automation-list-templates`; `M-
 has an entry too. A rule's name determines its storage ID (`auto-<rule name>`); the same name
 replaces an existing rule, and the wizard asks before doing so.
 
-Current templates (9):
+Current templates (10):
 
 | Template | Trigger | Effect |
 |---|---|---|
 | Tag added -> set TODO state | a tag is added | set the node's TODO keyword (e.g. adding `#done` sets DONE) |
-| Tag added -> set a property | a tag is added | set a property to a fixed value (e.g. adding `#urgent` sets PRIORITY=A) |
+| Tag added -> set a property | a tag is added | set a property to a fixed value, replacing any value already there (e.g. adding `#urgent` sets PRIORITY=A) |
+| Tag added -> set a default property | a tag is added | fill a property in only when it is empty (e.g. adding `#book` sets STATUS=unread but keeps a STATUS you already set) |
 | Tag added -> add another tag | a tag is added | add a second tag (implication, e.g. `#bug` implies `#needs-triage`) |
 | Tag removed -> remove a derived tag | a tag is removed | remove a derived tag as well |
 | Property change -> update another property | property change under a tag | set another property on that node to a fixed value |
@@ -66,7 +67,7 @@ Combine conditions with `and`, `or`, `not`. The full operator set is in
 
 | Action | Parameters | Notes |
 |---|---|---|
-| `:update-property` | `:property` `:value` | write the Org property and refresh the projection |
+| `:update-property` | `:property` `:value`, optional `:if-missing` | write the Org property and refresh the projection; with `:if-missing` write only when the property is missing |
 | `:update-todo-state` | `:state` | set the TODO keyword |
 | `:add-tag` | `:tag` | add a tag, creating the tag first if needed |
 | `:remove-tag` | `:tag` | remove a tag; unresolved tags are skipped and logged |
@@ -74,6 +75,13 @@ Combine conditions with `and`, `or`, `not`. The full operator set is in
 | `:move-node` | `:target-file`, optional `:leave-link` `:target-level` | move a node; skipped when already in the target file |
 | `:call-function` | `:function`, optional `:args` | the function receives node-id, context and `:args` |
 | `:case` | `:on` + `:branches` | branching action, see below |
+
+With `:if-missing t`, `:update-property` reads the property from the live Org source and
+leaves it alone unless the key is absent or holds an empty or whitespace-only value: that is
+how a rule expresses a default rather than a forced state. Without the flag the value is
+always written, which is what a rule that forces a value wants. A skipped write changes
+nothing (no buffer edit, no save, no projection refresh) and is reported when
+`supertag-automation-verbose` is on.
 
 Each `:case` branch matches with one of `:equals` / `:in` / `:match` / `:test`, and
 `:actions` holds that branch's actions (`:do` and `:then` are aliases); a `:default` branch is

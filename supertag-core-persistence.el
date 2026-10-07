@@ -1115,6 +1115,13 @@ does not emit lines for an empty hash table."
         t))
      (t nil))))
 
+(defconst supertag--tracked-root-scalars '(:legacy-fields :legacy-extends :version)
+  "Store roots save verification always checks.
+Migration records and the data version, which may be a scalar, a plain list
+or a hash table depending on the migration state.  A hash-table value is
+written as ordinary collection lines, so verification records it with the
+collection map rather than on the root scalar line.")
+
 (defun supertag--persistence--mismatched-durable-collections (left right)
   "Return durable collections or pending migration roots lost on roundtrip."
   (append
@@ -1123,7 +1130,7 @@ does not emit lines for an empty hash table."
                     left right collection)
             collect collection)
    ;; These are migration records, not initialized entity collections.
-   (cl-loop for key in '(:legacy-fields :legacy-extends :version)
+   (cl-loop for key in supertag--tracked-root-scalars
             unless (equal (supertag--persistence--canonicalize-value
                            (gethash key left supertag--not-found))
                           (supertag--persistence--canonicalize-value
@@ -1166,11 +1173,21 @@ The root scalar line ALWAYS carries `:supertag-format' and
 `:incompatible-notice' (P1-8), overriding any value STORE itself happens to
 have under those two keys -- so the embedded notice never goes stale even
 if it were somehow carried forward from an older save, and the root scalar
-line is therefore never empty even for an otherwise all-default store."
+line is therefore never empty even for an otherwise all-default store.
+
+Returns a verification digest of the forms just printed: a plist with
+`:collections' (one (COLLECTION . ((ID . FROZEN-FORM) ...)) entry per
+durable collection in `supertag--store-collections') and `:scalars' (the
+frozen form of `:legacy-fields', `:legacy-extends' and `:version', or
+`supertag--not-found' when STORE lacks the key).  Each FROZEN-FORM is the
+exact value that was handed to `prin1', so a verifier can compare it with
+`equal' against the form read back without canonicalizing anything again
+(see `supertag--persistence--verify-canonical-forms')."
   (unless (hash-table-p store)
     (error "supertag--persistence--write-canonical-store: STORE must be a hash table, got: %S"
            store))
-  (let (collections scalars)
+  (let (collections scalars
+        digest-collections digest-scalars)
     (maphash (lambda (k v)
                (when (eq k :collection)
                  (error "supertag--persistence--write-canonical-store: store has a root key literally named :collection, which collides with the canonical entity-line marker"))
@@ -1194,18 +1211,34 @@ line is therefore never empty even for an otherwise all-default store."
         ;; --- Root scalars: one sorted plist line ---
         (when scalars
           (setq scalars (supertag--persistence--sort-pairs-by-key scalars))
-          (prin1 (apply #'append
-                        (mapcar (lambda (pair)
-                                  (list (car pair)
-                                        (supertag--persistence--canonicalize-value (cdr pair))))
-                                scalars))
-                 buffer)
+          (let ((scalar-forms
+                 (mapcar (lambda (pair)
+                           (list (car pair)
+                                 (supertag--persistence--canonicalize-value
+                                  (cdr pair))))
+                         scalars)))
+            (prin1 (apply #'append scalar-forms) buffer)
+            ;; Verification compares these frozen forms, not the raw Store
+            ;; values, so `supertag--persistence--verify-canonical-forms'
+            ;; never canonicalizes a root scalar again.  A tracked key whose
+            ;; value is a hash table is recorded below with the collection
+            ;; map instead, because that is how the writer emits it.
+            (dolist (key supertag--tracked-root-scalars)
+              (unless (hash-table-p (gethash key store))
+                (let ((entry (assq key scalar-forms)))
+                  ;; `scalar-forms' holds (KEY FORM) lists, so the value is
+                  ;; `cadr', not `cdr'.
+                  (push (cons key (if entry (cadr entry) supertag--not-found))
+                        digest-scalars)))))
           (insert "\n"))
         ;; --- Collections, alphabetical order; entities sorted by id ---
         (setq collections (supertag--persistence--sort-pairs-by-key collections))
         (dolist (coll collections)
-          (let ((coll-key (car coll))
-                entries)
+          (let* ((coll-key (car coll))
+                 (tracked (or (memq coll-key supertag--store-collections)
+                              (memq coll-key supertag--tracked-root-scalars)))
+                 entries
+                 frozen-entries)
             ;; Precompute each id's sort key inline during the `maphash' walk
             ;; (rather than a separate pass afterward) — this list is
             ;; potentially the largest in the whole store (e.g. :nodes), so
@@ -1231,14 +1264,273 @@ line is therefore never empty even for an otherwise all-default store."
               ;; number them anyway) sidesteps this without touching
               ;; `:data' itself or giving up `print-circle' as a guard
               ;; against genuine self-reference elsewhere in the entity.
-              (let ((envelope-id (if (stringp (car entry))
-                                     (copy-sequence (car entry))
-                                   (car entry))))
+              (let* ((envelope-id (if (stringp (car entry))
+                                      (copy-sequence (car entry))
+                                    (car entry)))
+                     ;; Canonicalize once: the very same frozen value is
+                     ;; printed and kept for verification.
+                     (data (supertag--persistence--canonicalize-value (cdr entry))))
                 (prin1 (list :collection coll-key
                              :id envelope-id
-                             :data (supertag--persistence--canonicalize-value (cdr entry)))
-                       buffer))
-              (insert "\n"))))))))
+                             :data data)
+                       buffer)
+                (when tracked
+                  (push (cons (car entry) data) frozen-entries)))
+              (insert "\n"))
+          (when tracked
+            (push (cons coll-key (nreverse frozen-entries)) digest-collections))))
+      (list :collections (nreverse digest-collections)
+            :scalars (nreverse digest-scalars))))))
+
+;;; --- Native Store format (the routine on-disk format) ---
+;;
+;; The database file is local: Git carries only Org files and the portable
+;; `.supertag-metadata.eld', never this file.  It is therefore written the
+;; cheapest way Emacs offers -- one `prin1' of the Store hash table -- behind
+;; a one-line header that keeps the revision peek cheap:
+;;
+;;   ;; -*- mode: lisp-data; coding: utf-8-unix -*-
+;;   ;; supertag-db native format 1, data version X
+;;   (:supertag-native 1 :revision N :revision-writer "..." :version "..." :nodes N)
+;;   #s(hash-table ...)
+;;
+;; Files in the older line-per-entity canonical format, and pre-6.0 files
+;; holding a bare hash table, still load; the next save rewrites them.
+
+(defconst supertag--persistence-native-format 1
+  "Generation number of the native on-disk Store format.")
+
+(defconst supertag--persistence-trivial-node-count 5
+  "Largest on-disk node count an empty Store may overwrite without force.
+`supertag-save-store' refuses to replace a database holding more nodes than
+this with a Store that has none, since that almost always means the Store
+failed to load rather than that every node was deleted.")
+
+(defconst supertag--persistence--file-only-roots
+  '(:supertag-format :incompatible-notice)
+  "Root keys the retired canonical writer added to the file, never to the Store.
+A Store loaded from a canonical file carries them; the native writer drops
+them so they do not describe a format the file no longer has.")
+
+(defun supertag--persistence--deep-equal (a b)
+  "Return non-nil when A and B are structurally equal, hash tables included.
+`equal' compares hash tables by identity, so a value holding a nested hash
+table never compares `equal' to its copy read back from disk."
+  (cond
+   ((equal a b) t)
+   ((and (hash-table-p a) (hash-table-p b))
+    (and (= (hash-table-count a) (hash-table-count b))
+         (let ((lookup (if (eq (hash-table-test b) 'equal)
+                           b
+                         (let ((copy (make-hash-table :test 'equal)))
+                           (maphash (lambda (k v) (puthash k v copy)) b)
+                           copy))))
+           (catch 'different
+             (maphash
+              (lambda (key value)
+                (unless (supertag--persistence--deep-equal
+                         value (gethash key lookup supertag--not-found))
+                  (throw 'different nil)))
+              a)
+             t))))
+   ((and (consp a) (consp b))
+    ;; Walk the spine in a loop so a long list cannot exhaust the stack.
+    (while (and (consp a) (consp b)
+                (supertag--persistence--deep-equal (car a) (car b)))
+      (setq a (cdr a)
+            b (cdr b)))
+    (and (not (consp a)) (not (consp b))
+         (supertag--persistence--deep-equal a b)))
+   ((and (vectorp a) (vectorp b) (= (length a) (length b)))
+    (let ((index 0) (same t))
+      (while (and same (< index (length a)))
+        (setq same (supertag--persistence--deep-equal (aref a index) (aref b index))
+              index (1+ index)))
+      same))
+   (t nil)))
+
+(defun supertag--persistence--write-native-store (store buffer)
+  "Insert the native serialization of STORE into BUFFER.
+Returns the root table that was printed: a shallow copy of STORE without
+`supertag--persistence--file-only-roots'.  Its values are the Store's own,
+so `supertag--persistence--verify-native-file' compares the file against
+the live data."
+  (unless (hash-table-p store)
+    (error "supertag--persistence--write-native-store: STORE must be a hash table, got: %S"
+           store))
+  (let ((root (copy-hash-table store)))
+    (dolist (key supertag--persistence--file-only-roots)
+      (remhash key root))
+    (with-current-buffer buffer
+      (let ((print-escape-nonascii t)
+            (print-length nil)
+            (print-level nil)
+            (print-circle t)
+            (header (list :supertag-native supertag--persistence-native-format)))
+        (dolist (key '(:revision :revision-writer :version))
+          (let ((value (gethash key root supertag--not-found)))
+            (when (or (stringp value) (integerp value))
+              (setq header (append header (list key value))))))
+        ;; The entity count lets `supertag-save-store' recognise a populated
+        ;; database without reading it; file size cannot, because every
+        ;; empty collection is printed too.
+        (let ((nodes (gethash :nodes root)))
+          (when (hash-table-p nodes)
+            (setq header (append header (list :nodes (hash-table-count nodes))))))
+        (insert (format ";; -*- mode: lisp-data; coding: utf-8-unix -*-\n;; supertag-db native format %d, data version %s\n"
+                        supertag--persistence-native-format supertag-data-version))
+        (prin1 header buffer)
+        (insert "\n")
+        (prin1 root buffer)
+        (insert "\n")))
+    root))
+
+(defun supertag--persistence--native-format-at-point-p ()
+  "Return non-nil when point is at the header form of a native Store file."
+  (looking-at-p "(:supertag-native[ \t\n]"))
+
+(defun supertag--persistence--read-native-forms ()
+  "Read a native-format Store from the current buffer and return it.
+Point must be at the header form.  Signals when the Store form is missing,
+truncated, not a hash table, or followed by anything but whitespace."
+  (let ((read-circle t))
+    (read (current-buffer))
+    (let ((store (read (current-buffer))))
+      (unless (hash-table-p store)
+        (error "supertag-db native format: the Store form is not a hash table"))
+      (skip-chars-forward " \t\r\n")
+      (unless (eobp)
+        (error "supertag-db native format: unexpected content after the Store form"))
+      store)))
+
+(defun supertag--persistence--verify-native-file (path root)
+  "Verify that native PATH holds exactly ROOT, signalling on any difference.
+ROOT is the table `supertag--persistence--write-native-store' returned.
+Every root key, every entity of every collection and every root scalar is
+compared, nested hash tables included.  Detects a missing, extra or changed
+entity, a missing, extra or changed root, a truncated file, trailing
+content and an unreadable file.  Signals a plain `error' naming the first
+difference; the caller removes the temp file and leaves the old database
+file untouched."
+  (let ((back (with-temp-buffer
+                (insert-file-contents path)
+                (supertag--persistence--skip-leading-comments-and-whitespace)
+                (unless (supertag--persistence--native-format-at-point-p)
+                  (error "the temp file is not in native format"))
+                (supertag--persistence--read-native-forms))))
+    (unless (= (hash-table-count back) (hash-table-count root))
+      (maphash (lambda (key _value)
+                 (when (eq (gethash key root supertag--not-found) supertag--not-found)
+                   (error "unexpected root %S in the temp file" key)))
+               back))
+    (maphash
+     (lambda (key value)
+       (let ((other (gethash key back supertag--not-found)))
+         (cond
+          ((eq other supertag--not-found)
+           (error "root %S is missing from the temp file" key))
+          ((and (hash-table-p value) (hash-table-p other))
+           (maphash
+            (lambda (id data)
+              (let ((read-back (gethash id other supertag--not-found)))
+                (cond
+                 ((eq read-back supertag--not-found)
+                  (error "entity %S in collection %S is missing from the temp file"
+                         id key))
+                 ((not (supertag--persistence--deep-equal data read-back))
+                  (error "entity %S in collection %S changed after write" id key)))))
+            value)
+           (unless (= (hash-table-count value) (hash-table-count other))
+             (maphash
+              (lambda (id _data)
+                (when (eq (gethash id value supertag--not-found) supertag--not-found)
+                  (error "unexpected entity %S in collection %S" id key)))
+              other)))
+          ((not (supertag--persistence--deep-equal value other))
+           (error "root %S changed after write" key)))))
+     root)))
+
+(defun supertag--persistence--skip-form-separators ()
+  "Move point in the current buffer past whitespace and `;'-comment lines."
+  (skip-chars-forward " \t\r\n")
+  (while (looking-at-p ";")
+    (forward-line 1)
+    (skip-chars-forward " \t\r\n")))
+
+(defun supertag--persistence--verify-canonical-forms (path digest)
+  "Verify that canonical PATH holds exactly DIGEST, signalling on any difference.
+DIGEST is the value `supertag--persistence--write-canonical-store' returns:
+for every durable entity it holds the exact canonical (frozen) form that was
+printed, and for `:legacy-fields', `:legacy-extends' and `:version' it holds
+the frozen root-scalar form, or `supertag--not-found' when the Store lacked
+the key.
+
+The file is read form by form and each value is compared with `equal'
+against the writer's form, so no value is canonicalized a second time and no
+second Store is built.  Nested hash tables compare on the frozen side: the
+digest holds the `(:supertag-hash-table ...)' marker list the writer printed,
+and the raw form read back is that same marker list, never thawed.
+
+Detects an entity the writer did not produce, an entity whose value changed,
+an entity that is missing, a tracked root scalar that changed or is missing,
+a truncated file (an incomplete form) and an unreadable file.  Signals a
+plain `error' naming the first difference; the caller removes the temp file
+and leaves the old database file untouched."
+  (with-temp-buffer
+    (insert-file-contents path)
+    (supertag--persistence--skip-leading-comments-and-whitespace)
+    (unless (eq (char-after) ?\()
+      (error "the temp file is not in canonical format"))
+    (let ((read-circle t)
+          (seen (make-hash-table :test 'equal))
+          (scalars-seen nil))
+      (supertag--persistence--skip-form-separators)
+      ;; Only a form whose first character is present is read, so an
+      ;; `end-of-file' here means the file was truncated mid-form and must
+      ;; propagate rather than be mistaken for the normal end of file.
+      (while (not (eobp))
+        (let ((form (read (current-buffer))))
+          (cond
+           ((and (consp form) (eq (car form) :collection))
+            (let ((collection (plist-get form :collection))
+                  (id (plist-get form :id))
+                  (data (plist-get form :data)))
+              ;; The digest is the whitelist: durable collections plus any
+              ;; tracked root whose value is a hash table.  Unknown roots
+              ;; (e.g. a retired collection loaded from an old file) are not
+              ;; tracked and are ignored, exactly as
+              ;; `supertag--persistence--mismatched-durable-collections'
+              ;; ignores them.
+              (when-let* ((digest-entry (assq collection
+                                              (plist-get digest :collections))))
+                (let ((entry (assoc id (cdr digest-entry))))
+                  (unless entry
+                    (error "unexpected entity %S in durable collection %S"
+                           id collection))
+                  (unless (equal (cdr entry) data)
+                    (error "entity %S in durable collection %S changed after write"
+                           id collection))
+                  (puthash (cons collection id) t seen)))))
+           ((supertag--persistence--plist-p form)
+            (cl-loop for (key value) on form by #'cddr
+                     do (when (memq key supertag--tracked-root-scalars)
+                          (push key scalars-seen)
+                          (let ((entry (assq key (plist-get digest :scalars))))
+                            (unless (and entry (equal (cdr entry) value))
+                              (error "root scalar %S changed after write" key))))))
+           (t
+            (error "unrecognized top-level form in the temp file: %S" form))))
+        (supertag--persistence--skip-form-separators))
+      ;; Nothing the writer recorded may be absent from the file.
+      (dolist (entry (plist-get digest :collections))
+        (dolist (entity (cdr entry))
+          (unless (gethash (cons (car entry) (car entity)) seen)
+            (error "entity %S in durable collection %S is missing from the temp file"
+                   (car entity) (car entry)))))
+      (dolist (entry (plist-get digest :scalars))
+        (unless (memq (car entry) scalars-seen)
+          (unless (eq (cdr entry) supertag--not-found)
+            (error "root scalar %S is missing from the temp file" (car entry))))))))
 
 (defun supertag--persistence--read-canonical-forms ()
   "Read a canonical-format DB from the current buffer.
@@ -1335,12 +1627,15 @@ Signals an error if the file cannot be read or parsed."
               (list (format "%s contains unresolved git merge conflict markers (<<<<<<< / ======= / >>>>>>>) and cannot be loaded as a database. This almost always means a merge ran without the semantic merge driver configured for THIS clone -- run `M-x supertag-git-setup' to configure it (see supertag-git.el), then resolve this file with `git checkout --merge %s' (re-triggering the driver) or by hand, before reloading."
                             (abbreviate-file-name path) path))))
     (supertag--persistence--skip-leading-comments-and-whitespace)
-    (if (eq (char-after) ?\()
-        (supertag--persistence--read-canonical-forms)
-      (progn
-        (goto-char (point-min))
-        (let ((read-circle t))
-          (read (current-buffer)))))))
+    (cond
+     ((supertag--persistence--native-format-at-point-p)
+      (supertag--persistence--read-native-forms))
+     ((eq (char-after) ?\()
+      (supertag--persistence--read-canonical-forms))
+     (t
+      (goto-char (point-min))
+      (let ((read-circle t))
+        (read (current-buffer)))))))
 
 (defun supertag--persistence--canonicalize-store-root (store)
   "Normalize STORE root keys to canonical keyword collections."
@@ -1429,6 +1724,20 @@ reader, which also makes a legacy database without revision read as zero."
          ;; Existing recovery guards still protect a database that failed to
          ;; load.  Do not turn a diagnostic peek failure into a save failure.
          (error (list 0 nil)))))))
+
+(defun supertag--disk-node-count (&optional file)
+  "Return the node count recorded in FILE's native header, or nil.
+Nil means FILE is missing, unreadable, or not in native format."
+  (let ((path (or file supertag-db-file)))
+    (and (stringp path) (file-exists-p path) (not (file-directory-p path))
+         (condition-case nil
+             (with-temp-buffer
+               (insert-file-contents path nil 0 65536)
+               (supertag--persistence--skip-leading-comments-and-whitespace)
+               (and (supertag--persistence--native-format-at-point-p)
+                    (let ((count (plist-get (read (current-buffer)) :nodes)))
+                      (and (integerp count) count))))
+           (error nil)))))
 
 (defun supertag--disk-revision (&optional file)
   "Return the revision currently recorded on disk for FILE.
@@ -1546,6 +1855,20 @@ is simply skipped, same as if FILE had already been canonical."
              (not (eq (char-after) ?\()))
          (error nil))))
 
+(defun supertag--persistence--native-format-file-p (file)
+  "Return non-nil if FILE exists and is in the native Store format.
+Only the start of FILE is read.  Returns nil when FILE is missing, a
+directory, or unreadable."
+  (and (stringp file)
+       (file-exists-p file)
+       (not (file-directory-p file))
+       (condition-case nil
+           (with-temp-buffer
+             (insert-file-contents file nil 0 4096)
+             (supertag--persistence--skip-leading-comments-and-whitespace)
+             (supertag--persistence--native-format-at-point-p))
+         (error nil))))
+
 (defun supertag--persistence--snapshot-preformat6 (file)
   "Copy legacy-format FILE to a never-auto-deleted `preformat6' backup.
 Part of P1-8
@@ -1612,11 +1935,12 @@ store is serialized into it using the S2 canonical, deterministic,
 line-per-entity format (see `supertag--persistence--write-canonical-store'
 and the format commentary above
 `supertag--persistence-canonical-format-header'), and — when
-`supertag-db-verify-after-save' is non-nil — the temp file is re-read the
-same way the loader does (`supertag--persistence--try-read-store', which
-understands both the canonical and legacy formats). Every durable collection
-declared by `supertag--store-collections' is then compared by entity ID and
-canonicalized value before the temp file replaces FILE.
+`supertag-db-verify-after-save' is non-nil — the temp file is re-read through
+`supertag--persistence--verify-canonical-forms', which compares the
+temp file's raw forms with the canonical forms the writer kept.  Every
+durable collection declared by `supertag--store-collections' is checked by
+entity ID, every tracked root scalar is checked, and no value is
+canonicalized a second time.
 
 Immediately before the atomic rename -- i.e. only once the new canonical
 content is fully written and verified, and FILE (still holding whatever
@@ -1634,63 +1958,54 @@ untouched.
 When REVISION is non-nil, stamp it and a writer description into the root
 scalars immediately before serialization.  Restores the prior in-memory
 metadata if the atomic write cannot complete."
-  (let ((temp-file (make-temp-file (concat file ".tmp")))
-        (success nil)
-        (had-revision (and (hash-table-p supertag--store)
-                           (ht-contains? supertag--store :revision)))
-        (had-writer (and (hash-table-p supertag--store)
-                         (ht-contains? supertag--store :revision-writer)))
-        (old-revision (and (hash-table-p supertag--store)
-                           (gethash :revision supertag--store)))
-        (old-writer (and (hash-table-p supertag--store)
-                         (gethash :revision-writer supertag--store))))
-    (unwind-protect
-        (progn
-          (when revision
-            (puthash :revision revision supertag--store)
-            (puthash :revision-writer (supertag--revision-writer) supertag--store))
-          (with-temp-buffer
-            (set-buffer-file-coding-system 'utf-8-unix) ; Ensure UTF-8 encoding
-            (supertag--persistence--write-canonical-store supertag--store (current-buffer))
-            (let ((write-region-inhibit-fsync nil))
-              (write-region (point-min) (point-max) temp-file nil 'silent)))
-          (when supertag-db-verify-after-save
-            (let (verify-data)
+  (supertag-with-deferred-gc
+    (let ((temp-file (make-temp-file (concat file ".tmp")))
+          (success nil)
+          digest
+          (had-revision (and (hash-table-p supertag--store)
+                             (ht-contains? supertag--store :revision)))
+          (had-writer (and (hash-table-p supertag--store)
+                           (ht-contains? supertag--store :revision-writer)))
+          (old-revision (and (hash-table-p supertag--store)
+                             (gethash :revision supertag--store)))
+          (old-writer (and (hash-table-p supertag--store)
+                           (gethash :revision-writer supertag--store))))
+      (unwind-protect
+          (progn
+            (when revision
+              (puthash :revision revision supertag--store)
+              (puthash :revision-writer (supertag--revision-writer) supertag--store))
+            (with-temp-buffer
+              (set-buffer-file-coding-system 'utf-8-unix) ; Ensure UTF-8 encoding
+              ;; Keep the writer's canonical forms so verification never
+              ;; canonicalizes an entity again -- see
+              ;; `supertag--persistence--verify-canonical-forms'.
+              (setq digest
+                    (supertag--persistence--write-native-store
+                     supertag--store (current-buffer)))
+              (let ((write-region-inhibit-fsync nil))
+                (write-region (point-min) (point-max) temp-file nil 'silent)))
+            (when supertag-db-verify-after-save
               (condition-case err
-                  (setq verify-data
-                        (supertag--persistence--try-read-store temp-file))
+                  (supertag--persistence--verify-native-file temp-file digest)
                 (error
-                 (error "Supertag save verification failed to read %s: %s"
-                        temp-file (error-message-string err))))
-              (unless (hash-table-p verify-data)
-                (error "Supertag save verification returned an invalid Store root for %s"
-                       file))
-              (let ((mismatches
-                     (supertag--persistence--mismatched-durable-collections
-                      supertag--store verify-data)))
-                (when mismatches
-                  (error
-                   (concat "Supertag save verification mismatch for %s: "
-                           "durable collection(s) changed after write/read: %s")
-                   file
-                   (mapconcat (lambda (collection)
-                                (format "%S" collection))
-                              mismatches ", "))))))
-          (when (file-exists-p file)
-            (set-file-modes temp-file (file-modes file)))
-          (when (supertag--persistence--legacy-format-file-p file)
-            (supertag--persistence--snapshot-preformat6 file))
-          (rename-file temp-file file t)
-          (setq success t))
-      (unless success
-        (ignore-errors (delete-file temp-file))
-        (when revision
-          (if had-revision
-              (puthash :revision old-revision supertag--store)
-            (remhash :revision supertag--store))
-          (if had-writer
-              (puthash :revision-writer old-writer supertag--store)
-            (remhash :revision-writer supertag--store)))))))
+                 (error "Supertag save verification failed for %s: %s"
+                        file (error-message-string err)))))
+            (when (file-exists-p file)
+              (set-file-modes temp-file (file-modes file)))
+            (when (supertag--persistence--legacy-format-file-p file)
+              (supertag--persistence--snapshot-preformat6 file))
+            (rename-file temp-file file t)
+            (setq success t))
+        (unless success
+          (ignore-errors (delete-file temp-file))
+          (when revision
+            (if had-revision
+                (puthash :revision old-revision supertag--store)
+              (remhash :revision supertag--store))
+            (if had-writer
+                (puthash :revision-writer old-writer supertag--store)
+              (remhash :revision-writer supertag--store))))))))
 
 (defun supertag--refresh-live-views ()
   "Refresh live View Runtime buffers after an external store reload."
@@ -1774,11 +2089,20 @@ normally invoke that path through `supertag-save-store-force'."
                  (existing-file-p (file-exists-p file-to-save))
                  (existing-size (when existing-file-p
                                   (file-attribute-size (file-attributes file-to-save))))
-                 (non-trivial-file (and existing-size (> existing-size 1024))))
+                 (disk-node-count (and existing-file-p
+                                       (supertag--disk-node-count file-to-save)))
+                 ;; A native file states its node count.  Older formats do
+                 ;; not, so their size stands in for it.
+                 (non-trivial-file
+                  (if disk-node-count
+                      (> disk-node-count supertag--persistence-trivial-node-count)
+                    (and existing-size (> existing-size 1024)))))
             (if (and non-trivial-file (numberp live-node-count)
                      (= live-node-count 0))
-                (message "Protective skip: Live DB has 0 nodes while on-disk DB looks non-trivial (%s bytes). Skipping save to avoid data loss."
-                         existing-size)
+                (message "Protective skip: Live DB has 0 nodes while on-disk DB looks non-trivial (%s). Skipping save to avoid data loss."
+                         (if disk-node-count
+                             (format "%d nodes" disk-node-count)
+                           (format "%s bytes" existing-size)))
               (let ((next-revision (1+ (max disk-revision ours))))
                 (supertag--persistence-write-store-atomically file-to-save next-revision)
                 (setq supertag--store-revision next-revision

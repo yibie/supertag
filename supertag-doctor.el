@@ -241,7 +241,10 @@ Silent when the last load succeeded normally and the default roots are clear."
                       "n/a (no on-disk file)")
                      ((supertag--persistence--legacy-format-file-p active)
                       "legacy (single prin1 of a hash table -- pre-6.0)")
-                     (t "canonical (S2 line-per-entity, >= 6.0)"))))))
+                     ((and (fboundp 'supertag--persistence--native-format-file-p)
+                           (supertag--persistence--native-format-file-p active))
+                      "native (header line plus one printed Store)")
+                     (t "canonical (S2 line-per-entity, >= 6.0; rewritten as native on the next save)"))))))
 
 (defun supertag-doctor--section-integrity ()
   "Insert the \"Integrity\" section into the current buffer."

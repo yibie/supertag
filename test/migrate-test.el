@@ -1,7 +1,36 @@
 ;;; migrate-test.el --- Version gated migration contracts -*- lexical-binding: t; -*-
+(require 'cl-lib)
 (require 'document-fixture)
 (require 'supertag-core-persistence)
 (require 'supertag-migrate nil t)
+
+(defun supertag-migrate-test--drop-key-on-write (key)
+  "Return a `write-region' replacement that removes KEY from a temp DB file.
+The real write happens first, then root KEY is removed from the Store form
+in the temp file, simulating corruption between the atomic write and its
+verification read."
+  (let ((real (symbol-function 'write-region)))
+    (lambda (start end file &optional append visit)
+      (funcall real start end file append visit)
+      (when (and (stringp file)
+                 (string-match-p "\\.tmp" (file-name-nondirectory file)))
+        (with-temp-buffer
+          (insert-file-contents file)
+          (supertag--persistence--skip-leading-comments-and-whitespace)
+          (let ((read-circle t)
+                (print-circle t)
+                (print-escape-nonascii t)
+                (print-length nil)
+                (print-level nil))
+            (read (current-buffer))
+            (skip-chars-forward " \t\r\n")
+            (let* ((store-start (point))
+                   (store (read (current-buffer))))
+              (remhash key store)
+              (delete-region store-start (point-max))
+              (prin1 store (current-buffer))
+              (insert "\n")))
+          (funcall real (point-min) (point-max) file nil 'silent))))))
 
 (ert-deftest supertag-migrate-seven-gate-and-commands ()
   (should (equal supertag-data-version "7.2.0"))
@@ -195,15 +224,14 @@
 (ert-deftest supertag-migrate-save-verifies-pending-records-and-version ()
   (dolist (key '(:legacy-fields :legacy-extends :version))
     (supertag-document-test-with-vault
-      (let ((supertag-db-auto-migrate t)
-            (reader (symbol-function 'supertag--persistence--try-read-store)))
+      (let ((supertag-db-auto-migrate t))
         (supertag-migrate-test-write-old (supertag-migrate-test-old-store file))
         (let ((bytes (supertag-migrate--bytes supertag-db-file)))
-          (cl-letf (((symbol-function 'supertag--persistence--try-read-store)
-                     (lambda (path)
-                       (let ((store (funcall reader path)))
-                         (when (equal (gethash :version store) "7.2.0") (remhash key store))
-                         store))))
+          ;; Simulate the temp file losing KEY between the atomic write and
+          ;; its verification read -- at the write seam, not by weakening
+          ;; the check.
+          (cl-letf (((symbol-function 'write-region)
+                     (supertag-migrate-test--drop-key-on-write key)))
             (supertag-load-store))
           (should (equal bytes (supertag-migrate--bytes supertag-db-file)))
           (should (equal "6.1.0" (gethash :version supertag--store)))

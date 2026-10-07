@@ -75,6 +75,24 @@ of the live entity plist cannot corrupt the recorded snapshot."
       (puthash path t supertag--transaction-seen)
       (push (list path existed-p (copy-tree old-value)) supertag--transaction-log))))
 
+;;; --- Deferred garbage collection ---
+
+(defconst supertag-deferred-gc-threshold (* 256 1024 1024)
+  "Bytes of allocation allowed before a collection inside a deferred-GC body.")
+
+(defmacro supertag-with-deferred-gc (&rest body)
+  "Run BODY with garbage collection deferred until it has finished.
+For short, allocation-heavy, uninterruptible work: re-synchronizing a saved
+file and writing the Store each build and drop many short-lived objects.
+With an interactive session's default settings that is a dozen collections
+in a row, which together cost as much as the work itself; deferring them
+leaves one ordinary collection afterwards.  The bound keeps a very large
+file from growing the heap without limit."
+  (declare (indent 0) (debug t))
+  `(let ((gc-cons-threshold (max gc-cons-threshold
+                                 supertag-deferred-gc-threshold)))
+     ,@body))
+
 ;;; --- Macro for Managing Suppressed Notifications ---
 
 (defmacro supertag-core-state-with-suppressed-notifications (&rest body)

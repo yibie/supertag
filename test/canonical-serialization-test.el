@@ -170,15 +170,20 @@ order, only on entity id."
 
 ;;; --- 2. Roundtrip ---
 
-(ert-deftest supertag-canon-test-roundtrip-save-load-save-byte-identical ()
-  "save -> load -> save produces byte-identical files; store is semantically equal."
+(ert-deftest supertag-canon-test-roundtrip-load-save-is-stable ()
+  "load -> save -> load -> save writes the same bytes; the Store survives.
+The first load may add the collections the Store contract declares, so the
+comparison starts from a loaded Store."
   (supertag-canon-test--with-temp-env
     (supertag-persistence-ensure-data-directory)
     (setq supertag--store (supertag-canon-test--build-store '("n1" "n2" "n3")))
     (supertag--persistence-write-store-atomically supertag-db-file)
-    (let ((first-bytes (supertag-canon-test--read-file-bytes supertag-db-file))
-          (orig-nodes (hash-table-count (gethash :nodes supertag--store))))
+    (let ((orig-nodes (hash-table-count (gethash :nodes supertag--store)))
+          first-bytes)
       (supertag--record-store-origin :ok)
+      (supertag-load-store)
+      (supertag--persistence-write-store-atomically supertag-db-file)
+      (setq first-bytes (supertag-canon-test--read-file-bytes supertag-db-file))
       (supertag-load-store)
       (should (= orig-nodes (hash-table-count (supertag-store-get-collection :nodes))))
       ;; Sample field value survives the roundtrip.
@@ -192,8 +197,8 @@ order, only on entity id."
 
 ;;; --- 3. Legacy compat ---
 
-(ert-deftest supertag-canon-test-legacy-format-loads-then-saves-canonical ()
-  "An old single-`prin1' DB file loads fine; the next save writes canonical."
+(ert-deftest supertag-canon-test-legacy-format-loads-then-saves-native ()
+  "An old single-`prin1' DB file loads fine; the next save writes native."
   (supertag-canon-test--with-temp-env
     (let ((legacy-store (ht-create))
           (nodes (ht-create)))
@@ -217,8 +222,8 @@ order, only on entity id."
                            (char-after (point-min)))))
         (should (eq first-char ?\;)))
       (let ((second-line (nth 1 (supertag-canon-test--file-lines supertag-db-file))))
-        (should (string-match-p "canonical format" second-line)))
-      ;; Reload the now-canonical file and confirm content survived.
+        (should (string-match-p "native format" second-line)))
+      ;; Reload the now-native file and confirm content survived.
       (supertag-load-store)
       (should (= 2 (hash-table-count (supertag-store-get-collection :nodes)))))))
 
@@ -489,20 +494,79 @@ date regex (see `supertag--persistence--snapshot-preformat6')."
 
 ;;; --- 6. verify-after-save still works (regression guard) ---
 
+(defun supertag-canon-test--corrupting-write-region (transform)
+  "Return a `write-region' replacement that corrupts each temp DB write.
+The real write happens first, then TRANSFORM is called with (FILE WRITE),
+where WRITE is the real `write-region' function, so it can edit or delete
+the temp file to simulate corruption between the write and the
+verification read.  Writes to any other file pass through untouched."
+  (let ((real (symbol-function 'write-region)))
+    (lambda (start end file &optional append visit)
+      (funcall real start end file append visit)
+      (when (and (stringp file)
+                 (string-match-p "\\.tmp" (file-name-nondirectory file)))
+        (funcall transform file real)))))
+
+(defun supertag-canon-test--drop-collection-lines (collection)
+  "Return a corruption transform emptying COLLECTION in a native temp file."
+  (lambda (file write)
+    (with-temp-buffer
+      (insert-file-contents file)
+      (supertag--persistence--skip-leading-comments-and-whitespace)
+      (let ((read-circle t)
+            (print-circle t)
+            (print-escape-nonascii t)
+            (print-length nil)
+            (print-level nil))
+        (read (current-buffer))
+        (skip-chars-forward " \t\r\n")
+        (let* ((start (point))
+               (store (read (current-buffer))))
+          (clrhash (gethash collection store))
+          (delete-region start (point-max))
+          (prin1 store (current-buffer))
+          (insert "\n")))
+      (funcall write (point-min) (point-max) file nil 'silent))))
+
 (ert-deftest supertag-canon-test-verify-after-save-still-detects-mismatch ()
-  "The verify-after-save step still catches a mismatch with the canonical writer."
+  "The verify-after-save step still catches a temp file that lost a collection.
+Corruption is injected at the write seam: the temp file is edited right
+after the real write and before verification reads it back."
   (supertag-canon-test--with-temp-env
     (supertag-persistence-ensure-data-directory)
     (setq supertag--store (supertag-canon-test--build-store '("n1" "n2")))
-    (let ((real-read (symbol-function 'supertag--persistence--try-read-store)))
-      (should-error
-       (cl-letf (((symbol-function 'supertag--persistence--try-read-store)
-                  (lambda (file)
-                    (let ((loaded (funcall real-read file)))
-                      (remhash :nodes loaded)
-                      loaded))))
-         (supertag--persistence-write-store-atomically supertag-db-file))))
+    (should-error
+     (cl-letf (((symbol-function 'write-region)
+                (supertag-canon-test--corrupting-write-region
+                 (supertag-canon-test--drop-collection-lines :nodes))))
+       (supertag--persistence-write-store-atomically supertag-db-file)))
     (should (null (directory-files supertag-data-directory nil "\\.tmp")))))
+
+(defconst supertag-canon-test-n1-fixture
+  ";; -*- mode: lisp-data; coding: utf-8-unix -*-
+;; supertag-db canonical format 1, data version 7.2.0
+(:incompatible-notice \"This DB uses org-supertag >= 6.0 canonical format. An org-supertag < 6.0 (e.g. 5.9.x) session reads only this single header form as its ENTIRE database via one `read' call and will show zero nodes/tags -- your data is NOT lost, it is still in this file below this line, but do not keep editing or saving from that old session. To downgrade, restore the newest backups/supertag-db-preformat6-*.el snapshot over this file (see supertag--persistence--write-store-atomically / README \\\"Syncing across machines\\\").\" :supertag-format 1 :version \"5.0.0\")
+(:collection :boards :id \"board-1\" :data (:id \"board-1\" :name \"Board One\" :type :board))
+(:collection :field-values :id \"n1\" :data (:supertag-hash-table ((\"effort\" . 2) (\"priority\" . \"P-n1\"))))
+(:collection :fields :id \"n1\" :data (:supertag-hash-table ((\"tag-a\" :supertag-hash-table ((\"Priority\" . \"High\"))))))
+(:collection :nodes :id \"n1\" :data (:file \"/tmp/f.org\" :id \"n1\" :meta (:alpha 2 :zeta 1) :tags (\"tag-b\" \"tag-a\") :title \"Node n1\" :type :node))
+(:collection :tag-field-associations :id \"tag-a\" :data ((:field-id \"priority\" :order 1) (:field-id \"effort\" :order 0)))
+(:collection :tags :id \"tag-a\" :data (:extends nil :id \"tag-a\" :name \"tag-a\" :type :tag))
+(:collection :tags :id \"tag-b\" :data (:extends nil :id \"tag-b\" :name \"tag-b\" :type :tag))
+"
+  "Exact bytes the canonical writer produced for `build-store' \\='(\"n1\")'.
+Captured from the writer before save verification was made cheap (the
+writer's printed output did not change), so this is a byte-identity fixture:
+the current writer must reproduce it exactly, including the nested
+`:supertag-hash-table' marker lists.")
+
+(ert-deftest supertag-canon-test-writer-bytes-match-prechange-fixture ()
+  "The canonical writer still emits exactly the pre-change bytes."
+  (supertag-canon-test--with-temp-env
+    (let ((store (supertag-canon-test--build-store '("n1"))))
+      (with-temp-buffer
+        (supertag--persistence--write-canonical-store store (current-buffer))
+        (should (equal supertag-canon-test-n1-fixture (buffer-string)))))))
 
 (ert-deftest supertag-canon-test-atomic-save-then-verify-roundtrip-ok ()
   "A normal atomic save with verify-after-save enabled succeeds and reloads."

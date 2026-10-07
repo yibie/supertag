@@ -27,6 +27,7 @@
   (add-to-list 'load-path (expand-file-name ".." (file-name-directory load-file-name))))
 
 (require 'supertag-core-store)
+(require 'subr-x)
 (require 'supertag-core-persistence)
 (require 'supertag-doctor)
 (require 'ownership-fixture)
@@ -66,6 +67,94 @@ so migration tests can seed an out-of-date store."
 (defun supertag-hardening-test--tmp-residues (dir)
   "Return files under DIR whose name still looks like a save temp file."
   (directory-files dir nil "\\.tmp"))
+
+(defun supertag-hardening-test--corrupting-write-region (transform)
+  "Return a `write-region' replacement that corrupts each temp DB write.
+The real write happens first, then TRANSFORM is called with (FILE WRITE),
+where WRITE is the real `write-region' function, so it can edit or delete
+the temp file to simulate corruption between the write and the
+verification read.  Writes to any other file pass through untouched."
+  (let ((real (symbol-function 'write-region)))
+    (lambda (start end file &optional append visit)
+      (funcall real start end file append visit)
+      (when (and (stringp file)
+                 (string-match-p "\\.tmp" (file-name-nondirectory file)))
+        (funcall transform file real)))))
+
+(defun supertag-hardening-test--edit-temp-file (file write edit)
+  "Apply EDIT to FILE's text in a temp buffer and write it back with WRITE.
+EDIT runs with point at `point-min'."
+  (with-temp-buffer
+    (insert-file-contents file)
+    (goto-char (point-min))
+    (funcall edit)
+    (funcall write (point-min) (point-max) file nil 'silent)))
+
+(defun supertag-hardening-test--edit-temp-store (file write edit)
+  "Call EDIT on the Store held in native FILE and write it back with WRITE.
+The header form is left as written."
+  (with-temp-buffer
+    (insert-file-contents file)
+    (supertag--persistence--skip-leading-comments-and-whitespace)
+    (let ((read-circle t)
+          (print-circle t)
+          (print-escape-nonascii t)
+          (print-length nil)
+          (print-level nil))
+      (read (current-buffer))
+      (skip-chars-forward " \t\r\n")
+      (let* ((start (point))
+             (store (read (current-buffer))))
+        (funcall edit store)
+        (delete-region start (point-max))
+        (prin1 store (current-buffer))
+        (insert "\n")))
+    (funcall write (point-min) (point-max) file nil 'silent)))
+
+(defun supertag-hardening-test--drop-collection-lines (collection &optional first-only)
+  "Return a corruption transform dropping COLLECTION's entities.
+With FIRST-ONLY, drop only one entity of that collection."
+  (lambda (file write)
+    (supertag-hardening-test--edit-temp-store
+     file write
+     (lambda (store)
+       (let ((table (gethash collection store)))
+         (if first-only
+             (remhash (car (hash-table-keys table)) table)
+           (clrhash table)))))))
+
+(defun supertag-hardening-test--append-entity-line ()
+  "Return a corruption transform adding one extra durable entity."
+  (lambda (file write)
+    (supertag-hardening-test--edit-temp-store
+     file write
+     (lambda (store)
+       (puthash "EXTRA" (list :id "EXTRA" :type :node :title "t" :file "/tmp/f")
+                (gethash :nodes store))))))
+
+(defun supertag-hardening-test--change-entity-value ()
+  "Return a corruption transform changing one durable entity's value."
+  (lambda (file write)
+    (supertag-hardening-test--edit-temp-store
+     file write
+     (lambda (store)
+       (let* ((nodes (gethash :nodes store))
+              (id (car (hash-table-keys nodes))))
+         (puthash id (plist-put (copy-sequence (gethash id nodes))
+                                :title "CHANGED")
+                  nodes))))))
+
+(defun supertag-hardening-test--truncate-temp-file ()
+  "Return a corruption transform truncating the temp file mid-form."
+  (lambda (file write)
+    (with-temp-buffer
+      (insert-file-contents file)
+      (funcall write (point-min) (/ (point-max) 2) file nil 'silent))))
+
+(defun supertag-hardening-test--delete-temp-file ()
+  "Return a corruption transform making the temp file unreadable."
+  (lambda (file _write)
+    (delete-file file)))
 
 (defmacro supertag-hardening-test--with-temp-env (&rest body)
   "Run BODY with persistence state redirected into an isolated temp dir.
@@ -471,26 +560,57 @@ and internal state variables, so tests never touch the real
                      (file-name-directory supertag-db-file)))))))
 
 (ert-deftest supertag-hardening-test-verify-mismatch-aborts-save ()
-  "A post-write verification mismatch aborts the save and keeps the old DB."
+  "A post-write verification mismatch aborts the save and keeps the old DB.
+Corruption is injected at the write seam: the temp file is edited right
+after the real write and before verification reads it back."
   (supertag-hardening-test--with-temp-env
     (supertag-persistence-ensure-data-directory)
     (supertag-hardening-test--write-store-file
      supertag-db-file (supertag-hardening-test--make-store '("OLD")))
     (let ((original-bytes (supertag-hardening-test--read-file-bytes supertag-db-file)))
       (setq supertag--store (supertag-hardening-test--make-store '("OLD" "NEW")))
-      (let ((real-read (symbol-function 'supertag--persistence--try-read-store)))
-        ;; Simulate a readable temp file that silently lost its node collection.
-        (should-error
-         (cl-letf (((symbol-function 'supertag--persistence--try-read-store)
-                    (lambda (file)
-                      (let ((loaded (funcall real-read file)))
-                        (remhash :nodes loaded)
-                        loaded))))
-           (supertag--persistence-write-store-atomically supertag-db-file))))
+      ;; Simulate a readable temp file that silently lost its node collection.
+      (should-error
+       (cl-letf (((symbol-function 'write-region)
+                  (supertag-hardening-test--corrupting-write-region
+                   (supertag-hardening-test--drop-collection-lines :nodes))))
+         (supertag--persistence-write-store-atomically supertag-db-file)))
       (should (equal original-bytes
                      (supertag-hardening-test--read-file-bytes supertag-db-file)))
       (should (null (supertag-hardening-test--tmp-residues
                      (file-name-directory supertag-db-file)))))))
+
+(ert-deftest supertag-hardening-test-verify-detects-each-temp-corruption ()
+  "Each temp-file corruption aborts the save and keeps the old DB intact."
+  (supertag-hardening-test--with-temp-env
+    (supertag-persistence-ensure-data-directory)
+    (dolist (corruption
+             (list (cons 'missing-entity
+                         (supertag-hardening-test--drop-collection-lines :nodes t))
+                   (cons 'extra-entity
+                         (supertag-hardening-test--append-entity-line))
+                   (cons 'changed-value
+                         (supertag-hardening-test--change-entity-value))
+                   (cons 'truncated
+                         (supertag-hardening-test--truncate-temp-file))
+                   (cons 'unreadable
+                         (supertag-hardening-test--delete-temp-file))))
+      (ert-info ((format "corruption: %s" (car corruption)))
+        (supertag-hardening-test--write-store-file
+         supertag-db-file (supertag-hardening-test--make-store '("OLD")))
+        (let ((original-bytes
+               (supertag-hardening-test--read-file-bytes supertag-db-file)))
+          (setq supertag--store (supertag-hardening-test--make-store '("A" "B")))
+          (should-error
+           (cl-letf (((symbol-function 'write-region)
+                      (supertag-hardening-test--corrupting-write-region
+                       (cdr corruption))))
+             (supertag--persistence-write-store-atomically supertag-db-file)))
+          (should (equal original-bytes
+                         (supertag-hardening-test--read-file-bytes
+                          supertag-db-file)))
+          (should (null (supertag-hardening-test--tmp-residues
+                         (file-name-directory supertag-db-file)))))))))
 
 (ert-deftest supertag-hardening-test-durable-roots-are-declared ()
   "Every currently persisted root is created by the Store contract."
@@ -506,8 +626,7 @@ and internal state variables, so tests never touch the real
   (supertag-hardening-test--with-temp-env
     (supertag-persistence-ensure-data-directory)
     (let* ((vault (expand-file-name "vault" supertag-data-directory))
-           (files (supertag-ownership-test-create-vault vault))
-           (real-read (symbol-function 'supertag--persistence--try-read-store)))
+           (files (supertag-ownership-test-create-vault vault)))
       (dolist (collection '(:tags
                             :relations
                             :field-definitions
@@ -527,11 +646,9 @@ and internal state variables, so tests never touch the real
              :kind :field-conflict :key :name
              :ours "Project" :theirs "Projects"))
           (should-error
-           (cl-letf (((symbol-function 'supertag--persistence--try-read-store)
-                      (lambda (file)
-                        (let ((loaded (funcall real-read file)))
-                          (remhash collection loaded)
-                          loaded))))
+           (cl-letf (((symbol-function 'write-region)
+                      (supertag-hardening-test--corrupting-write-region
+                       (supertag-hardening-test--drop-collection-lines collection))))
              (supertag--persistence-write-store-atomically supertag-db-file)))
           (should (equal original-bytes
                          (supertag-hardening-test--read-file-bytes

@@ -429,7 +429,7 @@
               (with-current-buffer stream
                 (cl-letf (((symbol-function 'supertag-ui-read-tag) (lambda (&rest _) "two")))
                   (supertag-embark-node-reference-add-tag))
-                (should (string-match-p (regexp-quote (concat "#" two)) (buffer-string))))
+                (should (string-match-p (regexp-quote "#two") (buffer-string))))
               (should (string-match-p (regexp-quote "* Other #one #two")
                                       (supertag-document-test-disk file)))
               (should (member two (plist-get (supertag-node-get "other") :tags)))
@@ -502,11 +502,12 @@
            (stream (supertag-embark-test--stream-at one "other")))
       (unwind-protect
           (with-current-buffer stream
-            (search-forward (concat "#" one)) (backward-char 1)
+            (search-forward "#one") (backward-char 1)
             (let ((target (supertag-embark--target-at-point)))
               (should (eq :tag (plist-get target :kind)))
               (should (eq :stream-tag (plist-get target :origin)))
-              (should (equal one (plist-get target :tag-id)))
+              ;; The Stream row shows the Tag's name, so that is the token here.
+              (should (equal "one" (plist-get target :tag-id)))
               (should (equal "other" (plist-get target :node-id)))
               (should (eq 'supertag-tag (car (supertag-embark-target-finder)))))
             (supertag-embark-tag-remove)
@@ -521,7 +522,7 @@
            (stream (supertag-embark-test--stream-at one "other")))
       (unwind-protect
           (with-current-buffer stream
-            (search-forward (concat "#" one)) (backward-char 1)
+            (search-forward "#one") (backward-char 1)
             (let* ((target (supertag-embark--target-at-point))
                    (found (supertag-embark-target-finder))
                    (bounds (cddr found)))
@@ -531,7 +532,7 @@
               (should (eq 'supertag-tag (car found)))
               (should (integerp (car bounds)))
               (should (integerp (cdr bounds)))
-              (should (equal (concat "#" one)
+              (should (equal "#one"
                              (buffer-substring-no-properties (car bounds) (cdr bounds))))))
         (when (buffer-live-p stream) (kill-buffer stream))))))
 
@@ -578,7 +579,7 @@
       (unwind-protect
           (progn
             (with-current-buffer stream
-              (search-forward (concat "#" one)) (backward-char 1)
+              (search-forward "#one") (backward-char 1)
               (cl-letf (((symbol-function 'supertag-ui-read-tag)
                          (supertag-embark-test--draft-then org "two"))
                         ((symbol-function 'supertag-capture-replace-tag-on-node)

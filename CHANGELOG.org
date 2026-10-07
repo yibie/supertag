@@ -61,6 +61,20 @@
   `:query' option follow the new name or ID, with every other byte of the
   block preserved; an unreadable block stays listed for a hand edit and a
   `#+RESULTS:' section is never touched.
+** Stream View shows Tag names and node bodies
+- Stream rows, the header line and the empty-stream text print each Tag's
+  name through `supertag-tag--name', so a Tag with an opaque stable ID no
+  longer appears as `#tag-6e82...'; an ID with no Tag record still falls back
+  to the ID string.
+- Each Stream row now shows the node's stored `:content' under its title in
+  the quiet `supertag-view-excerpt' face: the property drawer and planning
+  lines are dropped, an empty body adds no lines, and a new
+  `supertag-view-stream-body-max-lines' (default 6) caps the body with a `…'
+  marker.  Body and title share one entity ID, so navigation and every row
+  command cover the whole block.
+- `v' in the Stream shows or updates Node View without selecting its window,
+  leaving the selected window and point in the Stream; the other
+  `supertag-view-node-open' callers still focus Node View.
 
 
 * [0.1.1] - 2026-10-02

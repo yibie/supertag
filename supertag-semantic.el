@@ -26,7 +26,7 @@
 (require 'supertag-view-framework)
 (declare-function supertag-view-node--buffer "supertag-view-node" ())
 (declare-function supertag-view-node--refresh-view "supertag-view-node" ())
-(declare-function supertag-view-node-open "supertag-view-node" (node-id))
+(declare-function supertag-view-node-open "supertag-view-node" (node-id &optional no-focus))
 (declare-function supertag-goto-node "supertag-node" (node-id &optional other-window))
 (defvar supertag-view-node--current-node-id)
 

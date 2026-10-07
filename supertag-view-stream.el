@@ -25,9 +25,19 @@
 (require 'supertag-view-framework)
 (require 'supertag-view-node)
 
+;; Tag rows print a Tag's name, never its opaque stable ID.
+(declare-function supertag-tag--name "supertag-tag" (tag-id))
+
 (defgroup supertag-view-stream nil
   "Chronological title views for tagged nodes."
   :group 'supertag)
+
+(defcustom supertag-view-stream-body-max-lines 6
+  "Maximum node body lines shown per Stream row.
+The body is the node's stored `:content'; no source file is opened.  A
+truncated body ends its last line with `…'.  nil means no limit."
+  :type '(choice (const :tag "No limit" nil) (integer :tag "Lines"))
+  :group 'supertag-view-stream)
 
 (defface supertag-view-stream-title-face
   '((t :inherit org-level-2 :height 1.15 :weight semi-bold))
@@ -138,22 +148,77 @@
     (ignore-errors
       (format-time-string "%Y-%m-%d %a" time))))
 
+(defun supertag-view-stream--tag-label (tag)
+  "Return TAG's display name, or TAG when it has no Tag record.
+TAG is a Tag ID, name or alias; an unresolved token is returned unchanged,
+which is the same fallback `supertag-tag--name' uses."
+  (if (and (stringp tag) (not (string-empty-p tag)))
+      (let ((id (or (and (supertag-tag-get tag) tag)
+                    (ignore-errors (supertag-tag-resolve-occurrence tag)))))
+        (or (and id (supertag-tag--name id)) tag))
+    tag))
+
 (defun supertag-view-stream--node-tags (node)
-  "Return NODE tags as one display string."
-  (mapconcat (lambda (tag) (concat "#" tag))
+  "Return NODE tags as one display string, using each Tag's name."
+  (mapconcat (lambda (tag) (concat "#" (supertag-view-stream--tag-label tag)))
              (cl-remove-if-not #'stringp (plist-get node :tags))
              " "))
 
+(defun supertag-view-stream--content-lines (content)
+  "Return CONTENT's display lines without Org scaffolding.
+A property drawer and planning lines are dropped, runs of blank lines
+collapse to one, and leading and trailing blank lines are removed.  Return
+nil when nothing is left.  CONTENT is the stored `:content'; no file is read."
+  (when (and (stringp content) (not (string-empty-p content)))
+    (let (lines
+          (in-drawer nil))
+      (dolist (line (split-string content "\n"))
+        (cond
+         ((string-match-p "\\`[ \t]*:PROPERTIES:[ \t]*\\'" line)
+          (setq in-drawer t))
+         (in-drawer
+          (when (string-match-p "\\`[ \t]*:END:[ \t]*\\'" line)
+            (setq in-drawer nil)))
+         ((string-match-p "\\`[ \t]*\\(?:SCHEDULED\\|DEADLINE\\|CLOSED\\):" line))
+         ((string-match-p "\\`[ \t]*\\'" line)
+          (unless (equal (car lines) "") (push "" lines)))
+         (t (push line lines))))
+      (setq lines (nreverse lines))
+      (while (and lines (equal (car lines) "")) (pop lines))
+      (while (and lines (equal (car (last lines)) "")) (setq lines (butlast lines)))
+      lines)))
+
+(defun supertag-view-stream--node-body-lines (node)
+  "Return NODE's display body lines, capped by the body defcustom.
+Return nil when there is no body; a truncated body ends with `…'."
+  (let ((lines (supertag-view-stream--content-lines (plist-get node :content)))
+        (max supertag-view-stream-body-max-lines))
+    (when (and lines (integerp max) (>= max 0) (> (length lines) max))
+      (let ((kept (cl-subseq lines 0 max)))
+        (setq lines (if kept
+                        (append (butlast kept)
+                                (list (concat (car (last kept)) "…")))
+                      (list "…")))))
+    lines))
+
 (defun supertag-view-stream--node-widget (node)
-  "Return the Widget tree for NODE."
-  (let ((tags (supertag-view-stream--node-tags node)))
+  "Return the Widget tree for NODE: its title line and its body lines.
+The whole block carries one Widget key, so the entity ID, the selection
+overlay and every row command cover the title and the body together."
+  (let* ((tags (supertag-view-stream--node-tags node))
+         (title (concat (propertize (supertag-view-stream--node-title node)
+                                    'font-lock-face
+                                    'supertag-view-stream-title-face)
+                        (if (string-empty-p tags) "" (concat "  " tags))))
+         (body (mapcar (lambda (line)
+                         (if (string-empty-p line)
+                             ""
+                           (concat "  " (propertize line 'font-lock-face
+                                                     'supertag-view-excerpt))))
+                       (supertag-view-stream--node-body-lines node))))
     (list :type :text
           :key (plist-get node :id)
-          :content
-          (concat (propertize (supertag-view-stream--node-title node)
-                              'font-lock-face
-                              'supertag-view-stream-title-face)
-                  (if (string-empty-p tags) "" (concat "  " tags))))))
+          :content (string-join (cons title body) "\n"))))
 
 (defun supertag-view-stream--group-nodes-by-date (nodes)
   "Return chronological date groups for sorted NODES."
@@ -187,7 +252,8 @@
                             (supertag-view-stream--group-nodes-by-date nodes))))
       (list (list :type :text
                   :content (format "No nodes for #%s."
-                                   (plist-get state :tag)))))))
+                                   (supertag-view-stream--tag-label
+                                    (plist-get state :tag))))))))
 
 (defun supertag-view-stream--add-entity-properties ()
   "Copy stable Widget keys to the shared entity ID property."
@@ -211,7 +277,7 @@
   (supertag-view-stream--add-entity-properties)
   (setq header-line-format
         (format " #%s   %d nodes "
-                (plist-get state :tag)
+                (supertag-view-stream--tag-label (plist-get state :tag))
                 (length (plist-get state :nodes))))
   (font-lock-flush))
 
@@ -374,14 +440,24 @@
   (supertag-view-stream--move -1))
 
 (defun supertag-view-stream-open-node-view ()
-  "Open Node View for the current Stream node."
+  "Show Node View for the current Stream node, staying in the Stream.
+Unlike the other `supertag-view-node-open' callers, this command does not
+select the Node View window: `v' updates the side window while the selected
+window and point remain in the Stream.  Node View does not follow point in
+the Stream; only this command updates it."
   (declare (completion (lambda (_command buffer)
                          (supertag-view--context-p buffer 'stream))))
   (interactive)
   (supertag-view--require-context 'stream)
-  (let ((id (or (supertag-view-stream--current-node-id)
+  (let ((window (selected-window))
+        (id (or (supertag-view-stream--current-node-id)
                 (user-error "No Stream node at point"))))
-    (supertag-view-node-open id)))
+    (supertag-view-node-open id t)
+    ;; The side display must not steal focus or point, even when a user
+    ;; display policy would select it.
+    (when (window-live-p window)
+      (select-window window))
+    id))
 
 (defun supertag-view-stream--edit-range (node-id level)
   "Return the source range for NODE-ID at LEVEL in the current Org buffer."

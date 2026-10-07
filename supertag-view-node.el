@@ -866,17 +866,20 @@ Adapt feature-owned renderers locally without changing their interfaces."
     (message "No active supertag node view.")))
 
 ;;;###autoload
-(defun supertag-view-node-open (node-id)
-  "Open Node View for NODE-ID and focus the window."
+(defun supertag-view-node-open (node-id &optional no-focus)
+  "Open Node View for NODE-ID and focus the window.
+With NO-FOCUS non-nil, show or update the side window without selecting it,
+leaving the selected window and point where they are."
   (unless (and (stringp node-id) (not (string-empty-p node-id)))
     (user-error "Node View requires a node ID"))
   (supertag-view-node--show-side node-id)
-  (supertag-view-node--focus-view)
-  (when-let* ((buffer (supertag-view-node--buffer)))
-    (with-current-buffer buffer
-      (when-let* ((window (get-buffer-window buffer t)))
-        (with-selected-window window
-          (recenter)))))
+  (unless no-focus
+    (supertag-view-node--focus-view)
+    (when-let* ((buffer (supertag-view-node--buffer)))
+      (with-current-buffer buffer
+        (when-let* ((window (get-buffer-window buffer t)))
+          (with-selected-window window
+            (recenter))))))
   (supertag-view-node--buffer))
 
 (defun supertag-view-node ()

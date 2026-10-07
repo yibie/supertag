@@ -124,9 +124,12 @@
                   (should (string-match-p "Next day  #emacs"
                                           (buffer-string)))
                   (should (string-match-p "Package archives" (buffer-string)))
-                  (should-not (string-match-p "A paragraph" (buffer-string)))
-                  (should-not (string-match-p "| GNU | elpa.gnu.org |"
-                                              (buffer-string)))
+                  ;; Fix 2: the stored body is shown, indented under its title.
+                  (should (string-match-p "A paragraph\\." (buffer-string)))
+                  (should (string-match-p "| GNU | elpa.gnu.org |"
+                                          (buffer-string)))
+                  ;; The 6-line default cap hides the tail and marks it.
+                  (should (string-match-p "…" (buffer-string)))
                   (should-not (string-match-p "Keep it small" (buffer-string)))
                   (should-not (string-match-p "/tmp/private-note.org"
                                               (buffer-string)))
@@ -206,8 +209,8 @@
             (with-current-buffer main
               (should (string-match-p "First title" (buffer-string)))
               (should (string-match-p "Second title" (buffer-string)))
-              (should-not (string-match-p "First body" (buffer-string)))
-              (should-not (string-match-p "Second body" (buffer-string)))
+              (should (string-match-p "First body" (buffer-string)))
+              (should (string-match-p "Second body" (buffer-string)))
               (should-not (lookup-key supertag-view-stream-mode-map
                                       (kbd "s"))))
             (with-current-buffer main
@@ -241,14 +244,14 @@
                                 (plist-get supertag-view--instance :input) :tag)
                                "diary"))
                 (should (string-match-p "Diary title" (buffer-string)))
-                (should-not (string-match-p "Diary body" (buffer-string)))
+                (should (string-match-p "Diary body" (buffer-string)))
                 (should-not (string-match-p "Work title" (buffer-string))))
               (with-current-buffer work
                 (should (equal (plist-get
                                 (plist-get supertag-view--instance :input) :tag)
                                "work"))
                 (should (string-match-p "Work title" (buffer-string)))
-                (should-not (string-match-p "Work body" (buffer-string)))
+                (should (string-match-p "Work body" (buffer-string)))
                 (should-not (string-match-p "Diary title" (buffer-string)))))))
       (supertag-view-stream-test--kill-buffers))))
 
@@ -265,7 +268,7 @@
             (let ((buffer
                    (supertag-view-open
                     'stream '(:tag "diary")))
-                  opened)
+                  opened no-focus)
               (with-current-buffer buffer
                 (goto-char (point-min))
                 (should (equal (supertag-view-stream--current-node-id)
@@ -279,9 +282,13 @@
                          'supertag-entity-id)
                         "node-2"))
                 (cl-letf (((symbol-function 'supertag-view-node-open)
-                           (lambda (node-id) (setq opened node-id))))
+                           (lambda (node-id &optional no-focus-arg)
+                             (setq opened node-id
+                                   no-focus no-focus-arg))))
                   (supertag-view-stream-open-node-view))
-                (should (equal opened "node-2"))))))
+                (should (equal opened "node-2"))
+                ;; `v' never focuses Node View from the Stream.
+                (should no-focus)))))
       (supertag-view-stream-test--kill-buffers))))
 
 (ert-deftest supertag-view-stream-navigation-does-not-pin-point-to-window-top ()
@@ -402,6 +409,130 @@
                             (gethash :store-changed supertag--subscribers))))
               (kill-buffer buffer)
               (should-not (gethash :store-changed supertag--subscribers)))))
+      (supertag-view-stream-test--kill-buffers))))
+
+(ert-deftest supertag-view-stream-shows-tag-names-not-ids ()
+  "A row and the header show a Tag's name, never its opaque stable ID."
+  (supertag-view-stream-test--with-store
+    (unwind-protect
+        (progn
+          (let ((stable "tag-6e82dd80ff784c00bf2b9a94685930db"))
+            (supertag-store-put-entity
+             :tags stable
+             (list :id stable :name "emacs" :type :tag :extends nil))
+            (supertag-view-stream-test--put-node
+             "node-1" "Package archives" (list stable "diary")
+             "Body" '(0 10 0 0))
+            (cl-letf (((symbol-function 'display-buffer) #'ignore))
+              (let ((buffer (supertag-view-open 'stream (list :tag stable))))
+                (with-current-buffer buffer
+                  (should (string-match-p "Package archives  #emacs #diary"
+                                          (buffer-string)))
+                  (should-not (string-match-p stable (buffer-string)))
+                  (should (equal header-line-format " #emacs   1 nodes "))))))
+          ;; An ID with no Tag record falls back to the ID string.
+          (supertag-view-stream-test--put-node
+           "node-2" "Orphan" '("tag-ffffffffffffffffffffffffffffffff") "body" '(0 20 0 0))
+          (cl-letf (((symbol-function 'display-buffer) #'ignore))
+            (let ((buffer (supertag-view-open
+                           'stream (list :tag "tag-ffffffffffffffffffffffffffffffff"))))
+              (with-current-buffer buffer
+                (should (string-match-p
+                         "Orphan  #tag-ffffffffffffffffffffffffffffffff"
+                         (buffer-string)))
+                (should (equal header-line-format
+                               " #tag-ffffffffffffffffffffffffffffffff   1 nodes ")))))
+          ;; The empty-stream text names the Tag too, not the raw token.
+          (cl-letf (((symbol-function 'display-buffer) #'ignore))
+            (let ((buffer (supertag-view-open 'stream (list :tag "unknown-token"))))
+              (with-current-buffer buffer
+                (should (equal (buffer-string) "No nodes for #unknown-token.\n"))))))
+      (supertag-view-stream-test--kill-buffers))))
+
+(ert-deftest supertag-view-stream-body-is-shown-capped-and-drawer-free ()
+  "The stored body is shown, capped with `…', and hides Org scaffolding."
+  (supertag-view-stream-test--with-store
+    (unwind-protect
+        (progn
+          (supertag-view-stream-test--put-tag "diary")
+          (supertag-view-stream-test--put-node
+           "node-1" "With body" '("diary")
+           (concat ":PROPERTIES:\n:ID: node-1\n:END:\n"
+                   "First line.\n"
+                   "SCHEDULED: <2026-01-01 Thu>\n"
+                   "\n"
+                   "Second line.\n"
+                   "Third line.\nFourth line.\nFifth line.\nSixth line.\n"
+                   "Seventh line.\nEighth line.\n")
+           '(0 10 0 0))
+          (supertag-view-stream-test--put-node
+           "node-2" "Empty body" '("diary") "   \n  \n" '(0 20 0 0))
+          (cl-letf (((symbol-function 'display-buffer) #'ignore))
+            (let ((buffer (supertag-view-open 'stream '(:tag "diary"))))
+              (with-current-buffer buffer
+                (font-lock-ensure)
+                (should (string-match-p "First line\\." (buffer-string)))
+                (should (string-match-p "^  Second line\\.$" (buffer-string)))
+                ;; The property drawer and planning line are not shown.
+                (should-not (string-match-p ":PROPERTIES:" (buffer-string)))
+                (should-not (string-match-p ":ID: node-1" (buffer-string)))
+                (should-not (string-match-p "SCHEDULED:" (buffer-string)))
+                ;; Six body lines show (blank lines included), the rest is
+                ;; replaced by the visible marker.
+                (should (string-match-p "Fifth line\\.…" (buffer-string)))
+                (should-not (string-match-p "Sixth line" (buffer-string)))
+                (should-not (string-match-p "Seventh line" (buffer-string)))
+                (should-not (string-match-p "Eighth line" (buffer-string)))
+                ;; An empty body contributes no lines at all.
+                (should-not (string-match-p "Empty body\n  " (buffer-string)))
+                ;; Body lines belong to the node and use the quiet face.
+                (goto-char (point-min))
+                (search-forward "First line")
+                (should (equal "node-1"
+                               (get-text-property (1- (point)) 'supertag-entity-id)))
+                (should (eq (get-text-property (1- (point)) 'font-lock-face)
+                            'supertag-view-excerpt))
+                ;; The selection overlay covers the whole block.
+                (supertag-view-stream--highlight "node-1")
+                (should (equal (buffer-substring-no-properties
+                                (overlay-start supertag-view-stream--selection-overlay)
+                                (overlay-end supertag-view-stream--selection-overlay))
+                               (concat "With body  #diary\n"
+                                       "  First line.\n\n  Second line.\n"
+                                       "  Third line.\n  Fourth line.\n"
+                                       "  Fifth line.…\n")))))))
+      (supertag-view-stream-test--kill-buffers))))
+
+(ert-deftest supertag-view-stream-v-keeps-focus-and-point-in-the-stream ()
+  "`v' shows Node View without selecting its window."
+  (supertag-view-stream-test--with-store
+    (unwind-protect
+        (save-window-excursion
+          (supertag-view-stream-test--put-tag "diary")
+          (supertag-view-stream-test--put-node
+           "node-1" "First" '("diary") "First body" '(0 10 0 0))
+          (supertag-view-stream-test--put-node
+           "node-2" "Second" '("diary") "Second body" '(0 20 0 0))
+          (let ((main (supertag-view-stream "diary")))
+            (should (eq main (window-buffer (selected-window))))
+            (with-current-buffer main
+              (goto-char (point-min))
+              (supertag-view-stream-next-node)
+              (let ((point (point)))
+                (supertag-view-stream-open-node-view)
+                (should (= point (point)))))
+            ;; Focus never left the Stream window or buffer.
+            (should (eq main (window-buffer (selected-window))))
+            (should (eq main (current-buffer)))
+            ;; Node View was shown for the current node, without focus.
+            (let ((node-view (supertag-view-node--buffer)))
+              (should node-view)
+              (should (equal "node-2"
+                             (plist-get (plist-get (buffer-local-value
+                                                    'supertag-view--instance
+                                                    node-view)
+                                                   :input)
+                                        :node-id))))))
       (supertag-view-stream-test--kill-buffers))))
 
 (provide 'test-view-stream)

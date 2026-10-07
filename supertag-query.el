@@ -28,6 +28,7 @@
 (declare-function supertag-find-tag-descendants "supertag-tag" (tag-name))
 (autoload 'supertag-index-find-node-ids-by-tags "supertag-core-store")
 (declare-function supertag-index-find-node-ids-by-tags "supertag-core-store" (tag-ids))
+(declare-function supertag-index-node-ids-in-file "supertag-core-store" (file))
 (autoload 'supertag-node-get "supertag-node")
 (declare-function supertag-node-get "supertag-node" (id))
 (autoload 'supertag--ensure-plist "supertag-tag")
@@ -1244,19 +1245,14 @@ Returns a list of (node-id . node-data) pairs."
 
 (defun supertag-find-nodes-by-file (file-path)
   "Find all nodes located in FILE-PATH.
-Returns a list of (node-id . node-data) pairs."
+Returns a list of (node-id . node-data) pairs.
+FILE-PATH is compared as written, without path normalization."
   (let ((nodes-collection (supertag-store-get-collection :nodes))
         (found-nodes '()))
-    (when (hash-table-p nodes-collection)
-      (maphash
-       (lambda (id node-data)
-         ;; Safely extract :file and ensure it's a string
-         (when-let* ((node-file (and node-data (plist-get node-data :file)))
-                     ((stringp node-file)))
-           ;; Direct string comparison without path normalization
-           (when (equal node-file file-path)
-             (push (cons id node-data) found-nodes))))
-       nodes-collection))
+    (when (stringp file-path)
+      (dolist (id (supertag-index-node-ids-in-file file-path))
+        (when-let* ((node-data (gethash id nodes-collection)))
+          (push (cons id node-data) found-nodes))))
     (nreverse found-nodes)))
 
 (defun supertag-find-file-node (file-path)
@@ -1264,7 +1260,15 @@ Returns a list of (node-id . node-data) pairs."
 Returns (node-id . node-data) or nil."
   (let ((nodes-collection (supertag-store-get-collection :nodes))
         (found nil))
-    (when (hash-table-p nodes-collection)
+    (if (stringp file-path)
+        (dolist (id (supertag-index-node-ids-in-file file-path))
+          (let ((node-data (gethash id nodes-collection)))
+            (when (and node-data
+                       (eq (plist-get node-data :level) 0)
+                       (not found))
+              (setq found (cons id node-data)))))
+      ;; Only strings are indexed; a node without a file name is rare
+      ;; enough to look for directly.
       (maphash
        (lambda (id node-data)
          (when (and node-data

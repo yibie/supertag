@@ -65,7 +65,7 @@ source files; where a long default is elided, the source is authoritative.
 
 | Option | Default | Effect |
 |---|---|---|
-| `supertag-async-batch-size` | `1` | how many files one idle cycle processes |
+| `supertag-async-slice-seconds` | `0.05` | how long one idle cycle keeps reading files; at least one file per cycle |
 | `supertag-async-idle-delay` | `0.5` | idle seconds before the next queued job |
 | `supertag-sync-auto-create-node` | `nil` | deprecated, kept for compatibility: sync never invents node IDs, and nil is current behaviour |
 | `supertag-sync-auto-interval` | `900` | auto-sync interval in seconds |

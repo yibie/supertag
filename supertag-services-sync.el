@@ -62,10 +62,12 @@ Higher values ensure Emacs is truly idle."
   :type 'number
   :group 'supertag-async)
 
-(defcustom supertag-async-batch-size 1
-  "Number of files to process in a single idle cycle.
-Keep this low (1-3) to maintain responsiveness."
-  :type 'integer
+(defcustom supertag-async-slice-seconds 0.05
+  "Seconds the queue may work in one idle cycle before Emacs runs again.
+A cycle always processes one file, however long that takes, and goes on to
+the next ones only while this much time has not passed.  Pending input ends
+a cycle early.  Zero means one file per cycle."
+  :type 'number
   :group 'supertag-async)
 
 ;;; Variables
@@ -115,6 +117,27 @@ Returns the new queue length."
   (supertag-async--ensure-timer)
   (length supertag-async--queue))
 
+(defun supertag-async-enqueue-many (items)
+  "Add every one of ITEMS to the processing queue and return its new length.
+The queue ends up as if `supertag-async-enqueue' had been called on each
+item, but in one pass over the queue however many items there are."
+  (when items
+    (let ((incoming (make-hash-table :test 'equal :size (length items)))
+          fresh)
+      ;; An item listed twice keeps its last place, as re-queueing it would.
+      (dolist (item (reverse items))
+        (unless (gethash item incoming)
+          (puthash item t incoming)
+          (push item fresh)))
+      (cl-flet ((incoming-p (item) (gethash item incoming)))
+        (setq supertag-async--failed-items
+              (cl-delete-if #'incoming-p supertag-async--failed-items))
+        (setq supertag-async--queue
+              (nconc (cl-delete-if #'incoming-p supertag-async--queue)
+                     fresh))))
+    (supertag-async--ensure-timer))
+  (length supertag-async--queue))
+
 (defun supertag-async-clear ()
   "Clear all pending jobs."
   (setq supertag-async--queue '())
@@ -143,12 +166,13 @@ Called after a complete full rescan, which has re-read those files."
   (setq supertag-async--timer nil) ;; Timer has fired, so it's gone
 
   (when (and supertag-async--queue supertag-async--processor-fn)
-    (let ((count 0))
+    (let ((deadline (+ (float-time) supertag-async-slice-seconds))
+          (count 0))
       ;; Process each item independently so one failure does not hide which
       ;; file failed or discard the rest of this batch.
       ;; Pending input ends the batch: the rest waits for the next idle.
       (while (and supertag-async--queue
-                  (< count supertag-async-batch-size)
+                  (or (= count 0) (< (float-time) deadline))
                   (not (input-pending-p)))
         ;; Pop before invoking user code.  The processor may enqueue work
         ;; synchronously; removing the old head afterward would then operate
@@ -504,6 +528,33 @@ resolves only the ancestors that exist.  Result is cached; see
             (cons (copy-sequence dirs) resolved))
       resolved)))
 
+(defvar supertag-sync--directory-truenames nil
+  "Hash table of directory -> its truename, or nil outside a vault pass.
+`file-truename' resolves every component of a path, which costs more than
+the rest of the scope check.  A pass over a whole vault binds this so that
+each directory is resolved once rather than once per file in it.")
+
+(defmacro supertag-sync--with-directory-truenames (&rest body)
+  "Run BODY resolving each directory's truename at most once."
+  (declare (indent 0) (debug t))
+  `(let ((supertag-sync--directory-truenames
+          (or supertag-sync--directory-truenames
+              (make-hash-table :test 'equal))))
+     ,@body))
+
+(defun supertag-sync--truename-directory-of (file)
+  "Return the directory part of the truename of FILE."
+  (let ((file (expand-file-name file)))
+    ;; Only a file that is not itself a symlink is sure to live in the
+    ;; truename of its directory.
+    (if (or (null supertag-sync--directory-truenames)
+            (file-symlink-p file))
+        (file-name-directory (file-truename file))
+      (let ((dir (file-name-directory file)))
+        (or (gethash dir supertag-sync--directory-truenames)
+            (puthash dir (file-name-as-directory (file-truename dir))
+                     supertag-sync--directory-truenames))))))
+
 (defun supertag-sync--in-scope-path-p (file)
   "Check if FILE path is within synchronization scope.
 Does not require the file to exist: `file-truename' still resolves the
@@ -512,8 +563,7 @@ FILE and both configured directory lists are compared as truenames, so a
 `supertag-sync-directories' entry that goes through a symlink still matches.
 The same reasoning is spelled out above `supertag-git--truename-dir'."
   (when file
-    (let* ((file-dir (file-name-directory
-                      (file-truename (expand-file-name file))))
+    (let* ((file-dir (supertag-sync--truename-directory-of file))
            (excluded (and supertag-sync-exclude-directories
                           (cl-some (lambda (dir) (string-prefix-p dir file-dir))
                                    (supertag-sync--truename-directories
@@ -582,19 +632,20 @@ Returns a plist with :status, :files, :scope, :errors, :observed-at."
                   :observed-at (supertag-current-time))
           (let ((partial nil)
                 (files '()))
-            (dolist (dir sync-dirs)
-              (condition-case err
-                  (let ((dir-files (directory-files-recursively
-                                    dir supertag-sync-file-pattern t)))
-                    (dolist (file dir-files)
-                      (when (and (file-regular-p file)
-                                 (supertag-sync--in-scope-path-p file))
-                        (push file files))))
-                (error
-                 (setq partial t)
-                 (push (list :dir dir :error (error-message-string err)) errors))))
+            (supertag-sync--with-directory-truenames
+              (dolist (dir sync-dirs)
+                (condition-case err
+                    (let ((dir-files (directory-files-recursively
+                                      dir supertag-sync-file-pattern t)))
+                      (dolist (file dir-files)
+                        (when (and (file-regular-p file)
+                                   (supertag-sync--in-scope-path-p file))
+                          (push file files))))
+                  (error
+                   (setq partial t)
+                   (push (list :dir dir :error (error-message-string err)) errors)))))
             (list :status (if partial 'partial 'complete)
-                  :files (cl-delete-duplicates files :test #'string-equal)
+                  :files (delete-dups files)
                   :scope sync-dirs
                   :errors (nreverse errors)
                   :observed-at (supertag-current-time)))))))))
@@ -738,6 +789,15 @@ Returns a string containing the Org content."
             (insert "\n"))))
       (buffer-string)))
 
+(defvar supertag-sync--state-unsaved nil
+  "Non-nil while the queue has changed sync state that is not on disk.")
+
+(defvar supertag-sync--state-saved-at 0.0
+  "When the sync state was last written, as a float time.")
+
+(defconst supertag-sync--state-checkpoint-seconds 30
+  "How long a draining queue may run before its sync state is written.")
+
 (defun supertag-sync-save-state ()
   "Save sync state to file."
   (supertag-sync--ensure-state-format)
@@ -747,7 +807,9 @@ Returns a string containing the Org content."
       (let ((print-length nil)
             (print-level nil))
         (prin1 supertag-sync--state (current-buffer))))
-    (setq supertag-sync--state-source state-file)))
+    (setq supertag-sync--state-source state-file
+          supertag-sync--state-unsaved nil
+          supertag-sync--state-saved-at (float-time))))
 
 (defun supertag-sync-load-state ()
   "Load sync state from file.
@@ -1535,26 +1597,22 @@ state is kept so that the next check tries again."
     (let ((new-files (supertag-scan-sync-directories)))
       (when new-files
         (setq modified-files
-              (cl-union modified-files new-files :test #'string=))))
+              (delete-dups (append modified-files new-files)))))
 
     ;; 3. Enqueue Modified Files for Async Processing
     (when modified-files
-      (let ((queued-count 0))
-        (dolist (file modified-files)
-          ;; Add to async queue
-          (supertag-async-enqueue file)
-          (cl-incf queued-count))
-        (unless supertag-sync-quiet-when-idle
-          (message "Queued %d files for async sync." queued-count))))
+      (supertag-async-enqueue-many modified-files)
+      (unless supertag-sync-quiet-when-idle
+        (message "Queued %d files for async sync." (length modified-files))))
 
     ;; 4. Check for Orphans (Files in directory but not in state)
     ;; This is less urgent, can be done periodically or also queued.
     ;; For now, let's queue them if found.
     (let ((all-files-in-scope (supertag-scan-sync-directories t))
           (state-table (supertag-sync--get-state-table)))
-      (dolist (file all-files-in-scope)
-        (unless (gethash file state-table)
-          (supertag-async-enqueue file))))
+      (supertag-async-enqueue-many
+       (cl-remove-if (lambda (file) (gethash file state-table))
+                     all-files-in-scope)))
 
     ;; Removed files go last: a renamed file is queued above as a new one.
     (when files-to-remove
@@ -1589,7 +1647,7 @@ state is kept so that the next check tries again."
     (let ((new-files (supertag-sync--snapshot-new-files snapshot-files)))
       (when new-files
         (setq modified-files
-              (cl-union modified-files new-files :test #'string=))))
+              (delete-dups (append modified-files new-files)))))
 
     ;; 2.5 Re-verify deferred files when snapshot becomes complete
     (when (eq status 'complete)
@@ -1603,16 +1661,13 @@ state is kept so that the next check tries again."
                  supertag-sync--deferred-files)
         (when deferred-files
           (setq modified-files
-                (cl-union modified-files deferred-files :test #'string=)))))
+                (delete-dups (append modified-files deferred-files))))))
 
     ;; 3. Enqueue Modified Files for Async Processing
     (when modified-files
-      (let ((queued-count 0))
-        (dolist (file modified-files)
-          (supertag-async-enqueue file)
-          (cl-incf queued-count))
-        (unless supertag-sync-quiet-when-idle
-          (message "Queued %d files for async sync." queued-count))))
+      (supertag-async-enqueue-many modified-files)
+      (unless supertag-sync-quiet-when-idle
+        (message "Queued %d files for async sync." (length modified-files))))
 
     ;; Removed files go last: a renamed file is queued above as a new one.
     (when files-to-remove
@@ -1626,9 +1681,10 @@ state is kept so that the next check tries again."
 (defun supertag-sync--check-and-sync ()
   "Entry point for sync worker."
   (supertag-sync--ensure-state-source)
-  (if supertag-sync-snapshot-guard
-      (supertag-sync--check-and-sync-guarded)
-    (supertag-sync--check-and-sync-legacy)))
+  (supertag-sync--with-directory-truenames
+    (if supertag-sync-snapshot-guard
+        (supertag-sync--check-and-sync-guarded)
+      (supertag-sync--check-and-sync-legacy))))
 
 (defun supertag-sync-check-now ()
   "Check the managed Org files once and sync the modified ones.
@@ -2581,17 +2637,19 @@ Processes FILE for synchronization."
             ('reconciled nil)
             (_ (supertag-sync--verify-file-nodes file counters)))))
 
-      ;; If changes happened, save state
       (when (> (+ (plist-get counters :nodes-created)
                   (plist-get counters :nodes-updated)
                   (plist-get counters :nodes-deleted))
                0)
-        ;; (message "Async processed %s: +%d ~%d -%d"
-        ;;          (file-name-nondirectory file)
-        ;;          (plist-get counters :nodes-created)
-        ;;          (plist-get counters :nodes-updated)
-        ;;          (plist-get counters :nodes-deleted))
-        (supertag-sync-save-state)))))
+        (setq supertag-sync--state-unsaved t))))
+  ;; Writing the state prints every file's entry, so a long queue writes it
+  ;; at checkpoints and after its last file.  State that is lost only makes
+  ;; the next check read those files again.
+  (when (and supertag-sync--state-unsaved
+             (or (null supertag-async--queue)
+                 (> (- (float-time) supertag-sync--state-saved-at)
+                    supertag-sync--state-checkpoint-seconds)))
+    (supertag-sync-save-state)))
 
 (defun supertag-sync-start-auto-sync (&optional interval)
   "Start automatic synchronization with INTERVAL seconds.
@@ -2635,7 +2693,11 @@ This function never restores Semantic Facts and never modifies Org files;
 the user command is `supertag-sync-full-rescan'.
 Return a report plist whose :status is `complete', `aborted', or `failed'."
   (supertag-sync--ensure-state-source)
-  (let* ((previous-snapshot (copy-tree (supertag-sync--snapshot-get)))
+  (let* (;; One truename per directory for the whole pass.
+         (supertag-sync--directory-truenames
+          (or supertag-sync--directory-truenames
+              (make-hash-table :test 'equal)))
+         (previous-snapshot (copy-tree (supertag-sync--snapshot-get)))
          (snapshot (supertag-sync--snapshot-build))
          (snapshot-status (plist-get snapshot :status))
          (files (sort (copy-sequence (plist-get snapshot :files)) #'string<))

@@ -20,6 +20,21 @@
   appears: a heading moved to another file keeps its backlinks, and
   background sync no longer drops a link whose source file was read before
   its target.  Both used to need a full rescan.
+** Faster first index of a large vault
+- Background sync writes its state when the queue is empty, and every 30
+  seconds while it is not, rather than after every file.  The write prints
+  an entry for every file, so it made a first index slow down as the vault
+  grew.  State lost in a crash only makes the next check read those files
+  again.
+- The nodes of a file are found through an index instead of a pass over
+  every node.  This also speeds up a full rescan.
+- Queueing the files of a whole vault and listing them each take one pass
+  over the list.  The listing resolves the real path of each directory
+  once rather than once per file.
+- Replace =supertag-async-batch-size= with =supertag-async-slice-seconds=
+  (default 0.05).  One idle cycle keeps reading files for that long, always
+  at least one file, and still stops when you type.  It used to read one
+  file and then wait for the next idle.
 ** AI property extraction uses Superchat Sinks
 - Submit extraction through the current Superchat Sink contract, removing the
   retired delivery callback. Route final results and all failures through the

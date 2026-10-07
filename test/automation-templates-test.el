@@ -44,7 +44,7 @@
            (supertag-automation--event-queue nil)
            (supertag-async--queue nil)
            (supertag-async--processor-fn #'supertag-sync--async-processor)
-           (supertag-async-batch-size 1)
+           (supertag-async-slice-seconds 0)
            (supertag-async--failed-items nil)
            (supertag-async--timer nil))
        (cl-letf (((symbol-function 'supertag-sync-save-state) #'ignore)

@@ -252,6 +252,8 @@ on the next save.  `:queries' was retired on 2026-09-06: the loader
     (puthash id canonical bucket)
     (when (fboundp 'supertag-index-note-store-change)
       (supertag-index-note-store-change collection))
+    (when (eq collection :nodes)
+      (supertag-index--on-node-changed id canonical))
     (when emit-event-p
       (supertag-emit-event :store-changed (list collection id) nil canonical))
     canonical))
@@ -367,6 +369,8 @@ When EMIT-EVENT-P is non-nil, emit :store-changed notification."
       (remhash id bucket)
       (when (fboundp 'supertag-index-note-store-change)
         (supertag-index-note-store-change collection))
+      (when (eq collection :nodes)
+        (supertag-index--on-node-changed id nil))
       (supertag-emit-event :store-changed (list collection id) old nil))
     old))
 
@@ -853,6 +857,15 @@ which point exactly one batch notification flush happens."
 (defvar supertag--index-nodes-source-token nil
   "Source token represented by `supertag--index-nodes-by-tag'.")
 
+(defvar supertag--index-nodes-by-file (make-hash-table :test 'equal)
+  "Index: file name -> hash-set of the IDs of the nodes in that file.")
+
+(defvar supertag--index-node-files (make-hash-table :test 'equal)
+  "Index: node ID -> the file name it is listed under.")
+
+(defvar supertag--index-nodes-by-file-token nil
+  "Cons of the Store and the :nodes revision the file index represents.")
+
 (defvar supertag--index-source-revisions (make-hash-table :test 'eq)
   "Monotonic in-memory revisions for Store collections.")
 
@@ -919,6 +932,64 @@ which point exactly one batch notification flush happens."
       (when (and new-from new-to)
         (supertag-index--add-relation-entry relation-id new-from new-to))
       (setq supertag--index-relations-source-token current-token))))
+
+(defun supertag-index--set-node-file (id file)
+  "List node ID under FILE in the file index, or under nothing when nil."
+  (let ((old (gethash id supertag--index-node-files))
+        (file (and (stringp file) file)))
+    (unless (equal old file)
+      (when old
+        (when-let* ((set (gethash old supertag--index-nodes-by-file)))
+          (remhash id set)
+          (when (= 0 (hash-table-count set))
+            (remhash old supertag--index-nodes-by-file)))
+        (remhash id supertag--index-node-files))
+      (when file
+        (puthash id file supertag--index-node-files)
+        (puthash id t
+                 (or (gethash file supertag--index-nodes-by-file)
+                     (puthash file (make-hash-table :test 'equal :size 1)
+                              supertag--index-nodes-by-file)))))))
+
+(defun supertag-index--on-node-changed (id node)
+  "Apply one completed Store mutation of node ID to the file index.
+NODE is the stored node, or nil when it was removed.  An index that
+missed an earlier mutation is left alone and rebuilt when next read."
+  (let ((revision (gethash :nodes supertag--index-source-revisions 0))
+        (token supertag--index-nodes-by-file-token))
+    (when (and token
+               (eq (car token) supertag--store)
+               (eql (1+ (cdr token)) revision))
+      (supertag-index--set-node-file id (plist-get node :file))
+      (setcdr token revision))))
+
+(defun supertag-index-rebuild-nodes-by-file ()
+  "Rebuild the file index from the :nodes collection."
+  (setq supertag--index-nodes-by-file (make-hash-table :test 'equal)
+        supertag--index-node-files (make-hash-table :test 'equal))
+  (let ((nodes (and (hash-table-p supertag--store)
+                    (gethash :nodes supertag--store))))
+    (when (hash-table-p nodes)
+      (maphash (lambda (id node)
+                 (when (consp node)
+                   (supertag-index--set-node-file id (plist-get node :file))))
+               nodes)))
+  (setq supertag--index-nodes-by-file-token
+        (cons supertag--store
+              (gethash :nodes supertag--index-source-revisions 0))))
+
+(defun supertag-index-node-ids-in-file (file)
+  "Return the IDs of the nodes whose :file is the string FILE."
+  (let ((token supertag--index-nodes-by-file-token))
+    (unless (and token
+                 (eq (car token) supertag--store)
+                 (eql (cdr token)
+                      (gethash :nodes supertag--index-source-revisions 0)))
+      (supertag-index-rebuild-nodes-by-file)))
+  (let (ids)
+    (when-let* ((set (gethash file supertag--index-nodes-by-file)))
+      (maphash (lambda (id _) (push id ids)) set))
+    (nreverse ids)))
 
 ;;; --- Full Rebuild ---
 
@@ -1009,7 +1080,8 @@ Call this after loading the store from disk."
   "Clear every Store-derived runtime index without touching the Store."
   (setq supertag--index-relations-by-from (make-hash-table :test 'equal)
         supertag--index-relations-by-to (make-hash-table :test 'equal)
-        supertag--index-relations-source-token nil)
+        supertag--index-relations-source-token nil
+        supertag--index-nodes-by-file-token nil)
   (supertag-index-clear-nodes-by-tag)
   (when (fboundp 'supertag-tag-index-clear)
     (supertag-tag-index-clear))

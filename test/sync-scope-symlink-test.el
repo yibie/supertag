@@ -132,4 +132,44 @@
           (should (supertag-sync--in-scope-path-p (car files)))
           (should (= 1 dir-calls)))))))
 
+(ert-deftest supertag-sync-scope-vault-pass-resolves-each-directory-once ()
+  "A pass over a vault resolves a directory once and still follows file links."
+  (supertag-sync-scope-test--with-symlink
+    (let* ((outside (expand-file-name "outside/" tmp))
+           (supertag-sync-directories (list link))
+           (supertag-sync-directories-mode 'unified)
+           (supertag-sync-exclude-directories nil)
+           (supertag-sync--truename-directory-cache nil)
+           (notes (mapcar (lambda (n) (expand-file-name (format "note-%d.org" n) link))
+                          (number-sequence 0 4)))
+           (leaving (expand-file-name "leaving.org" real))
+           (entering (expand-file-name "entering.org" outside))
+           (ghost (expand-file-name "draft/ghost.org" link))
+           (paths (append notes (list leaving entering ghost
+                                      (expand-file-name "note.txt" real))))
+           (calls 0)
+           (depth 0)
+           (real-truename (symbol-function 'file-truename))
+           expected)
+      (make-directory outside t)
+      (dolist (note notes) (with-temp-file note (insert "* Note\n")))
+      (with-temp-file (expand-file-name "target.org" outside) (insert "* Out\n"))
+      (make-symbolic-link (expand-file-name "target.org" outside) leaving)
+      (make-symbolic-link (car notes) entering)
+      (setq expected (mapcar #'supertag-sync--in-scope-path-p paths))
+      (should (equal '(t t t t t nil t t nil) (mapcar (lambda (v) (and v t)) expected)))
+      (cl-letf (((symbol-function 'file-truename)
+                 (lambda (name &rest args)
+                   (when (zerop depth) (setq calls (1+ calls)))
+                   (setq depth (1+ depth))
+                   (unwind-protect (apply real-truename name args)
+                     (setq depth (1- depth))))))
+        (supertag-sync--with-directory-truenames
+          (should (equal expected (mapcar #'supertag-sync--in-scope-path-p paths)))
+          ;; Three directories and the two file links, however many notes.
+          (should (= 5 calls))
+          (should (equal expected (mapcar #'supertag-sync--in-scope-path-p paths)))
+          (should (= 7 calls))))
+      (should-not supertag-sync--directory-truenames))))
+
 ;;; sync-scope-symlink-test.el ends here

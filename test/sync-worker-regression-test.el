@@ -111,6 +111,117 @@ the old mtime until destructive cleanup is allowed."
             (should (equal (list file) (supertag-get-modified-files)))))
       (ignore-errors (delete-file file)))))
 
+;; Re-synchronizing a saved file must cost what changed, not the whole file,
+;; and must still produce exactly the records a whole-file parse produces.
+(ert-deftest supertag-sync-incremental-parse-matches-whole-file-parse ()
+  "Only headings whose own text or ancestors changed are parsed again."
+  (let* ((file "/tmp/supertag-incremental-parse.org")
+         (supertag-sync--parse-memo (make-hash-table :test 'equal))
+         (supertag-sync--is-full-rescan-p nil)
+         (supertag-sync-incremental-parse t)
+         (text (concat
+                "#+TITLE: Incremental\n\n"
+                "* Parent #alpha\n:PROPERTIES:\n:ID: inc-parent\n:END:\nParent body.\n"
+                "** Child\n:PROPERTIES:\n:ID: inc-child\n:END:\nChild body.\n"
+                "** No id heading\nLoose text.\n"
+                "* Twin\n:PROPERTIES:\n:ID: inc-twin\n:END:\nFirst twin.\n"
+                "* Twin again\n:PROPERTIES:\n:ID: inc-twin\n:END:\nSecond twin.\n"
+                "* Last\n:PROPERTIES:\n:ID: inc-last\n:END:\nLast body.\n"))
+         (reparsed nil)
+         (original (symbol-function 'supertag-sync--parse-unit)))
+    (cl-labels ((whole (string)
+                  (with-temp-buffer
+                    (insert string)
+                    (supertag--parse-org-nodes-from-current-buffer file)))
+                (incremental (string)
+                  (setq reparsed nil)
+                  (with-temp-buffer
+                    (insert string)
+                    (supertag-sync--parse-nodes file)))
+                (edit (from to)
+                  (should (string-match-p (regexp-quote from) text))
+                  (setq text (replace-regexp-in-string
+                              (regexp-quote from) to text t t))))
+      (cl-letf (((symbol-function 'supertag-sync--parse-unit)
+                 (lambda (unit &rest args)
+                   (push (car (plist-get unit :key)) reparsed)
+                   (apply original unit args))))
+        (should (equal (whole text) (incremental text)))
+        (should-not reparsed)
+        ;; Nothing changed.
+        (should (equal (whole text) (incremental text)))
+        (should-not reparsed)
+        ;; Body text of one node; the nodes below it only move.
+        (edit "Child body." "Child body, now longer #beta.")
+        (should (equal (whole text) (incremental text)))
+        (should (equal '("inc-child") reparsed))
+        ;; A heading without an ID belongs to no node.
+        (edit "Loose text." "Loose text, edited.")
+        (should (equal (whole text) (incremental text)))
+        (should-not reparsed)
+        ;; A parent's title is part of its descendants' outline path.
+        (edit "* Parent #alpha" "* Parent renamed #alpha")
+        (should (equal (whole text) (incremental text)))
+        (should (equal '("inc-child" "inc-parent") (sort reparsed #'string<)))
+        ;; One of two headings sharing an ID.
+        (edit "Second twin." "Second twin, edited.")
+        (should (equal (whole text) (incremental text)))
+        (should (equal '("inc-twin") reparsed))
+        ;; A removed node.
+        (edit "* Last\n:PROPERTIES:\n:ID: inc-last\n:END:\nLast body.\n" "")
+        (should (equal (whole text) (incremental text)))
+        (should-not reparsed)
+        ;; The file header affects every node, so the whole file is parsed.
+        (setq text (concat "#+FILETAGS: :gamma:\n" text))
+        (should (equal (whole text) (incremental text)))
+        (should-not reparsed)
+        ;; Turned off, every sync parses the whole file.
+        (let ((supertag-sync-incremental-parse nil))
+          (edit "Parent body." "Parent body again.")
+          (should (equal (whole text) (incremental text)))
+          (should-not reparsed))))))
+
+;; A saved file is re-read on an idle timer, but the user may resume typing
+;; before it finishes; the background pass must then drop its work untouched.
+(ert-deftest supertag-sync-background-pass-yields-to-pending-input ()
+  "Pending input makes a queued sync give FILE back without writing anything."
+  (let* ((file (make-temp-file "supertag-yield-" nil ".org" "* Keep\n"))
+         (state-table (make-hash-table :test 'equal))
+         (supertag-sync--state (list :sync-state state-table))
+         (supertag-sync--deferred-files (make-hash-table :test 'equal))
+         (supertag-async--queue nil)
+         (supertag-async--failed-items nil)
+         (supertag-async--timer nil)
+         (supertag-async-idle-delay 600)
+         (parsed nil))
+    (unwind-protect
+        (cl-letf (((symbol-function 'input-pending-p) (lambda (&rest _) t))
+                  ((symbol-function 'supertag--parse-org-nodes-from-current-buffer)
+                   (lambda (&rest _) (setq parsed t) nil))
+                  ((symbol-function 'supertag-sync--upsert-file-node)
+                   (lambda (&rest _) (ert-fail "wrote after yielding")))
+                  ((symbol-function 'supertag-sync--verify-file-nodes)
+                   (lambda (&rest _) (ert-fail "orphan cleanup ran after yielding")))
+                  ((symbol-function 'supertag-sync-save-state)
+                   (lambda () (ert-fail "saved sync state after yielding"))))
+          (supertag-sync--async-processor file)
+          (should-not parsed)
+          (should (equal (list file) supertag-async--queue))
+          (should (= 0 (hash-table-count state-table)))
+          (should (= 0 (hash-table-count supertag-sync--deferred-files)))
+          ;; A sync the user asked for is never abandoned.
+          (should-not (eq 'yielded
+                          (cl-letf (((symbol-function 'supertag-sync--upsert-file-node)
+                                     (lambda (&rest _) nil))
+                                    ((symbol-function 'supertag-find-nodes-by-file)
+                                     (lambda (&rest _) nil)))
+                            (supertag-sync--process-single-file
+                             file (list :nodes-created 0 :nodes-updated 0
+                                        :nodes-deleted 0)))))
+          (should parsed))
+      (when (timerp supertag-async--timer) (cancel-timer supertag-async--timer))
+      (ignore-errors (delete-file file)))))
+
 (ert-deftest supertag-reindex-org-parses-unchanged-files ()
   "Reindex reparses files even when their content hash is unchanged."
   (let* ((file (make-temp-file "supertag-reindex-" nil ".org" "* Note\n"))

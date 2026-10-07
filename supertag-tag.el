@@ -238,6 +238,27 @@ not a tag."
        (not (string-empty-p name))
        (not (memq (aref name 0) '(?' ?+)))))
 
+(defun supertag-transform--collect-object-ranges (part offset begin end ranges)
+  "Return RANGES extended with the Org object ranges of PART and its children.
+OFFSET is added to every parsed position; only objects overlapping BEGIN and
+END are kept.  A top-level function rather than a local closure: this runs
+for every headline and paragraph of a file being synchronized."
+  (unless (stringp part)
+    (let ((object-begin (org-element-property :begin part))
+          (object-end (org-element-property :end part)))
+      (when (and object-begin object-end)
+        (setq object-begin (+ offset object-begin)
+              object-end (+ offset object-end))
+        (when (and (< object-begin end) (> object-end begin))
+          (push (list object-begin object-end
+                      (memq (org-element-type part)
+                            '(subscript superscript)))
+                ranges))))
+    (dolist (child (org-element-contents part))
+      (setq ranges (supertag-transform--collect-object-ranges
+                    child offset begin end ranges))))
+  ranges)
+
 (defun supertag-transform--inline-tag-object-ranges
     (begin end &optional element restriction)
   "Return Org object ranges between BEGIN and END.
@@ -255,42 +276,28 @@ objects are transparent so underscores and carets remain valid Tag text."
                  (t (org-element-contents element))))
          (offset (if element 0 (1- begin)))
          ranges)
-    (cl-labels
-        ((collect (part)
-           (unless (stringp part)
-             (let ((object-begin (org-element-property :begin part))
-                   (object-end (org-element-property :end part)))
-               (when (and object-begin object-end)
-                 (setq object-begin (+ offset object-begin)
-                       object-end (+ offset object-end))
-                 (when (and (< object-begin end) (> object-end begin))
-                   (push (list object-begin object-end
-                               (memq (org-element-type part)
-                                     '(subscript superscript)))
-                         ranges))))
-             (dolist (child (org-element-contents part))
-               (collect child)))))
-      (dolist (part (if (listp parts) parts (list parts)))
-        (collect part)))
-    (sort ranges (lambda (a b) (< (car a) (car b))))))
+    (dolist (part (if (listp parts) parts (list parts)))
+      (setq ranges (supertag-transform--collect-object-ranges
+                    part offset begin end ranges)))
+    (sort ranges #'car-less-than-car)))
 
 (defun supertag-transform--inline-tag-prose-end (begin end object-ranges)
   "Return Tag prose end between BEGIN and END using OBJECT-RANGES.
 Return nil when BEGIN is inside an Org object.  Transparent ranges may
 occur later inside a Tag; other objects terminate it at their opening."
-  (unless (cl-some (lambda (range)
-                     (and (<= (nth 0 range) begin)
-                          (< begin (nth 1 range))))
-                   object-ranges)
-    (catch 'boundary
-      (dolist (range object-ranges)
-        (let ((object-begin (nth 0 range))
-              (transparent (nth 2 range)))
-          (when (and (not transparent)
-                     (> object-begin begin)
-                     (< object-begin end))
-            (throw 'boundary object-begin))))
-      end)))
+  (catch 'boundary
+    (dolist (range object-ranges)
+      (when (and (<= (nth 0 range) begin)
+                 (< begin (nth 1 range)))
+        (throw 'boundary nil)))
+    (dolist (range object-ranges)
+      (let ((object-begin (nth 0 range))
+            (transparent (nth 2 range)))
+        (when (and (not transparent)
+                   (> object-begin begin)
+                   (< object-begin end))
+          (throw 'boundary object-begin))))
+    end))
 
 (defconst supertag-inline-tag-keyword-line-regexp
   "[ \t]*#\\+"

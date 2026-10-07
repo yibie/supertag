@@ -130,8 +130,7 @@
         (should (equal created-at (plist-get node :created-at)))
         (should (member "project" (plist-get node :tags)))
         (should (member supertag-ownership-test-node-b
-                        (plist-get node :ref-to)))
-        (should-not (plist-get node :orphaned-at)))
+                        (plist-get node :ref-to))))
       (let ((update (cl-find-if
                      (lambda (event)
                        (let ((previous-properties

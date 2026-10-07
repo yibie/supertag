@@ -57,10 +57,9 @@
 | `supertag-sync-hash-props` | `'(:raw-value :olp :tags :todo :priority :content :properties :parent-id)` | 算节点哈希时额外纳入的 Org 属性；只能追加，不能减少必需项 |
 | `supertag-sync-idle-delay` | `1.0` | 空闲多少秒后触发自动同步 |
 | `supertag-sync-import-org-tags` | `nil` | 是否把 Org 原生 `:tag:` 当标签导入；导入只读，不改文件 |
-| `supertag-sync-max-delete-count` | `1000` | 单次 GC 允许删除的节点数上限，超过就中止 |
-| `supertag-sync-max-delete-ratio` | `0.5` | 单次 GC 允许删除的比例上限，超过就中止 |
+| `supertag-sync-max-delete-count` | `1000` | 一次批量删除（消失文件的节点，或全量重建、清理命令找到的节点）允许删除的节点数上限，超过则一个都不删 |
+| `supertag-sync-max-delete-ratio` | `0.5` | 一次批量删除允许占全部节点的比例上限，超过则一个都不删 |
 | `supertag-sync-node-creation-level` | `1` | 遗留项：全仓只有定义、没有读取，当前没有任何代码消费它；同步不会为无 ID 的标题自动造 ID |
-| `supertag-sync-orphan-grace-seconds` | `3600` | 孤儿节点被删除前的宽限秒数（须持续处于无 file 状态） |
 | `supertag-sync-quiet-when-idle` | `t` | 没有改动时不打印例行同步消息 |
 | `supertag-sync-smart-detection-enabled` | `nil` | 用文件哈希跳过未改动文件 |
 | `supertag-sync-smart-detection-verbose` | `nil` | 打印“跳过未改动文件”这类决策消息 |

@@ -80,10 +80,9 @@ source files; where a long default is elided, the source is authoritative.
 | `supertag-sync-hash-props` | `'(:raw-value :olp :tags :todo :priority :content :properties :parent-id)` | extra Org attributes in the node hash; append only, never remove required entries |
 | `supertag-sync-idle-delay` | `1.0` | idle seconds before auto-sync runs |
 | `supertag-sync-import-org-tags` | `nil` | whether native Org `:tag:`s are imported as tags; the import is read-only |
-| `supertag-sync-max-delete-count` | `1000` | maximum nodes a single GC pass may delete; beyond it the pass aborts |
-| `supertag-sync-max-delete-ratio` | `0.5` | maximum delete ratio for a single GC pass; beyond it the pass aborts |
+| `supertag-sync-max-delete-count` | `1000` | maximum nodes one bulk deletion may remove (the nodes of files that disappeared, or of a full rescan or cleanup); beyond it nothing is deleted |
+| `supertag-sync-max-delete-ratio` | `0.5` | maximum share of all nodes one bulk deletion may remove; beyond it nothing is deleted |
 | `supertag-sync-node-creation-level` | `1` | legacy: defined but never read in the repo; sync never invents an ID for an ID-less heading |
-| `supertag-sync-orphan-grace-seconds` | `3600` | grace seconds before an orphaned node may be deleted (it must stay fileless throughout) |
 | `supertag-sync-quiet-when-idle` | `t` | print no routine sync message when nothing changed |
 | `supertag-sync-smart-detection-enabled` | `nil` | skip unchanged files using their hash |
 | `supertag-sync-smart-detection-verbose` | `nil` | print decisions such as "skipping unchanged file" |

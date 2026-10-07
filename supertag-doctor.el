@@ -396,7 +396,7 @@ own / foreign-active / foreign-stale / unavailable."
   '((supertag-migrate-run . "Run verified data migration")
     (supertag-migrate-status . "Report pending migration and identity conflicts")
     (supertag-sync-cleanup-database
-     . "Validate nodes and garbage-collect orphans (supertag-sync-cleanup-database)")
+     . "Delete nodes that no Org file backs (supertag-sync-cleanup-database)")
     (supertag-sync-full-rescan
      . "Rebuild document projections from Org files (supertag-sync-full-rescan)"))
   "Repair commands offered by `supertag-doctor', in run order.")

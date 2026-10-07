@@ -202,7 +202,7 @@ value.
 | `M-x supertag-git-sync-now` | commit/pull now, or commit a resolved conflict |
 | `M-x supertag-sync-full-rescan` | full rescan rebuilding projections from one complete snapshot (does not modify Org) |
 | `M-x supertag-sync-status` | show sync status and current configuration |
-| `M-x supertag-sync-cleanup-database` | validate nodes and garbage-collect orphans (destructive maintenance; confirm directories first) |
+| `M-x supertag-sync-cleanup-database` | delete the nodes that no Org file backs (destructive maintenance; confirm directories first) |
 | `M-x supertag-save-store` | save the database now |
 | `M-x supertag-vault-activate` | switch vaults in multi-vault mode (refused while Git sync is on) |
 

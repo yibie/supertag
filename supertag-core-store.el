@@ -1015,6 +1015,8 @@ Call this after loading the store from disk."
     (supertag-tag-index-clear))
   (when (fboundp 'supertag-schema-clear-global-field-caches)
     (supertag-schema-clear-global-field-caches))
+  (when (fboundp 'supertag-sync-forget-unresolved-links)
+    (supertag-sync-forget-unresolved-links))
 
   (when (fboundp 'supertag-automation-clear-rule-index)
     (supertag-automation-clear-rule-index)))

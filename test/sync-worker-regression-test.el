@@ -13,6 +13,7 @@
 ;;; Code:
 
 (require 'legacy-field-fixture)
+(require 'document-fixture)
 (require 'ert)
 (require 'cl-lib)
 (require 'bytecomp)
@@ -96,7 +97,7 @@ the old mtime until destructive cleanup is allowed."
                      (lambda (&rest _) t))
                     ((symbol-function 'supertag-db-add-with-hash)
                      (lambda (&rest _) nil))
-                    ((symbol-function 'supertag-node-mark-deleted-from-file)
+                    ((symbol-function 'supertag-sync--delete-node)
                      (lambda (&rest _)
                        (ert-fail "destructive deletion ran while guarded")))
                     ((symbol-function 'supertag-sync-save-state)
@@ -270,8 +271,8 @@ the old mtime until destructive cleanup is allowed."
     (should (equal "keep"
                    (supertag-test-read-legacy-value "node" "semantic-note")))))
 
-(ert-deftest supertag-sync-restores-orphaned-node-with-unchanged-hash ()
-  "Reappearing headings regain their location even with a cached pre-orphan hash."
+(ert-deftest supertag-sync-restores-location-with-unchanged-hash ()
+  "A node whose location was rewritten regains it even when its hash matches."
   (let* ((file (make-temp-file "supertag-restored-" nil ".org"
                                "* Scott Jenson\n:PROPERTIES:\n:ID: restored\n:END:\n"))
          (supertag--store nil)
@@ -283,11 +284,11 @@ the old mtime until destructive cleanup is allowed."
             (supertag-db-add-with-hash "restored" parsed)
             (should-not (supertag-node-changed-p
                          (supertag-node-get "restored") parsed))
-            (supertag-node-mark-deleted-from-file "restored")
+            (supertag-node-set-location
+             "restored" (concat file ".elsewhere") 1)
             (should-not (supertag-node-location-find "restored"))
             (supertag-sync--reconcile-node parsed)
-            (should (supertag-node-location-find "restored"))
-            (should-not (plist-get (supertag-node-get "restored") :orphaned-at))))
+            (should (supertag-node-location-find "restored"))))
       (when-let* ((buffer (get-file-buffer file)))
         (kill-buffer buffer))
       (delete-file file))))
@@ -313,8 +314,6 @@ the old mtime until destructive cleanup is allowed."
                      (lambda (&rest _) (ert-fail "partial snapshot was processed")))
                     ((symbol-function 'supertag-sync-validate-nodes)
                      (lambda (&rest _) (ert-fail "partial snapshot validated")))
-                    ((symbol-function 'supertag-sync-garbage-collect-orphaned-nodes)
-                     (lambda () (ert-fail "partial snapshot ran GC")))
                     ((symbol-function 'supertag-sync-save-state)
                      (lambda () (ert-fail "partial snapshot saved state"))))
             (setq report (supertag-reindex-org))
@@ -355,8 +354,6 @@ the old mtime until destructive cleanup is allowed."
                          (error "deliberate reindex failure"))))
                     ((symbol-function 'supertag-sync-validate-nodes)
                      (lambda (&rest _) (ert-fail "failed reindex validated")))
-                    ((symbol-function 'supertag-sync-garbage-collect-orphaned-nodes)
-                     (lambda () (ert-fail "failed reindex ran GC")))
                     ((symbol-function 'supertag-sync-save-state)
                      (lambda () (ert-fail "failed reindex saved state"))))
             (setq report (supertag-reindex-org)))
@@ -585,8 +582,6 @@ the old mtime until destructive cleanup is allowed."
                      (lambda (_files) nil))
                     ((symbol-function 'supertag-sync--in-sync-scope-p)
                      (lambda (_file) t))
-                    ((symbol-function 'supertag-sync-garbage-collect-orphaned-nodes)
-                     (lambda () nil))
                     ((symbol-function 'supertag-async--ensure-timer)
                      (lambda () nil)))
             (supertag-sync--check-and-sync-guarded)
@@ -625,8 +620,7 @@ the old mtime until destructive cleanup is allowed."
                                 :snapshot-status 'complete
                                 :files-discovered 1 :files-processed 1
                                 :nodes-created 0 :nodes-updated 0 :nodes-deleted 0
-                                :references-created 0 :references-deleted 0
-                                :garbage-collected 0)))
+                                :references-created 0 :references-deleted 0)))
               (cl-letf (((symbol-function 'supertag-reindex-org)
                          (lambda () report)))
                 (should (eq (supertag-sync-full-rescan) report))))
@@ -656,7 +650,7 @@ the old mtime until destructive cleanup is allowed."
 (ert-deftest supertag-sync-validate-nodes-keeps-legacy-file-nodes ()
   "Validate legacy file nodes without identity metadata by file existence.
 Such nodes predate `:link-type', so a live file is the only safe evidence.
-A deleted-file node and a heading whose ID is absent are still orphaned."
+A deleted-file node and a heading whose ID is absent are still deleted."
   (let* ((file (make-temp-file "supertag-validate-" nil ".org"
                                "#+title: ai\n* Heading\nno id drawer here\n"))
          (gone-file (concat (make-temp-name
@@ -676,11 +670,11 @@ A deleted-file node and a heading whose ID is absent are still orphaned."
                      (funcall fn "MISSING-HEADING"
                               (list :id "MISSING-HEADING" :type :node
                                     :level 1 :file file :title "gone"))))
-                  ((symbol-function 'supertag-node-mark-deleted-from-file)
-                   (lambda (id) (push id marked))))
+                  ((symbol-function 'supertag-sync--delete-nodes)
+                   (lambda (ids _counters) (setq marked ids) (length ids))))
           (supertag-sync-validate-nodes)
           ;; File node with a live file is kept; the deleted-file node and the
-          ;; genuinely missing heading are orphaned.
+          ;; genuinely missing heading are deleted.
           (should-not (member "FILE-NODE-UUID" marked))
           (should (member "FILE-NODE-GONE" marked))
           (should (member "MISSING-HEADING" marked))
@@ -708,23 +702,117 @@ A deleted-file node and a heading whose ID is absent are still orphaned."
            (list :id new-id :type :node :level 0 :link-type link-type
                  :file file :title "New"))
           (supertag-sync-validate-nodes counters)
-          (should-not (plist-get (supertag-node-get old-id) :file))
+          (should-not (supertag-node-get old-id))
           (should (equal (plist-get (supertag-node-get new-id) :file) file))
           (should (equal (car (supertag-find-file-node file)) new-id))
           (should (= (plist-get counters :nodes-deleted) 1)))
       (ignore-errors (delete-directory tmp t)))))
 
-(ert-deftest supertag-sync-validate-nodes-orphans-replaced-org-id ()
+(ert-deftest supertag-sync-validate-nodes-deletes-replaced-org-id ()
   "A file node stops owning a file after its top-level Org ID changes."
   (supertag-sync-worker-test--identity-replacement
    'id ":PROPERTIES:\n:ID: new-file-id\n:END:\n#+TITLE: Note\n"
    "old-file-id" "new-file-id"))
 
-(ert-deftest supertag-sync-validate-nodes-orphans-replaced-denote-id ()
+(ert-deftest supertag-sync-validate-nodes-deletes-replaced-denote-id ()
   "A file node stops owning a file after its Denote identifier changes."
   (supertag-sync-worker-test--identity-replacement
    'denote "#+TITLE: Note\n#+IDENTIFIER: new-denote-id\n"
    "old-denote-id" "new-denote-id"))
+
+;;; Direct deletion and links to nodes that appear later.
+
+(defun supertag-sync-worker-test--write (path &rest lines)
+  "Write LINES to PATH and return PATH."
+  (with-temp-file path
+    (insert (mapconcat #'identity lines "\n") "\n"))
+  path)
+
+(defun supertag-sync-worker-test--linked-p (from to)
+  "Return non-nil when a Document Link FROM -> TO is projected."
+  (supertag-relation-find-between from to :reference :document-link))
+
+(ert-deftest supertag-sync-background-projects-link-to-later-target ()
+  "A link whose source file is read before its target is still projected."
+  (supertag-document-test-with-vault
+    (let ((source (supertag-sync-worker-test--write
+                   (expand-file-name "a-source.org" tmp)
+                   "* Source" ":PROPERTIES:" ":ID: late-source" ":END:"
+                   "See [[id:late-target][target]] and [[id:late-sibling][sibling]]."
+                   "* Sibling" ":PROPERTIES:" ":ID: late-sibling" ":END:"))
+          (target (supertag-sync-worker-test--write
+                   (expand-file-name "b-target.org" tmp)
+                   "* Target" ":PROPERTIES:" ":ID: late-target" ":END:")))
+      (supertag-sync--async-processor source)
+      (should (supertag-node-get "late-source"))
+      (should-not (supertag-node-get "late-target"))
+      ;; A later heading of the same file is a later target too.
+      (should (supertag-sync-worker-test--linked-p "late-source" "late-sibling"))
+      (supertag-sync--async-processor target)
+      (should (supertag-sync-worker-test--linked-p "late-source" "late-target")))))
+
+(ert-deftest supertag-sync-removed-heading-is-deleted-and-moved-one-keeps-backlinks ()
+  "A removed heading leaves the Store at once; moving it keeps its backlinks."
+  (supertag-document-test-with-vault
+    (let ((source (supertag-sync-worker-test--write
+                   (expand-file-name "source.org" tmp)
+                   "* Source" ":PROPERTIES:" ":ID: move-source" ":END:"
+                   "See [[id:move-target][target]]."))
+          (old (supertag-sync-worker-test--write
+                (expand-file-name "old.org" tmp)
+                "* Stays" ":PROPERTIES:" ":ID: move-stays" ":END:"
+                "* Target" ":PROPERTIES:" ":ID: move-target" ":END:"
+                "* Dropped" ":PROPERTIES:" ":ID: move-dropped" ":END:"))
+          (new (expand-file-name "new.org" tmp)))
+      (should (eq 'complete (plist-get (supertag-reindex-org) :status)))
+      (should (supertag-sync-worker-test--linked-p "move-source" "move-target"))
+      (supertag-sync-worker-test--write
+       old "* Stays" ":PROPERTIES:" ":ID: move-stays" ":END:")
+      (supertag-sync--async-processor old)
+      (should (supertag-node-get "move-stays"))
+      (should-not (supertag-node-get "move-target"))
+      (should-not (supertag-node-get "move-dropped"))
+      (should-not (supertag-sync-worker-test--linked-p "move-source" "move-target"))
+      (supertag-sync-worker-test--write
+       new "* Target" ":PROPERTIES:" ":ID: move-target" ":END:")
+      (supertag-sync--async-processor new)
+      (should (equal new (plist-get (supertag-node-get "move-target") :file)))
+      (should (supertag-sync-worker-test--linked-p "move-source" "move-target"))
+      (should (equal source (plist-get (supertag-node-get "move-source") :file))))))
+
+(ert-deftest supertag-sync-bulk-deletion-over-caps-keeps-nodes-and-state ()
+  "A refused bulk deletion keeps the nodes and retries from the sync state."
+  (supertag-document-test-with-vault
+    (let ((supertag-sync-max-delete-ratio 1.0)
+          (supertag-sync-max-delete-count 0))
+      (should (gethash file (supertag-sync--get-state-table)))
+      (delete-file file)
+      (supertag-sync--drop-removed-files (list file))
+      (should (supertag-node-get "document-node"))
+      (should (gethash file (supertag-sync--get-state-table)))
+      (setq supertag-sync-max-delete-count 1000)
+      (supertag-sync--drop-removed-files (list file))
+      (should-not (supertag-node-get "document-node"))
+      (should-not (supertag-find-nodes-by-file file))
+      (should-not (gethash file (supertag-sync--get-state-table))))))
+
+(ert-deftest supertag-sync-renamed-file-moves-its-nodes ()
+  "A file renamed on disk keeps its nodes; only the heading that left goes."
+  (supertag-document-test-with-vault
+    (let* ((renamed (expand-file-name "renamed.org" (file-name-directory file)))
+           (created (plist-get (supertag-node-get "document-node") :created-at))
+           (supertag-sync-max-delete-ratio 1.0)
+           (supertag-sync-max-delete-count 0))
+      (rename-file file renamed)
+      (supertag-async-enqueue renamed)
+      (supertag-sync--drop-removed-files (list file))
+      (should (equal file (plist-get (supertag-node-get "document-node") :file)))
+      (supertag-document-test-drain)
+      (should (equal renamed (plist-get (supertag-node-get "document-node") :file)))
+      (should (equal created
+                     (plist-get (supertag-node-get "document-node") :created-at)))
+      (should-not (supertag-find-nodes-by-file file))
+      (should-not (gethash file (supertag-sync--get-state-table))))))
 
 (provide 'sync-worker-regression-test)
 ;;; sync-worker-regression-test.el ends here

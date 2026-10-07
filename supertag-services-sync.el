@@ -87,6 +87,9 @@ loop.  A complete `supertag-sync-full-rescan' forgets them via
   "The function to call for each item in the queue.
 Must accept a single argument (the item).")
 
+(defvar supertag-async-drained-hook nil
+  "Functions run by the worker once it has emptied the queue.")
+
 ;;; Core Functions
 
 (defun supertag-async-init (processor-fn)
@@ -163,8 +166,9 @@ Called after a complete full rescan, which has re-read those files."
           (cl-incf count))))
 
     ;; If work remains, re-schedule
-    (when supertag-async--queue
-      (supertag-async--ensure-timer))))
+    (if supertag-async--queue
+        (supertag-async--ensure-timer)
+      (run-hooks 'supertag-async-drained-hook))))
 
 (defvar supertag-file-id-source 'org-roam
   "Policy for recognizing stable file node IDs.")
@@ -298,23 +302,20 @@ Only headings at this level or deeper will be considered for node creation."
   :group 'supertag-sync)
 
 ;; Safety guards against accidental mass-deletion/data loss
-(defcustom supertag-sync-orphan-grace-seconds 3600
-  "Grace period in seconds before deleting orphaned nodes.
-A node must remain orphaned (its :file property nil) for at least this long
-before garbage collection can remove it."
-  :type 'integer
-  :group 'supertag-sync)
-
 (defcustom supertag-sync-max-delete-ratio 0.5
-  "Maximum allowed ratio of nodes to delete in a single GC pass.
-If the fraction of candidate orphan deletions exceeds this ratio of total nodes,
-the deletion pass is aborted to prevent accidental mass deletion."
+  "Maximum ratio of all nodes that one bulk deletion may remove.
+A bulk deletion removes the nodes of files that disappeared, or the nodes
+a full rescan or `supertag-sync-cleanup-database' finds no Org file for.
+When it would remove more than this fraction of all nodes, nothing is
+deleted.  Headings removed from a file that is still there are not bulk
+deletions and are never capped."
   :type 'number
   :group 'supertag-sync)
 
 (defcustom supertag-sync-max-delete-count 1000
-  "Maximum number of nodes allowed to be deleted in a single GC pass.
-If candidate deletions exceed this number, the deletion pass is aborted."
+  "Maximum number of nodes that one bulk deletion may remove.
+When a bulk deletion would remove more nodes than this, nothing is
+deleted.  See `supertag-sync-max-delete-ratio' for what counts as one."
   :type 'integer
   :group 'supertag-sync)
 
@@ -1039,17 +1040,100 @@ read-only and never creates or modifies Semantic Tags."
       (setq result (plist-put result :tags (delete-dups (nreverse resolved))))
       (plist-put result :unresolved-tags (nreverse unresolved)))))
 
-(defun supertag-node-mark-deleted-from-file (id)
-  "Mark a node as deleted from its file by setting its :file property to nil.
-This does not remove the node from the store immediately."
-  (supertag-node-update
-   id
-   (lambda (node)
-     (when node
-       (let ((modified (copy-sequence node)))
-         (plist-put modified :file nil)
-         ;; Record when the node first became orphaned to allow a grace period
-         (plist-put modified :orphaned-at (supertag-current-time)))))))
+;;; --- Unresolved Document Links ---
+
+(defvar supertag-sync--unresolved-links nil
+  "Cons (STORE . TABLE) of the Org links whose target has no node, or nil.
+TABLE maps a target ID to a hash-set of the IDs of the nodes whose Org
+text links to it.  It is derived from :ref-to and :named-links and rebuilt
+on demand whenever STORE is no longer the live Store.  A node that appears
+after the nodes linking to it receives their Document Links from here.")
+
+(defun supertag-sync-forget-unresolved-links ()
+  "Drop the unresolved-link table so the next use rebuilds it."
+  (setq supertag-sync--unresolved-links nil))
+
+(defun supertag-sync--unresolved-links-table ()
+  "Return the unresolved-link table of the live Store, building it if stale."
+  (unless (and supertag-sync--unresolved-links
+               (eq (car supertag-sync--unresolved-links) supertag--store))
+    (let ((table (make-hash-table :test 'equal))
+          (nodes (supertag-store-get-collection :nodes)))
+      (when (hash-table-p nodes)
+        (maphash
+         (lambda (id node)
+           (dolist (target (append
+                            (plist-get node :ref-to)
+                            (mapcar (lambda (link) (plist-get link :target-id))
+                                    (plist-get node :named-links))))
+             (when (and (stringp target) (not (gethash target nodes)))
+               (puthash id t
+                        (or (gethash target table)
+                            (puthash target (make-hash-table :test 'equal)
+                                     table))))))
+         nodes))
+      (setq supertag-sync--unresolved-links (cons supertag--store table))))
+  (cdr supertag-sync--unresolved-links))
+
+(defun supertag-sync--note-unresolved-link (source-id target-id)
+  "Remember that SOURCE-ID links to TARGET-ID, which has no node."
+  (let ((table (supertag-sync--unresolved-links-table)))
+    (puthash source-id t
+             (or (gethash target-id table)
+                 (puthash target-id (make-hash-table :test 'equal) table)))))
+
+(defun supertag-sync--project-links-to (id counters)
+  "Project the Document Links that other nodes hold to the node ID.
+Call this once ID is in the Store.  COUNTERS receives the relation totals."
+  (let* ((table (supertag-sync--unresolved-links-table))
+         (sources (gethash id table)))
+    (when sources
+      (remhash id table)
+      (maphash (lambda (source-id _present)
+                 (when-let* ((source (supertag-node-get source-id)))
+                   (supertag--process-node-references source counters)
+                   (supertag--process-node-named-links source counters)))
+               sources))))
+
+(defun supertag-sync--delete-node (id)
+  "Delete the node ID, whose heading or file is gone.
+The nodes whose Org text still links to ID are remembered, so their
+Document Links return if ID reappears, for instance in another file."
+  (let ((sources (mapcar (lambda (relation) (plist-get relation :from))
+                         (cl-remove-if-not
+                          #'supertag-relation-document-link-p
+                          (supertag-relation-find-by-to id :reference)))))
+    (supertag-node-delete id)
+    (dolist (source sources)
+      (unless (equal source id)
+        (supertag-sync--note-unresolved-link source id)))))
+
+(defun supertag-sync--delete-nodes (ids counters)
+  "Delete the nodes IDS in one bulk deletion and return how many were deleted.
+COUNTERS, when non-nil, receives the :nodes-deleted total.  Return nil
+without deleting anything when IDS exceeds `supertag-sync-max-delete-ratio'
+or `supertag-sync-max-delete-count'."
+  (let* ((nodes (supertag-store-get-collection :nodes))
+         (total (if (hash-table-p nodes) (hash-table-count nodes) 0))
+         (count (length ids))
+         (ratio (if (> total 0) (/ (float count) total) 0.0)))
+    (if (and (> count 0)
+             (or (> ratio (or supertag-sync-max-delete-ratio 1.0))
+                 (> count (or supertag-sync-max-delete-count
+                              most-positive-fixnum))))
+        (progn
+          (message (concat "Supertag: not deleting %d of %d nodes (%.0f%%); "
+                           "that exceeds the safety caps.  Adjust "
+                           "`supertag-sync-max-delete-ratio'/"
+                           "`supertag-sync-max-delete-count' if intentional.")
+                   count total (* ratio 100))
+          nil)
+      (dolist (id ids)
+        (supertag-sync--delete-node id))
+      (when counters
+        (setf (plist-get counters :nodes-deleted)
+              (+ count (or (plist-get counters :nodes-deleted) 0))))
+      count)))
 
 (defun supertag-db-add-with-hash (id props &optional counters)
   "Add node with ID and PROPS to database, including hash value.
@@ -1075,13 +1159,12 @@ COUNTERS is an optional plist for tracking statistics."
           (supertag--cleanup-orphaned-named-links
            id current-named-links reference-counters)
           (supertag--process-node-references node-props reference-counters)
-          (supertag--process-node-named-links node-props reference-counters))
-        ;; If this node comes from a file (i.e., has :file), clear any orphan marker
-        (when (plist-get node-props :file)
-          (setq node-props (plist-put node-props :orphaned-at nil)))
-        (if existing
-            (supertag-node-update id (lambda (_previous) node-props))
-          (supertag-node-create node-props))))))
+          (supertag--process-node-named-links node-props reference-counters)
+          (prog1 (if existing
+                     (supertag-node-update id (lambda (_previous) node-props))
+                   (supertag-node-create node-props))
+            ;; Links parsed before this node existed could not be projected.
+            (supertag-sync--project-links-to id reference-counters)))))))
 
 (defun supertag-node-changed-p (old-node new-node)
   "Compare OLD-NODE and NEW-NODE to detect changes.
@@ -1091,8 +1174,8 @@ If OLD-NODE doesn't have a hash value, calculate it on the fly."
          (old-hash (or (plist-get old-node :hash)
                        (supertag-node-hash old-node)))
          (new-hash (supertag-node-hash projected-new)))
-    ;; Orphaning clears :file but retains the last projection's hash.
-    ;; A reappearing node must regain its location even if that hash matches.
+    ;; The stored hash is not refreshed when only the location is rewritten
+    ;; (`supertag-node-set-location'), so compare :file directly.
     (or (not (equal (plist-get old-node :file)
                     (plist-get new-node :file)))
         (not (string= old-hash new-hash)))))
@@ -1335,7 +1418,7 @@ nothing has been written to the Store in that case."
                ((null new-node-props)
 		(if allow-destructive
                     (progn
-                      (supertag-node-mark-deleted-from-file id)
+                      (supertag-sync--delete-node id)
                       (setf (plist-get counters :nodes-deleted)
                             (1+ (or (plist-get counters :nodes-deleted) 0))))
                   (setq deferred-deletions t)))
@@ -1362,60 +1445,67 @@ nothing has been written to the Store in that case."
       (when (and (not allow-destructive) should-parse)
         (puthash file :pending supertag-sync--deferred-files))
       ;; Non-nil tells the caller this pass already removed the nodes that
-      ;; left FILE, so a second parse to look for orphans would find nothing.
+      ;; left FILE, so a second parse to look for them would find nothing.
       (and should-parse allow-destructive 'reconciled))))
 
 
 (cl-defun supertag-sync--verify-file-nodes (file counters)
-  "Verify that nodes in the database still exist in the file.
-This function checks if nodes associated with FILE still exist in the file.
-If a node exists in the database but not in the file, it's marked as orphaned.
-FILE is the file path to verify.
-COUNTERS is a plist for tracking :nodes-created, :nodes-updated, and
-:nodes-deleted."
-  (unless (supertag-sync--allow-destructive-p)
+  "Delete the heading nodes of FILE whose ID is no longer in the file.
+COUNTERS is a plist for tracking :nodes-deleted.  Files that disappeared
+are handled by `supertag-sync--drop-removed-files'."
+  (unless (and (supertag-sync--allow-destructive-p) (file-exists-p file))
     (cl-return-from supertag-sync--verify-file-nodes nil))
-  (let* ((file-exists (file-exists-p file))
-         (current-nodes-in-file (make-hash-table :test 'equal))
-         (nodes-from-file (when file-exists
-                            (supertag--parse-org-nodes file)))
-         (existing-nodes-in-store (supertag-find-nodes-by-file file)))
+  (let ((current-nodes-in-file (make-hash-table :test 'equal)))
+    (dolist (node-props (supertag--parse-org-nodes file))
+      (puthash (plist-get node-props :id) t current-nodes-in-file))
+    (dolist (existing-node-pair (supertag-find-nodes-by-file file))
+      (let ((id (car existing-node-pair)))
+        ;; ponytail: file node lifecycle mirrors the file itself
+        (unless (or (supertag-node-file-node-p (cdr existing-node-pair))
+                    (gethash id current-nodes-in-file))
+          (supertag-sync--delete-node id)
+          (setf (plist-get counters :nodes-deleted)
+                (1+ (plist-get counters :nodes-deleted))))))))
 
-    (if file-exists
-        (progn
-          ;; Populate current-nodes-in-file hash table for quick lookup
-          (dolist (node-props nodes-from-file)
-            (puthash (plist-get node-props :id) node-props current-nodes-in-file))
+(defvar supertag-sync--removed-files nil
+  "Files that left the sync scope and whose nodes still await deletion.")
 
-          ;; Process existing nodes in store for this file
-          (dolist (existing-node-pair existing-nodes-in-store)
-            (let* ((id (car existing-node-pair))
-                   (old-node-props (cdr existing-node-pair))
-                   (new-node-props (gethash id current-nodes-in-file)))
-              ;; Skip file nodes (level 0) - they are NOT orphaned while file exists
-              ;; ponytail: file node lifecycle mirrors the file itself
-              (unless (supertag-node-file-node-p old-node-props)
-              ;; If node exists in store but not in file, mark it as orphaned
-              (when (null new-node-props)
-                (let ((db-node (supertag-node-get id)))
-                  (when (and db-node
-                             (let ((db-node-file (plist-get db-node :file)))
-                               (and db-node-file
-                                    (string= db-node-file file))))
-                    (supertag-node-mark-deleted-from-file id)
-                    (setf (plist-get counters :nodes-deleted)
-                          (1+ (plist-get counters :nodes-deleted))))))))))
-      ;; File doesn't exist: mark all its nodes as orphaned
-      (dolist (existing-node-pair existing-nodes-in-store)
-        (let* ((id (car existing-node-pair))
-               (db-node (supertag-node-get id)))
-          (when (and db-node
-                     (let ((db-node-file (plist-get db-node :file)))
-                       (and db-node-file
-                            (string= db-node-file file))))
-            (supertag-node-mark-deleted-from-file id)
-            (setf (plist-get counters :nodes-deleted)
-                  (1+ (plist-get counters :nodes-deleted)))))))))
+(defun supertag-sync--drop-removed-files (files)
+  "Forget FILES, which left the sync scope, and delete the nodes of those gone.
+A renamed file shows up as one gone file and one new file, so the
+deletion waits until the queued files are parsed: a node found again
+there keeps its identity and only moves."
+  (dolist (file files)
+    (cl-pushnew file supertag-sync--removed-files :test #'equal))
+  (unless supertag-async--queue
+    (supertag-sync--flush-removed-files)))
+
+(defun supertag-sync--flush-removed-files ()
+  "Delete the nodes still attached to a removed file, in one bulk deletion.
+While the snapshot guard or the mass-deletion caps refuse it, the sync
+state is kept so that the next check tries again."
+  (when-let* ((files (prog1 supertag-sync--removed-files
+                       (setq supertag-sync--removed-files nil))))
+    (let ((gone (make-hash-table :test 'equal))
+          ids)
+      (dolist (file files)
+        (unless (file-exists-p file)
+          (puthash file t gone)))
+      (when (> (hash-table-count gone) 0)
+        (supertag-traverse-nodes
+         (lambda (id node)
+           (when (gethash (plist-get node :file) gone)
+             (push id ids)))))
+      (when (or (null ids)
+                (and (supertag-sync--allow-destructive-p)
+                     (supertag-with-transaction
+                       (supertag-sync--delete-nodes ids nil))))
+        (let ((state-table (supertag-sync--get-state-table)))
+          (dolist (file files)
+            (remhash file state-table)))
+        (supertag-sync-save-state)))))
+
+(add-hook 'supertag-async-drained-hook #'supertag-sync--flush-removed-files)
 
 
 (cl-defun supertag-sync--check-and-sync-legacy ()
@@ -1428,8 +1518,7 @@ COUNTERS is a plist for tracking :nodes-created, :nodes-updated, and
     (cl-return-from supertag-sync--check-and-sync-legacy nil))
 
   (let ((files-to-remove nil)
-        (modified-files (supertag-get-modified-files))
-        (counters '(:nodes-created 0 :nodes-updated 0 :nodes-deleted 0 :references-created 0 :references-deleted 0)))
+        (modified-files (supertag-get-modified-files)))
 
     ;; 1. Cleanup Sync State - Remove files that are no longer in scope
     (when (supertag-sync--effective-directories)
@@ -1441,18 +1530,6 @@ COUNTERS is a plist for tracking :nodes-created, :nodes-updated, and
                                (not in-scope))
                        (push file files-to-remove))))
                  state-table)))
-
-    (when files-to-remove
-      (let ((state-table (supertag-sync--get-state-table)))
-        (dolist (file files-to-remove)
-          (remhash file state-table)
-          ;; If file doesn't exist, we can clean up its nodes synchronously (usually fast)
-          ;; or we could enqueue a "deletion job" if we had one.
-          ;; For now, keep deletion synchronous to ensure consistency quickly.
-          (unless (file-exists-p file)
-            (supertag-with-transaction
-              (supertag-sync--verify-file-nodes file counters))))
-        (supertag-sync-save-state)))
 
     ;; 2. Scan for New Files
     (let ((new-files (supertag-scan-sync-directories)))
@@ -1479,13 +1556,14 @@ COUNTERS is a plist for tracking :nodes-created, :nodes-updated, and
         (unless (gethash file state-table)
           (supertag-async-enqueue file))))
 
+    ;; Removed files go last: a renamed file is queued above as a new one.
+    (when files-to-remove
+      (supertag-sync--drop-removed-files files-to-remove))
+
     ;; 5. Report if needed (mostly handled by async worker now)
     (let ((idle-run (and (null modified-files) (null files-to-remove))))
       (when idle-run
-        (supertag--diagnose-empty-sync supertag-sync-quiet-when-idle)))
-
-    ;; Run garbage collection (can be done periodically)
-    (supertag-sync-garbage-collect-orphaned-nodes)))
+        (supertag--diagnose-empty-sync supertag-sync-quiet-when-idle)))))
 
 (cl-defun supertag-sync--check-and-sync-guarded ()
   "Check and synchronize modified files with snapshot guard."
@@ -1497,8 +1575,7 @@ COUNTERS is a plist for tracking :nodes-created, :nodes-updated, and
          (status (plist-get snapshot :status))
          (snapshot-files (plist-get snapshot :files))
          (files-to-remove nil)
-         (modified-files (supertag-get-modified-files))
-         (counters '(:nodes-created 0 :nodes-updated 0 :nodes-deleted 0 :references-created 0 :references-deleted 0)))
+         (modified-files (supertag-get-modified-files)))
     (supertag-sync--snapshot-set snapshot)
     (when (eq status 'unavailable)
       (message "Supertag: sync skipped; directories unavailable")
@@ -1506,15 +1583,7 @@ COUNTERS is a plist for tracking :nodes-created, :nodes-updated, and
 
     ;; 1. Cleanup Sync State (only when snapshot complete)
     (when (eq status 'complete)
-      (setq files-to-remove (supertag-sync--snapshot-files-to-remove snapshot-files))
-      (when files-to-remove
-        (let ((state-table (supertag-sync--get-state-table)))
-          (dolist (file files-to-remove)
-            (remhash file state-table)
-            (unless (file-exists-p file)
-              (supertag-with-transaction
-                (supertag-sync--verify-file-nodes file counters))))
-          (supertag-sync-save-state))))
+      (setq files-to-remove (supertag-sync--snapshot-files-to-remove snapshot-files)))
 
     ;; 2. Scan for New Files (from snapshot)
     (let ((new-files (supertag-sync--snapshot-new-files snapshot-files)))
@@ -1545,14 +1614,14 @@ COUNTERS is a plist for tracking :nodes-created, :nodes-updated, and
         (unless supertag-sync-quiet-when-idle
           (message "Queued %d files for async sync." queued-count))))
 
+    ;; Removed files go last: a renamed file is queued above as a new one.
+    (when files-to-remove
+      (supertag-sync--drop-removed-files files-to-remove))
+
     ;; 4. Report if needed (mostly handled by async worker now)
     (let ((idle-run (and (null modified-files) (null files-to-remove))))
       (when idle-run
-        (supertag--diagnose-empty-sync supertag-sync-quiet-when-idle)))
-
-    ;; 5. Run garbage collection only when snapshot complete
-    (when (eq status 'complete)
-      (supertag-sync-garbage-collect-orphaned-nodes))))
+        (supertag--diagnose-empty-sync supertag-sync-quiet-when-idle)))))
 
 (defun supertag-sync--check-and-sync ()
   "Entry point for sync worker."
@@ -1596,61 +1665,6 @@ Returns a list of (id . node-data) pairs."
      (when (funcall condition-fn id node-data)
        (cons id node-data)))))
 
-(defun supertag-sync-garbage-collect-orphaned-nodes ()
-  "Scan the store for nodes marked as orphaned (:file nil) and delete them
-safely.
-Applies a grace period and mass-deletion guardrails to prevent accidental data
-loss."
-  (let ((candidate-ids '())
-        (deleted-count 0)
-        (total-nodes 0)
-        (nodes-with-file 0)
-        (nodes-without-file 0)
-        (now (current-time)))
-    ;; Collect IDs of orphaned nodes that exceeded grace period
-    (supertag-traverse-nodes
-     (lambda (id node)
-       (cl-incf total-nodes)
-       (let ((file-prop (plist-get node :file)))
-         (if file-prop
-             (cl-incf nodes-with-file)
-           (cl-incf nodes-without-file)))
-       (when (and (eq (plist-get node :type) :node)
-                  (null (plist-get node :file))
-                  (stringp id)
-                  (not (string= id "")))
-        (let* ((orphaned-at (plist-get node :orphaned-at))
-               ;; Compute age safely; if ORPHANED-AT is invalid, ignore-errors returns nil
-               (age (ignore-errors (float-time (time-subtract now orphaned-at)))))
-           (when (and age (>= age (or supertag-sync-orphan-grace-seconds 0)))
-             (push id candidate-ids))))))
-
-    ;; Mass-deletion guardrails
-    (let* ((candidate-count (length candidate-ids))
-           (ratio (if (> total-nodes 0)
-                      (/ (float candidate-count) (float total-nodes))
-                    0.0))
-           (ratio-cap (or supertag-sync-max-delete-ratio 1.0))
-           (count-cap (or supertag-sync-max-delete-count most-positive-fixnum)))
-      (when (and (> candidate-count 0)
-                 (or (> ratio ratio-cap)
-                     (> candidate-count count-cap)))
-        (message (concat "GC aborted: candidate orphan deletions (%d/%d, %.2f%%) exceed safety caps. "
-                         "Adjust `supertag-sync-max-delete-ratio`/`supertag-sync-max-delete-count` if intentional.")
-                 candidate-count total-nodes (* ratio 100))
-        (setq candidate-ids '())))
-
-    ;; Join an enclosing reindex transaction when present.
-    (dolist (id candidate-ids)
-      (let ((node (supertag-node-get id)))
-        (when (and node (null (plist-get node :file)))
-          (supertag-node-delete id)
-          (cl-incf deleted-count))))
-
-    (when (and (> deleted-count 0) (not supertag--transaction-active))
-      (supertag-save-store))
-    deleted-count))
-
 (defun supertag-sync--id-exists-in-file-p (id file)
   "Check if a node ID exists in the specified FILE.
 ID is the node ID string. FILE is the absolute path.
@@ -1676,35 +1690,31 @@ Returns t if the node ID is found, nil otherwise."
              (equal id (plist-get (supertag-sync--parse-file-header) :id)))))))
 
 (defun supertag-sync-validate-nodes (&optional counters)
-  "Validate all nodes in the database against their source files.
-This function iterates through all nodes in the store and checks if they
-still exist in their corresponding files. If not, they are marked as
-orphaned (by setting :file to nil) to be garbage collected later.
-COUNTERS is a plist for tracking changes."
-  (supertag-traverse-nodes
-   (lambda (id node)
-     (let ((file (plist-get node :file))
-           (type (plist-get node :type)))
-       ;; Only check :node entities that claim to live in a file.
-       ;; If :file is already nil, it's already an orphan.
-       (when (and file (eq type :node))
+  "Delete every node that no Org file backs, and return how many were deleted.
+A node is unbacked when it has no file, when its file is gone, or when
+the file no longer holds its ID.  The nodes go in one bulk deletion, so
+nothing is deleted, and nil is returned, when they exceed the
+mass-deletion caps.  COUNTERS is a plist for tracking :nodes-deleted."
+  (let (stale)
+    (supertag-traverse-nodes
+     (lambda (id node)
+       (when (and (eq (plist-get node :type) :node)
+                  (stringp id)
+                  (not (string-empty-p id)))
          ;; Current file nodes carry their identity kind.  Legacy nodes do
          ;; not, so preserve them while the file exists rather than guessing.
-         (let* ((file-node (supertag-node-file-node-p node))
-                (link-type (plist-get node :link-type))
-                (stale
-                 (cond
-                  ((not file-node)
+         (let ((file (plist-get node :file))
+               (link-type (plist-get node :link-type)))
+           (when (cond
+                  ((null file) t)
+                  ((not (supertag-node-file-node-p node))
                    (not (supertag-sync--id-exists-in-file-p id file)))
                   ((not (file-exists-p file)) t)
                   ((memq link-type '(id denote))
                    (not (supertag-sync--file-identity-matches-p id node file)))
-                  (t nil))))
-           (when stale
-             (supertag-node-mark-deleted-from-file id)
-             (when counters
-               (setf (plist-get counters :nodes-deleted)
-                     (1+ (plist-get counters :nodes-deleted)))))))))))
+                  (t nil))
+             (push id stale))))))
+    (supertag-sync--delete-nodes stale counters)))
 
 
 ;; --- Org Parser ---
@@ -1912,8 +1922,10 @@ This function is called only when a node is actually being created or updated."
         (when (and (stringp target-id) (not (string-empty-p target-id)))
           ;; Check if target node exists in the store
           (let ((target-node (supertag-node-get target-id)))
-            ;; A missing target is normal while a batch is still being imported.
-            (when target-node
+            ;; A missing target is normal while a batch is still being
+            ;; imported; it collects this link when it appears.
+            (if (not target-node)
+                (supertag-sync--note-unresolved-link node-id target-id)
               (let ((existing
                      (cl-find-if
                       (lambda (relation)
@@ -1932,6 +1944,9 @@ This function is called only when a node is actually being created or updated."
     (dolist (link (plist-get node-data :named-links))
       (let ((name (plist-get link :relation-name))
             (target-id (plist-get link :target-id)))
+        (when (and node-id (stringp target-id)
+                   (not (supertag-node-get target-id)))
+          (supertag-sync--note-unresolved-link node-id target-id))
         (when (and node-id (supertag-node-get target-id))
           (let ((existing (cl-find-if
                            (lambda (relation)
@@ -2561,7 +2576,7 @@ Processes FILE for synchronization."
             ;; The user typed while FILE was being parsed: nothing was
             ;; written, so put it back and try again on the next idle.
             ('yielded (supertag-async-enqueue file))
-            ;; Orphan cleanup parses FILE again, so skip it when the pass
+            ;; Verification parses FILE again, so skip it when the pass
             ;; above already reconciled against a fresh parse.
             ('reconciled nil)
             (_ (supertag-sync--verify-file-nodes file counters)))))
@@ -2632,7 +2647,6 @@ Return a report plist whose :status is `complete', `aborted', or `failed'."
                      :references-created 0 :references-deleted 0))
          (supertag-sync--is-full-rescan-p t)
          (supertag-automation-sync--enabled nil)
-         gc-count
          report)
     (supertag-sync--snapshot-set snapshot)
     (if (not (eq snapshot-status 'complete))
@@ -2654,8 +2668,6 @@ Return a report plist whose :status is `complete', `aborted', or `failed'."
                 (supertag-sync--reconcile-all-projected-relations counters)
                 (supertag-sync--rebuild-reference-caches)
                 (supertag-sync-validate-nodes counters)
-                (setq gc-count
-                      (supertag-sync-garbage-collect-orphaned-nodes))
                 (supertag-index-rebuild-all))
               (setq report
                     (list :status 'complete
@@ -2668,8 +2680,7 @@ Return a report plist whose :status is `complete', `aborted', or `failed'."
                           :references-created
                           (plist-get counters :references-created)
                           :references-deleted
-                          (plist-get counters :references-deleted)
-                          :garbage-collected gc-count)))
+                          (plist-get counters :references-deleted))))
           (error
            (clrhash state-table)
            (maphash (lambda (file state)
@@ -2705,14 +2716,13 @@ report plist."
     (pcase (plist-get report :status)
       ('complete
        (message
-        "Supertag reindex: %d files, %d created, %d updated, %d deleted, %d refs created, %d refs deleted, %d GC."
+        "Supertag reindex: %d files, %d created, %d updated, %d deleted, %d refs created, %d refs deleted."
         (plist-get report :files-processed)
         (plist-get report :nodes-created)
         (plist-get report :nodes-updated)
         (plist-get report :nodes-deleted)
         (plist-get report :references-created)
-        (plist-get report :references-deleted)
-        (plist-get report :garbage-collected)))
+        (plist-get report :references-deleted)))
       ('aborted
        (message "Supertag reindex aborted: snapshot is %s; no changes made."
                 (plist-get report :snapshot-status)))
@@ -2727,31 +2737,19 @@ report plist."
 
 ;;;###autoload
 (defun supertag-sync-cleanup-database ()
-  "Perform database maintenance by validating nodes and garbage collecting
-orphaned nodes.
-This command runs two key maintenance functions in sequence:
-1. `supertag-sync-validate-nodes': Validates all nodes against their source
-files
-   and marks any zombie nodes (nodes in database but not in files) as
-orphaned.
-2. `supertag-sync-garbage-collect-orphaned-nodes': Deletes all nodes marked as
-   orphaned, including zombie nodes and nodes with nil file properties.
-
-This is a safe operation that helps maintain database integrity."
+  "Delete every database node that no Org file backs.
+`supertag-sync-validate-nodes' checks each node against its source file
+and deletes the ones whose file is gone or no longer holds their ID.
+Org files are never modified."
   (interactive)
   (when (or (not (called-interactively-p 'interactive))
-            (yes-or-no-p "Validate nodes and delete orphaned database entries? "))
-    (message "Starting database cleanup...")
-
-    ;; Step 1: Validate all nodes and mark zombies as orphaned
-    (let ((counters '(:nodes-deleted 0)))
-      (supertag-sync-validate-nodes counters)
-      (message "Node validation complete. %d nodes marked as orphaned."
-               (plist-get counters :nodes-deleted))
-
-      ;; Step 2: Garbage collect all orphaned nodes
-      (let ((deleted-count (supertag-sync-garbage-collect-orphaned-nodes)))
-        (message "Database cleanup complete. %d orphaned nodes deleted." deleted-count)))))
+            (yes-or-no-p "Delete database nodes that no Org file backs? "))
+    (let ((deleted (or (supertag-with-transaction
+                         (supertag-sync-validate-nodes))
+                       0)))
+      (when (and (> deleted 0) (not supertag--transaction-active))
+        (supertag-save-store))
+      (message "Database cleanup complete. %d nodes deleted." deleted))))
 
 
 ;;;-------------------------------------------------------------------

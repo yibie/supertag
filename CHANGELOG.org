@@ -1,5 +1,25 @@
 * Changelog
 * [Unreleased]
+** Removed headings leave the index at once
+- A heading removed from a saved file is deleted from the database right
+  away.  The nodes of a file that disappeared are deleted as soon as the
+  files waiting to be read are done, so a renamed file keeps its nodes.
+  Nodes are no longer kept for an hour as =[orphaned]= entries, and the
+  periodic garbage collection is gone.
+- Remove =supertag-sync-orphan-grace-seconds= and the =:orphaned-at= node
+  property.  =supertag-sync-max-delete-ratio= and
+  =supertag-sync-max-delete-count= now cap one bulk deletion: the nodes of
+  files that disappeared, or the nodes a full rescan or
+  =supertag-sync-cleanup-database= finds no Org file for.  Headings removed
+  from a file that is still there are never capped.
+- A full rescan and =supertag-sync-cleanup-database= also delete nodes that
+  have no file at all, which clears the orphans an older version left.
+- The report of =supertag-reindex-org= no longer has =:garbage-collected=.
+** Links to a node that appears later
+- A node now receives the links other nodes already hold to it when it
+  appears: a heading moved to another file keeps its backlinks, and
+  background sync no longer drops a link whose source file was read before
+  its target.  Both used to need a full rescan.
 ** AI property extraction uses Superchat Sinks
 - Submit extraction through the current Superchat Sink contract, removing the
   retired delivery callback. Route final results and all failures through the

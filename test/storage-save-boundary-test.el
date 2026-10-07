@@ -4,13 +4,12 @@
 (require 'document-fixture)
 
 (ert-deftest supertag-storage-reindex-saves-once-after-commit ()
-  "Real orphan GC joins reindex; saving happens only after commit."
+  "Unbacked-node deletion joins reindex; saving happens only after commit."
   (supertag-document-test-with-vault
-    (let ((supertag-sync-orphan-grace-seconds 0)
-          (supertag-sync-max-delete-ratio 1.0)
+    (let ((supertag-sync-max-delete-ratio 1.0)
           saves)
       (supertag-store-put-entity :nodes "orphan"
-                                '(:id "orphan" :type :node :file nil :orphaned-at (0 0)))
+                                '(:id "orphan" :type :node :file nil))
       (cl-letf (((symbol-function 'supertag-save-store)
                  (lambda (&rest _) (push supertag--transaction-active saves) t)))
         (should (eq 'complete (plist-get (supertag-reindex-org) :status))))
@@ -18,17 +17,16 @@
       (should (equal '(nil) saves)))))
 
 (ert-deftest supertag-storage-failed-reindex-does-not-save-gc ()
-  "A failure after orphan deletion rolls it back without persisting it."
+  "A failure after unbacked-node deletion rolls it back without persisting it."
   (supertag-document-test-with-vault
-    (let ((supertag-sync-orphan-grace-seconds 0)
-          (supertag-sync-max-delete-ratio 1.0)
+    (let ((supertag-sync-max-delete-ratio 1.0)
           saves)
       (supertag-store-put-entity :nodes "orphan"
-                                '(:id "orphan" :type :node :file nil :orphaned-at (0 0)))
+                                '(:id "orphan" :type :node :file nil))
       (cl-letf (((symbol-function 'supertag-save-store)
                  (lambda (&rest _) (cl-incf saves)))
                 ((symbol-function 'supertag-index-rebuild-all)
-                 (lambda () (error "Post-GC failure"))))
+                 (lambda () (error "Post-deletion failure"))))
         (setq saves 0)
         (should (eq 'failed (plist-get (supertag-reindex-org) :status))))
       (should (supertag-store-get-entity :nodes "orphan"))
@@ -59,50 +57,42 @@
       (require 'supertag-ui-commands)
     (require 'supertag-services-sync))
   (supertag-document-test-with-vault
-    (let (validated collected (asked 0))
+    (let (validated (asked 0))
       (cl-letf (((symbol-function 'supertag-sync-validate-nodes)
-                 (lambda (&rest _) (setq validated t)))
-                ((symbol-function 'supertag-sync-garbage-collect-orphaned-nodes)
-                 (lambda () (setq collected t) 0))
+                 (lambda (&rest _) (setq validated t) 0))
                 ((symbol-function 'yes-or-no-p)
                  (lambda (&rest _) (cl-incf asked) t)))
         (let ((noninteractive nil))
           (call-interactively #'supertag-sync-cleanup-database)))
       (should (= asked 1))
-      (should validated)
-      (should collected))))
+      (should validated))))
 
 (ert-deftest supertag-storage-cleanup-cancel-and-noninteractive ()
   (supertag-document-test-with-vault
-    (let ((asked 0) (validated 0) (collected 0))
+    (let ((asked 0) (validated 0))
       (cl-letf (((symbol-function 'yes-or-no-p)
                  (lambda (&rest _) (cl-incf asked) nil))
                 ((symbol-function 'supertag-sync-validate-nodes)
-                 (lambda (&rest _) (cl-incf validated)))
-                ((symbol-function 'supertag-sync-garbage-collect-orphaned-nodes)
-                 (lambda () (cl-incf collected) 0)))
+                 (lambda (&rest _) (cl-incf validated) 0)))
         ;; Emulate an interactive Emacs while retaining the real call stack.
         (let ((noninteractive nil))
           (should-not (call-interactively #'supertag-sync-cleanup-database)))
         (should (= asked 1))
         (should (= validated 0))
-        (should (= collected 0))
         (supertag-sync-cleanup-database)
         (should (= asked 1))
-        (should (= validated 1))
-        (should (= collected 1))))))
+        (should (= validated 1))))))
 
 (ert-deftest supertag-storage-reindex-real-disk-rollback-and-retry ()
-  "Failed GC leaves the durable baseline intact; a retry commits deletion."
+  "A failed reindex leaves the durable baseline intact; a retry commits deletion."
   (supertag-document-test-with-vault
     (let ((supertag-db--dirty t)
           (supertag-persistence-after-save-hook nil)
-          (supertag-sync-orphan-grace-seconds 0)
           (supertag-sync-max-delete-ratio 1.0)
           (rebuild (symbol-function 'supertag-index-rebuild-all))
           (fail-once t))
       (supertag-store-put-entity :nodes "orphan"
-                                '(:id "orphan" :type :node :file nil :orphaned-at (0 0)))
+                                '(:id "orphan" :type :node :file nil))
       (supertag--record-store-origin :ok)
       (should (supertag-save-store))
       (cl-flet ((disk-node (id)
@@ -114,7 +104,7 @@
         (cl-letf (((symbol-function 'supertag-index-rebuild-all)
                    (lambda ()
                      (if fail-once
-                         (progn (setq fail-once nil) (error "Post-GC failure"))
+                         (progn (setq fail-once nil) (error "Post-deletion failure"))
                        (funcall rebuild)))))
           (should (eq 'failed (plist-get (supertag-reindex-org) :status)))
           (should (disk-node "orphan"))

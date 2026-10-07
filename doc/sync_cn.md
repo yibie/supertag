@@ -174,7 +174,7 @@ Git 层**不复制整个数据库**：Org 文本和 `.supertag-metadata.eld` 一
 | `M-x supertag-git-sync-now` | 立即提交/拉取，或提交已解决的冲突 |
 | `M-x supertag-sync-full-rescan` | 全量重扫，从一份完整快照重建投影（不改 Org） |
 | `M-x supertag-sync-status` | 看同步状态与当前配置 |
-| `M-x supertag-sync-cleanup-database` | 校验节点并清理孤儿（破坏性维护，先确认目录可用） |
+| `M-x supertag-sync-cleanup-database` | 删除没有 Org 文件对应的节点（破坏性维护，先确认目录可用） |
 | `M-x supertag-save-store` | 立即保存数据库 |
 | `M-x supertag-vault-activate` | 多库模式下切换库（Git 同步开启时会拒绝） |
 

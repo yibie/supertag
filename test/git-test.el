@@ -117,7 +117,7 @@
       (should (equal (file-truename (expand-file-name "note.org" dest))
                      (plist-get (supertag-node-get "document-node") :file))))))
 
-(ert-deftest supertag-git-pull-projects-exact-delta-and-orphans-deletion ()
+(ert-deftest supertag-git-pull-projects-exact-delta-and-deletion ()
   (supertag-git-test-with-vault
     (supertag-git-sync-mode 1)
     (supertag-git-test-write peer "note.org" "* Changed\n:PROPERTIES:\n:ID: document-node\n:END:\nChanged body.\n")
@@ -127,10 +127,9 @@
     (should (supertag-git-sync-now))
     (should (equal (sort (mapcar #'file-name-nondirectory supertag-async--queue) #'string<)
                    '("new.org" "note.org")))
-    (should-not (supertag-find-nodes-by-file (expand-file-name "delete.org" root)))
-    (should-not (plist-get (supertag-node-get "deleted") :file))
-    (should (plist-get (supertag-node-get "deleted") :orphaned-at))
     (supertag-document-test-drain)
+    (should-not (supertag-find-nodes-by-file (expand-file-name "delete.org" root)))
+    (should-not (supertag-node-get "deleted"))
     (should (equal "Changed" (plist-get (supertag-node-get "document-node") :title)))
     (should (supertag-node-get "added"))
     (should (equal "Stable" (plist-get (supertag-node-get "stable") :title)))))
@@ -503,7 +502,7 @@ cycle itself commits saved edits before its merge decision anyway."
       (supertag-git-sync-now)
       (should (equal head (supertag-git-test-run root "rev-parse" "HEAD"))))))
 
-(ert-deftest supertag-git-repair-renamed-file-removed-node-orphaned ()
+(ert-deftest supertag-git-repair-renamed-file-removed-node-deleted ()
   (supertag-git-test-with-vault
     (let ((text (mapconcat (lambda (n) (format "* Node %d\n:PROPERTIES:\n:ID: rename-%d\n:END:\nStable content with sufficient lines for rename detection.\n" n n))
                            (number-sequence 0 19) "")))
@@ -521,8 +520,7 @@ cycle itself commits saved edits before its merge decision anyway."
 
       (supertag-document-test-drain)
 
-      (should-not (plist-get (supertag-node-get "rename-0") :file))
-      (should (plist-get (supertag-node-get "rename-0") :orphaned-at))
+      (should-not (supertag-node-get "rename-0"))
       (should-not (supertag-find-nodes-by-file (expand-file-name "rename.org" root)))
       (dolist (n (number-sequence 1 19))
         (should (equal (plist-get (supertag-node-get (format "rename-%d" n)) :file)

@@ -1066,7 +1066,7 @@ report as soon as none remains, and never touch the buffers themselves."
       t)))
 
 (defun supertag-git--project-files (root changed deleted)
-  "Queue CHANGED Org paths and orphan nodes from DELETED paths under ROOT."
+  "Queue CHANGED Org paths and delete the nodes of DELETED paths under ROOT."
   (dolist (rel (cl-remove-if-not (lambda (p) (string-suffix-p ".org" p)) changed))
     (let ((file (file-truename (expand-file-name rel root))))
       (when (and (supertag-git--ancestor-p root file) (file-exists-p file)
@@ -1086,16 +1086,16 @@ report as soon as none remains, and never touch the buffers themselves."
   (setq deleted (cl-remove-if-not (lambda (p) (string-suffix-p ".org" p)) deleted))
   (when deleted
     (supertag-sync--snapshot-set (supertag-sync--snapshot-build))
-    (dolist (rel deleted)
-      (let ((file (file-truename (expand-file-name rel root))))
-        (when (and (supertag-git--ancestor-p root file) (not (file-exists-p file)))
-          (supertag-sync--verify-file-nodes file (list :nodes-deleted 0))
-          (remhash file (supertag-sync--get-state-table)))))
-    (supertag-sync-save-state)))
+    (let (gone)
+      (dolist (rel deleted)
+        (let ((file (file-truename (expand-file-name rel root))))
+          (when (and (supertag-git--ancestor-p root file) (not (file-exists-p file)))
+            (push file gone))))
+      (supertag-sync--drop-removed-files gone))))
 
 (defun supertag-git--projection-delta (root)
   "Return (CHANGED . DELETED) Org paths from the last merge in ROOT.
-Disable rename detection so an old path always reaches orphan verification."
+Disable rename detection so the nodes of an old path are always deleted."
   (let ((result (supertag-git--run root "diff" "--name-status" "-z" "--no-renames"
                                  "ORIG_HEAD" "HEAD" "--" "*.org"))
         changed deleted)

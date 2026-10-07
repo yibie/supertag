@@ -4,7 +4,8 @@
 ;;   supertag-ai-extract-tag-properties, supertag-ai-cancel-batch, supertag-ai-plan-apply, supertag-ai-plan-toggle-skip, supertag-ai-plan-mode
 ;; Dependencies: cl-lib, subr-x, org, json, format-spec, button,
 ;; supertag-services-sync, supertag-service-org,
-;; supertag-view-framework; superchat-runtime is optional, loaded by the user;
+;; supertag-view-framework; superchat-runtime and superchat-sink are optional,
+;; loaded by the user;
 ;; supertag-view-node refresh capabilities are used only when already available.
 
 ;;; Commentary:
@@ -22,6 +23,8 @@
 (require 'supertag-view-framework)
 
 (declare-function superchat-runtime-submit "superchat-runtime" (request))
+(declare-function superchat-runtime-cancel "superchat-runtime" (run-id &optional response))
+(declare-function superchat-sink-create "superchat-sink" (&rest callbacks))
 (declare-function supertag-view-node--refresh-view "supertag-view-node" ())
 (declare-function supertag-view-node--buffer "supertag-view-node" ())
 (defvar supertag-view-node--current-node-id)
@@ -46,6 +49,13 @@
 (defun supertag-ai--host-buffer ()
   "Return the persistent, non-Org Runtime host buffer."
   (get-buffer-create " *supertag-ai*"))
+
+(defun supertag-ai--ensure-runtime ()
+  "Require an already loaded Superchat Runtime with the Sink contract."
+  (unless (fboundp 'superchat-runtime-submit)
+    (user-error "Supertag AI needs the superchat package loaded first (see README)"))
+  (unless (fboundp 'superchat-sink-create)
+    (user-error "Supertag AI needs Superchat Sink support (superchat-sink-create); update and load Superchat")))
 
 (defun supertag-ai--submit (request)
   "Submit REQUEST through the sole public transport boundary."
@@ -77,8 +87,7 @@
 (defun supertag-ai-extract-properties (&optional choose-prompt)
   "Extract property candidates for this heading; CHOOSE-PROMPT selects a template."
   (interactive "P")
-  (unless (fboundp 'superchat-runtime-submit)
-    (user-error "Supertag AI needs the superchat package loaded first (see README)"))
+  (supertag-ai--ensure-runtime)
   (let* ((node-id
           (cond
            ((derived-mode-p 'org-mode)
@@ -107,6 +116,7 @@
 
 (defun supertag-ai--start (node-id name)
   "Submit an extraction for NODE-ID with prompt template NAME."
+  (supertag-ai--ensure-runtime)
   (let ((old (gethash node-id supertag-ai--candidates)))
     (when (eq (plist-get old :status) 'pending)
       (user-error "Extraction already running for this node")))
@@ -138,10 +148,28 @@
                       :buffer (supertag-ai--host-buffer) :tools 'none
                       :record-conversation nil
                       :origin (list :surface 'supertag :node-id node-id :prompt name)
-                      :timeout supertag-ai-timeout
-                      :delivery-function
-                      (lambda (response status tape-id)
-                        (supertag-ai--deliver node-id response status tape-id token))))))
+                      :deadline supertag-ai-timeout
+                      :sink
+                      ;; Always live: delivery owns stale-token and cancellation
+                      ;; checks, including batch advancement after terminal errors.
+                      (superchat-sink-create
+                       :final
+                       (lambda (_run result)
+                         (supertag-ai--deliver
+                          node-id (plist-get result :text) 'completed
+                          (plist-get result :tape-id) token))
+                       :error
+                       (lambda (_run failure)
+                         (let* ((status (plist-get failure :status))
+                                (text (or (plist-get failure :text) ""))
+                                (message (pcase status
+                                           ('timed-out (concat "Timed out: " text))
+                                           ('audit-incomplete (concat "Audit incomplete: " text))
+                                           (_ text))))
+                           ;; --deliver maps non-cancellation failures to failed;
+                           ;; unverified audit output must never become candidates.
+                           (supertag-ai--deliver
+                            node-id message status (plist-get failure :tape-id) token))))))))
           ;; Delivery may have already run synchronously; retain its state.
           (when-let* ((current (gethash node-id supertag-ai--candidates))
                       (_ (eq (plist-get current :token) token)))
@@ -350,8 +378,7 @@ Callers retain TOKEN and BATCH before any cancellation or refresh can reenter."
 time.
 CHOOSE-PROMPT selects a template as in `supertag-ai-extract-properties'."
   (interactive "P")
-  (unless (fboundp 'superchat-runtime-submit)
-    (user-error "Supertag AI needs the superchat package loaded first (see README)"))
+  (supertag-ai--ensure-runtime)
   (when supertag-ai--batch
     (user-error "A batch extraction is already running; cancel it first"))
   (let* ((name (supertag-ui-read-tag "Extract properties for nodes tagged: "

@@ -1,5 +1,15 @@
 * Changelog
 * [Unreleased]
+** AI property extraction uses Superchat Sinks
+- Submit extraction through the current Superchat Sink contract, removing the
+  retired delivery callback. Route final results and all failures through the
+  existing token-safe candidate and batch handling.
+- Report timeouts and incomplete audit recording as failed extractions with
+  explicit reasons; keep cancellation distinct and never accept unaudited output.
+- Keep Superchat optional, with an actionable error for a loaded version without
+  Sinks; send the extraction timeout as the Runtime deadline.
+- Validate actual extraction requests against the current sibling Superchat
+  Runtime in batch tests, without model dispatch.
 * [0.2.0] - 2026-10-07
 ** Faster saves on large files and large databases
 - The local database is written in a native format: a one-line header and

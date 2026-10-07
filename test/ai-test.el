@@ -21,12 +21,18 @@
          ;; Keep Node View renders wide enough that section text is readable.
          (supertag-view-node-side-size 0.8))
      (cl-letf (((symbol-function 'superchat-runtime-submit) #'ignore)
+               ((symbol-function 'superchat-sink-create) #'list)
                ((symbol-function 'supertag-ai--submit)
                 (lambda (value) (setq request value) (list :run-id "run" :turn-id "turn"))))
        ,@body)))
 
 (defun supertag-ai-test-deliver (request text &optional status)
-  (funcall (plist-get request :delivery-function) text (or status 'completed) "tape"))
+  "Drive the captured test Sink, using the public two-argument payload shape."
+  (let* ((status (or status 'completed))
+         (sink (plist-get request :sink))
+         (slot (if (eq status 'completed) :final :error)))
+    (funcall (plist-get sink slot) '(:run-id "run" :turn-id "turn")
+             (list :text text :status status :tape-id "tape"))))
 
 (defun supertag-ai-test-snapshot (file)
   (list (supertag-document-test-disk file)
@@ -49,6 +55,12 @@
       (should (string-match-p "written by Ada" (plist-get request :prompt)))
       (should-not (string-match-p "Child\\|:PROPERTIES:\\|document-node" (plist-get request :prompt)))
       (should (eq (plist-get request :type) :llm-query))
+      (should (functionp (plist-get (plist-get request :sink) :final)))
+      (should (functionp (plist-get (plist-get request :sink) :error)))
+      (should-not (plist-member request :delivery-function))
+      (should-not (plist-member request :stream-function))
+      (should-not (plist-member request :timeout))
+      (should (= (plist-get request :deadline) supertag-ai-timeout))
       (should (eq (plist-get request :tools) 'none))
       (should-not (plist-get request :record-conversation))
       (should (equal (buffer-name (plist-get request :buffer)) " *supertag-ai*"))
@@ -214,6 +226,87 @@
                                      (funcall original symbol)))))
       (should (equal (cadr (should-error (supertag-ai-extract-properties) :type 'user-error))
                      "Supertag AI needs the superchat package loaded first (see README)")))))
+
+(ert-deftest supertag-ai-missing-sink-is-actionable-before-any-work ()
+  (supertag-document-test-with-vault
+    (supertag-ai-test-with-request
+      (let ((original (symbol-function 'fboundp))
+            (before (supertag-ai-test-snapshot plain)))
+        (cl-letf (((symbol-function 'fboundp)
+                   (lambda (symbol)
+                     (and (not (eq symbol 'superchat-sink-create))
+                          (funcall original symbol)))))
+          (with-current-buffer (find-file-noselect plain)
+            (goto-char (point-min))
+            (dolist (command '(supertag-ai-extract-properties
+                               supertag-ai-extract-tag-properties))
+              (should (string-match-p
+                       "Superchat Sink support (superchat-sink-create)"
+                       (cadr (should-error (funcall command) :type 'user-error))))))
+          (should-error (supertag-ai--start "document-node" 'extract-properties)
+                        :type 'user-error))
+        (should-not request)
+        (should (zerop (hash-table-count supertag-ai--candidates)))
+        (should (equal before (supertag-ai-test-snapshot plain)))))))
+
+(defconst supertag-ai-test--superchat-directory
+  (expand-file-name "../../superchat/"
+                    (file-name-directory (or load-file-name buffer-file-name)))
+  "Current sibling checkout, never the retired superchat-m11-w1 checkout.")
+
+(ert-deftest supertag-ai-current-superchat-validates-real-extraction-request ()
+  ;; Unit tests use callback plists, not a pretend Runtime validator.  This
+  ;; boundary check deliberately loads the sibling's real source and Sink.
+  (let* ((directory supertag-ai-test--superchat-directory)
+         (runtime (expand-file-name "superchat-runtime.el" directory))
+         (load-path (cons directory load-path))
+         (load-prefer-newer t))
+    (unless (file-exists-p runtime)
+      (ert-skip "Current ../superchat checkout is needed for contract validation"))
+    (load runtime nil t t)
+    (should (file-equal-p runtime
+                         (symbol-file 'superchat-runtime--request-sink)))
+    (supertag-document-test-with-vault
+      (let ((supertag-ai--candidates (make-hash-table :test 'equal)) request)
+        ;; Stop at validation, before Run/Tape publication or model dispatch.
+        ;; None of these validators or the Sink constructor is stubbed.
+        (cl-letf (((symbol-function 'supertag-ai--submit)
+                   (lambda (value)
+                     (setq request value)
+                     (superchat-runtime--validate-request value)
+                     (superchat-runtime--validate-host-admission value)
+                     (superchat-runtime--request-sink value)
+                     '(:run-id "validated-run" :turn-id "validated-turn"))))
+          (with-current-buffer (find-file-noselect file)
+            (goto-char (point-min))
+            (supertag-ai-extract-properties)))
+        (let ((sink (plist-get request :sink))
+              (entry (gethash "document-node" supertag-ai--candidates)))
+          (should (superchat-sink-p sink))
+          (should (superchat-sink-live-p sink))
+          (should-not (plist-member request :delivery-function))
+          (should-not (plist-member request :stream-function))
+          (should (equal "validated-run" (plist-get entry :run-id)))
+          (should (equal "validated-turn" (plist-get entry :turn-id)))
+          (should-error (superchat-runtime--request-sink
+                         (plist-put (copy-sequence request) :sink nil)))
+          (should-error (superchat-runtime--request-sink
+                         (append request (list :delivery-function #'ignore))))
+          (dolist (status '(failed timed-out audit-incomplete cancelled completed))
+            ;; Reset to pending to exercise each terminal payload independently.
+            ;; Real emits must not hide callback failures in diagnostics.
+            (setf (plist-get entry :status) 'pending)
+            (let ((emission
+                   (superchat-sink-emit
+                    sink (if (eq status 'completed) 'final 'error) nil
+                    (list :status status :text "{}" :tape-id "real-tape"))))
+              (should (plist-get emission :settled-p))
+              (should-not (plist-get emission :condition)))
+            (setq entry (gethash "document-node" supertag-ai--candidates))
+            (should (eq (plist-get entry :status)
+                        (pcase status ('completed 'done) ('cancelled 'cancelled)
+                               (_ 'failed))))
+            (should (equal "real-tape" (plist-get entry :tape-id)))))))))
 
 (ert-deftest supertag-ai-embark-adapter-is-not-command ()
   (should-not (commandp 'supertag-embark-node-extract-properties))
@@ -500,6 +593,7 @@
           (tag (supertag-ai-test--three-tagged-nodes file))
           requests max-pending)
       (cl-letf (((symbol-function 'superchat-runtime-submit) #'ignore)
+                ((symbol-function 'superchat-sink-create) #'list)
                 ((symbol-function 'supertag-ai--submit)
                  (lambda (value) (push value requests)
                    (setq max-pending (max (or max-pending 0) (supertag-ai-test--pending-count)))
@@ -535,6 +629,7 @@
           (tag (supertag-ai-test--three-tagged-nodes file))
           requests)
       (cl-letf (((symbol-function 'superchat-runtime-submit) #'ignore)
+                ((symbol-function 'superchat-sink-create) #'list)
                 ((symbol-function 'supertag-ai--submit)
                  (lambda (value) (push value requests) (list :run-id "run" :turn-id "turn")))
                 ((symbol-function 'supertag-ui-read-tag) (lambda (&rest _) tag))
@@ -561,6 +656,7 @@
           (tag (supertag-ai-test--three-tagged-nodes file))
           requests cancelled)
       (cl-letf (((symbol-function 'superchat-runtime-submit) #'ignore)
+                ((symbol-function 'superchat-sink-create) #'list)
                 ((symbol-function 'superchat-runtime-cancel) (lambda (id) (push id cancelled)))
                 ((symbol-function 'supertag-ai--submit)
                  (lambda (value) (push value requests)
@@ -590,6 +686,7 @@
   (let ((tag (supertag-ai-test--three-tagged-nodes file))
         requests)
     (cl-letf (((symbol-function 'superchat-runtime-submit) #'ignore)
+              ((symbol-function 'superchat-sink-create) #'list)
               ((symbol-function 'supertag-ai--submit)
                (lambda (value) (push value requests) (list :run-id "run" :turn-id "turn")))
               ((symbol-function 'supertag-ui-read-tag) (lambda (&rest _) tag))
@@ -696,11 +793,38 @@
           (tag (supertag-ai-test--three-tagged-nodes file)) requests)
       (unwind-protect
         (cl-letf (((symbol-function 'superchat-runtime-submit) #'ignore)
+                  ((symbol-function 'superchat-sink-create) #'list)
                   ((symbol-function 'supertag-ui-read-tag) (lambda (&rest _) tag))
                   ((symbol-function 'yes-or-no-p) (lambda (&rest _) t)))
           ,@body)
         (when (get-buffer supertag-ai-plan-buffer-name)
           (kill-buffer supertag-ai-plan-buffer-name))))))
+(ert-deftest supertag-ai-sink-failures-advance-batch-and-preserve-reasons ()
+  (dolist (case '((failed failed "provider failed")
+                  (timed-out failed "Timed out: provider failed")
+                  (audit-incomplete failed "Audit incomplete: provider failed")
+                  (cancelled cancelled "provider failed")))
+    (supertag-ai-test-with-batch
+      (cl-letf (((symbol-function 'supertag-ai--submit)
+                 (lambda (request)
+                   (push request requests)
+                   '(:run-id "run" :turn-id "turn"))))
+        (supertag-ai-extract-tag-properties)
+        (let ((first (car requests))
+              (before (supertag-ai-test-snapshot file)))
+          (supertag-ai-test-deliver first "provider failed" (car case))
+          (let ((entry (gethash "n1" supertag-ai--candidates)))
+            (should (eq (cadr case) (plist-get entry :status)))
+            (should (equal (caddr case) (plist-get entry :message)))
+            (should (equal "tape" (plist-get entry :tape-id)))
+            (should-not (plist-get entry :candidates)))
+          (should (equal "n2" (plist-get supertag-ai--batch :current)))
+          (should (= 2 (length requests)))
+          (should (equal before (supertag-ai-test-snapshot file)))
+          (supertag-ai-test-deliver (car requests) "{}")
+          (supertag-ai-test-deliver (car requests) "{}")
+          (should-not supertag-ai--batch))))))
+
 (ert-deftest supertag-ai-review-sync-completion ()
   (supertag-ai-test-with-batch
     (cl-letf (((symbol-function 'supertag-ai--submit)

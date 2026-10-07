@@ -1,5 +1,20 @@
 * Changelog
 * [Unreleased]
+* [0.2.0] - 2026-10-07
+** Faster saves on large files and large databases
+- The local database is written in a native format: a one-line header and
+  one printed Store.  Databases in the line-per-entity format and pre-6.0
+  databases still load and are rewritten on the next save.  Verification
+  after a save still compares every entity and every root value.
+- The header records the node count, so the guard against overwriting a
+  populated database with an empty Store no longer depends on file size.
+- Re-syncing a saved Org file parses only the headings whose own text or
+  ancestor headings changed; =supertag-sync-incremental-parse= turns this
+  off.  The first save of a file in each session still parses it whole.
+- A saved file is parsed once instead of twice, and background parsing
+  yields to typing and resumes when Emacs is idle again.
+- Garbage collection is deferred during a file sync and a database write.
+- =supertag-doctor= reports the native format.
 ** Faster navigation and visible destinations
 - Validate projected Org positions before scanning for IDs; stale positions
   still fall back to live lookup without changing the projection.

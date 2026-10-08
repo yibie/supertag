@@ -1990,19 +1990,19 @@ Returns a plist of keyword-value pairs, excluding org-internal properties."
     (when headline
       (let ((props (nth 1 headline)))
         (while props
-          (let ((key (car props))
-                (val (cadr props)))
+          (let ((key (car props)))
             ;; User properties are uppercase keywords not in standard/internal lists
             (when (and (keywordp key)
                        (not (memq key standard-props))
                        (not (memq key org-internal-props))
-                       val  ; Has a value
                        (let ((name (symbol-name key)))
                          (and (> (length name) 1)
                               ;; Check if the property name (after :) is all uppercase
                               (equal (upcase (substring name 1))
                                      (substring name 1)))))
-              (setq user-props (plist-put user-props key val))))
+              ;; Read through Org: the stored value may still be deferred.
+              (when-let* ((val (org-element-property key headline)))
+                (setq user-props (plist-put user-props key val)))))
           (setq props (cddr props)))))
     user-props))
 
@@ -2611,18 +2611,22 @@ When NODE-ID is non-nil, parse its subtree and headline-only ancestor context."
     (supertag-text-link-refresh)
     nil))
 
-;;; --- Parsing only the headings that changed ---
+;;; --- Parsing only the headings that are nodes, and only when changed ---
 
 ;; Re-synchronizing a saved file used to parse and extract every heading in
 ;; it, so the cost of one edited line grew with the size of the file.  A
 ;; node's record is built from its own heading line, the text below it up to
 ;; the next heading, and the heading lines of its ancestors (for the outline
-;; path).  Remembering the last record of each node together with a
-;; fingerprint of exactly that text lets the next parse reuse every record
-;; whose fingerprint is unchanged.
+;; path).  So a file is read as an outline of its headings, and each heading
+;; with an ID is then parsed on its own: text under headings that are no
+;; node is never parsed.  Remembering the last record of each node together
+;; with a fingerprint of exactly that text lets the next parse reuse every
+;; record whose fingerprint is unchanged.
 
 (defcustom supertag-sync-incremental-parse t
-  "When non-nil, re-parse only the headings of a file whose text changed.
+  "When non-nil, parse each heading node of a file on its own.
+Text that belongs to no node is then not parsed, and a file parsed earlier
+in this session has only the headings whose text changed parsed again.
 The result is the same as parsing the whole file; nil always parses the
 whole file."
   :type 'boolean
@@ -2724,7 +2728,10 @@ FILE-ID is the identity of FILE's file node, or nil."
                 (setq parent (org-element-property :parent parent))))
             (narrow-to-region (plist-get unit :begin)
                               (plist-get unit :extract-end))
-            (let* ((tree (org-element-parse-buffer))
+            ;; Deferred properties are left to be resolved when read:
+            ;; resolving them all here makes Org search the whole file for
+            ;; its category once for every heading.
+            (let* ((tree (org-element-parse-buffer nil nil t))
                    (root (car (org-element-contents tree))))
               (org-element-put-property
                root :parent (org-element-property :parent headline))
@@ -2733,92 +2740,57 @@ FILE-ID is the identity of FILE's file node, or nil."
         (plist-put node :parent-id file-id)
       node)))
 
-(defun supertag-sync--remember-parse (file header units nodes)
-  "Remember NODES, the records of FILE, for its next parse.
-HEADER is the fingerprint of FILE's header and UNITS its outline."
-  (let ((table (make-hash-table :test 'equal))
-        (by-key (make-hash-table :test 'equal))
-        (node-count (make-hash-table :test 'equal))
-        (unit-count (make-hash-table :test 'equal)))
-    (dolist (node nodes)
-      (let* ((id (plist-get node :id))
-             (nth (gethash id node-count 0)))
-        (puthash (cons id nth) node by-key)
-        (puthash id (1+ nth) node-count)))
-    (dolist (unit units)
-      (let ((id (car (plist-get unit :key))))
-        (puthash id (1+ (gethash id unit-count 0)) unit-count)))
-    (dolist (unit units)
-      (let* ((key (plist-get unit :key))
-             (node (gethash key by-key)))
-        ;; Records are paired with headings by order; when a heading
-        ;; yielded no record that pairing is unknown for its ID.
-        (when (and node (eql (gethash (car key) node-count)
-                             (gethash (car key) unit-count)))
-          (puthash key (cons (plist-get unit :fingerprint) (copy-tree node))
-                   table))))
-    (puthash file (list :config (supertag-sync--parse-config)
-                        :header header :nodes table)
-             supertag-sync--parse-memo)))
-
 (defun supertag-sync--parse-nodes (file)
   "Return the node records of FILE from the current buffer.
-Equivalent to `supertag--parse-org-nodes-from-current-buffer', but when
-FILE was parsed earlier in this session only the headings whose text
-changed since then are parsed again."
-  (let ((memo (and supertag-sync-incremental-parse
-                   (not supertag-sync--is-full-rescan-p)
-                   (gethash file supertag-sync--parse-memo))))
-    (cond
-     ((or (not supertag-sync-incremental-parse)
-          supertag-sync--is-full-rescan-p)
-      (supertag--parse-org-nodes-from-current-buffer file))
-     ((not (and memo (equal (plist-get memo :config)
-                            (supertag-sync--parse-config))))
-      (let ((nodes (supertag--parse-org-nodes-from-current-buffer file)))
-        ;; The buffer is left prepared by the parse above.
-        (when (derived-mode-p 'org-mode)
-          (supertag-sync--remember-parse
-           file (supertag-sync--header-fingerprint)
-           (supertag-sync--outline-units) nodes))
-        nodes))
-     (t
-      (supertag-sync--with-parse-buffer file
-        (let* ((header (supertag-sync--header-fingerprint))
-               (units (supertag-sync--outline-units))
-               (known (plist-get memo :nodes))
-               (changed 0))
-          (dolist (unit units)
-            (let ((entry (gethash (plist-get unit :key) known)))
-              (unless (and entry
-                           (equal (car entry) (plist-get unit :fingerprint)))
-                (cl-incf changed))))
-          (if (or (not (equal header (plist-get memo :header)))
-                  ;; With this much changed, one parse of the file is cheaper.
-                  (> (* 3 changed) (max 24 (length units))))
-              (let ((nodes (supertag-sync--parse-prepared-buffer file)))
-                (supertag-sync--remember-parse file header units nodes)
-                nodes)
-            (let ((file-id (car (supertag-sync--file-header-identity)))
-                  nodes)
-              (dolist (unit units)
-                (let* ((entry (gethash (plist-get unit :key) known))
-                       (node
-                        (if (and entry
-                                 (equal (car entry)
-                                        (plist-get unit :fingerprint)))
-                            ;; Unchanged text, but it may have moved, and
-                            ;; Tags may have been created since.
-                            (let ((node (copy-tree (cdr entry)))
-                                  (begin (plist-get unit :begin)))
-                              (setq node (plist-put node :position begin))
-                              (setq node (plist-put node :pos begin))
-                              (supertag-sync--resolve-node-tag-occurrences node))
-                          (supertag-sync--parse-unit unit file file-id))))
-                  (when node (push node nodes))))
-              (setq nodes (nreverse nodes))
-              (supertag-sync--remember-parse file header units nodes)
-              nodes))))))))
+Equivalent to `supertag--parse-org-nodes-from-current-buffer', but each
+heading node is parsed on its own, from its heading line to the next
+heading, so text that belongs to no node is never parsed.  When FILE was
+parsed earlier in this session, only the headings whose text changed since
+then are parsed again.  A full rescan neither reads nor writes what is
+remembered."
+  (cond
+   ((not supertag-sync-incremental-parse)
+    (supertag--parse-org-nodes-from-current-buffer file))
+   ((not (supertag-sync--buffer-may-hold-nodes-p))
+    ;; A caller finds the link types registered either way.
+    (supertag-text-link-refresh)
+    nil)
+   (t
+    (supertag-sync--with-parse-buffer file
+      (let* ((remember (not supertag-sync--is-full-rescan-p))
+             (config (and remember (supertag-sync--parse-config)))
+             (header (and remember (supertag-sync--header-fingerprint)))
+             (memo (and remember (gethash file supertag-sync--parse-memo)))
+             ;; Other settings or another header may change every record.
+             (known (and memo
+                         (equal config (plist-get memo :config))
+                         (equal header (plist-get memo :header))
+                         (plist-get memo :nodes)))
+             (table (and remember (make-hash-table :test 'equal)))
+             (file-id (car (supertag-sync--file-header-identity)))
+             nodes)
+        (dolist (unit (supertag-sync--outline-units))
+          (let* ((key (plist-get unit :key))
+                 (fingerprint (plist-get unit :fingerprint))
+                 (entry (and known (gethash key known)))
+                 (node
+                  (if (and entry (equal (car entry) fingerprint))
+                      ;; Unchanged text, but it may have moved, and Tags
+                      ;; may have been created since.
+                      (let ((node (copy-tree (cdr entry)))
+                            (begin (plist-get unit :begin)))
+                        (setq node (plist-put node :position begin))
+                        (setq node (plist-put node :pos begin))
+                        (supertag-sync--resolve-node-tag-occurrences node))
+                    (supertag-sync--parse-unit unit file file-id))))
+            (when node
+              (when table
+                (puthash key (cons fingerprint (copy-tree node)) table))
+              (push node nodes))))
+        (when remember
+          (puthash file (list :config config :header header :nodes table)
+                   supertag-sync--parse-memo))
+        (nreverse nodes))))))
 
 ;;;###autoload
 (defun supertag--parse-org-nodes (file &optional migration-mode)

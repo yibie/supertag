@@ -54,6 +54,12 @@
   registration changed; every parse of a file calls it.
 - A file with no ID below any of its headings holds no heading node, and is
   no longer put in Org mode and parsed to find that out.
+- Each heading that has an ID is parsed on its own, from its heading line
+  to the next heading, instead of the whole file being parsed.  Text under
+  headings without an ID is not parsed.  This used to happen only for a
+  file already parsed in the session, so the first sync of a very large
+  file was the slow one.  =supertag-sync-incremental-parse= set to nil
+  still parses the whole file.
 ** Background sync parses in a separate process
 - The files background sync reads are now read and parsed by one separate
   batch Emacs, and this session only applies the records it sends back.

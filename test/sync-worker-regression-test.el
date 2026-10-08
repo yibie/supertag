@@ -82,7 +82,7 @@ the old mtime until destructive cleanup is allowed."
                      (lambda () nil))
                     ((symbol-function 'supertag-sync--parse-file-header)
                      (lambda () nil))
-                    ((symbol-function 'supertag--parse-org-nodes-from-current-buffer)
+                    ((symbol-function 'supertag-sync--parse-nodes)
                      (lambda (_file)
                        (list (list :id "keep" :file file :level 1
                                    :title "new"))))
@@ -111,8 +111,9 @@ the old mtime until destructive cleanup is allowed."
             (should (equal (list file) (supertag-get-modified-files)))))
       (ignore-errors (delete-file file)))))
 
-;; Re-synchronizing a saved file must cost what changed, not the whole file,
-;; and must still produce exactly the records a whole-file parse produces.
+;; A file is parsed one heading node at a time, and re-synchronizing a saved
+;; file must cost what changed, not the whole file; either way the records
+;; must be exactly those a whole-file parse produces.
 (ert-deftest supertag-sync-incremental-parse-matches-whole-file-parse ()
   "Only headings whose own text or ancestors changed are parsed again."
   (let* ((file "/tmp/supertag-incremental-parse.org")
@@ -122,7 +123,7 @@ the old mtime until destructive cleanup is allowed."
          (text (concat
                 "#+TITLE: Incremental\n\n"
                 "* Parent #alpha\n:PROPERTIES:\n:ID: inc-parent\n:END:\nParent body.\n"
-                "** Child\n:PROPERTIES:\n:ID: inc-child\n:END:\nChild body.\n"
+                "** Child\n:PROPERTIES:\n:ID: inc-child\n:OWNER: someone\n:END:\nChild body.\n"
                 "** No id heading\nLoose text.\n"
                 "* Twin\n:PROPERTIES:\n:ID: inc-twin\n:END:\nFirst twin.\n"
                 "* Twin again\n:PROPERTIES:\n:ID: inc-twin\n:END:\nSecond twin.\n"
@@ -146,8 +147,10 @@ the old mtime until destructive cleanup is allowed."
                  (lambda (unit &rest args)
                    (push (car (plist-get unit :key)) reparsed)
                    (apply original unit args))))
+        ;; Nothing is remembered yet: every heading with an ID, and no other.
         (should (equal (whole text) (incremental text)))
-        (should-not reparsed)
+        (should (equal '("inc-child" "inc-last" "inc-parent" "inc-twin" "inc-twin")
+                       (sort reparsed #'string<)))
         ;; Nothing changed.
         (should (equal (whole text) (incremental text)))
         (should-not reparsed)
@@ -171,10 +174,11 @@ the old mtime until destructive cleanup is allowed."
         (edit "* Last\n:PROPERTIES:\n:ID: inc-last\n:END:\nLast body.\n" "")
         (should (equal (whole text) (incremental text)))
         (should-not reparsed)
-        ;; The file header affects every node, so the whole file is parsed.
+        ;; The file header affects every node, so each is parsed again.
         (setq text (concat "#+FILETAGS: :gamma:\n" text))
         (should (equal (whole text) (incremental text)))
-        (should-not reparsed)
+        (should (equal '("inc-child" "inc-parent" "inc-twin" "inc-twin")
+                       (sort reparsed #'string<)))
         ;; Turned off, every sync parses the whole file.
         (let ((supertag-sync-incremental-parse nil))
           (edit "Parent body." "Parent body again.")
@@ -265,7 +269,7 @@ the old mtime until destructive cleanup is allowed."
          (parsed nil))
     (unwind-protect
         (cl-letf (((symbol-function 'input-pending-p) (lambda (&rest _) t))
-                  ((symbol-function 'supertag--parse-org-nodes-from-current-buffer)
+                  ((symbol-function 'supertag-sync--parse-nodes)
                    (lambda (&rest _) (setq parsed t) nil))
                   ((symbol-function 'supertag-sync--upsert-file-node)
                    (lambda (&rest _) (ert-fail "wrote after yielding")))
@@ -310,7 +314,7 @@ the old mtime until destructive cleanup is allowed."
                      (lambda () t))
                     ((symbol-function 'supertag-sync--parse-file-header)
                      (lambda () nil))
-                    ((symbol-function 'supertag--parse-org-nodes-from-current-buffer)
+                    ((symbol-function 'supertag-sync--parse-nodes)
                      (lambda (_file) (setq parsed t) nil))
                     ((symbol-function 'supertag-sync--upsert-file-node)
                      (lambda (&rest _) nil))

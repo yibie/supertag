@@ -63,6 +63,9 @@
   files behind it are read again.
 - Add =supertag-sync-parse-in-subprocess= (default on).  Set it to nil to
   parse in this session.  A full rescan always parses in this session.
+- The process also hashes each node it reads.  A node none of whose tags is
+  a defined Tag is no longer hashed again in this session, which was most
+  of the pause after saving a very large file.
 - While background sync has files left to read, the database is not written
   after every batch of them.  It is written once the last file is done, and
   as before when Emacs exits.

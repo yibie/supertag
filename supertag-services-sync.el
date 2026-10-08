@@ -1142,11 +1142,14 @@ Includes the node's ID to ensure absolute uniqueness of the state fingerprint."
 File nodes represent file-level identity rather than Org headings."
   (eq (plist-get node :level) 0))
 
-(defun supertag-sync--resolve-node-tag-occurrences (props)
+(defun supertag-sync--resolve-node-tag-occurrences (props &optional unresolved-p)
   "Resolve PROPS Tag Occurrences against existing Semantic Tags.
 The returned copy stores Org tokens in :tag-occurrences, resolved Semantic
 Tag IDs in :tags, and unresolved tokens in :unresolved-tags.  Resolution is
-read-only and never creates or modifies Semantic Tags."
+read-only and never creates or modifies Semantic Tags.
+With UNRESOLVED-P non-nil no Semantic Tag is looked up and every token is
+left unresolved, which is how the parser process, having no Store, sees a
+node."
   (if (not (or (plist-member props :tag-occurrences)
                (plist-member props :tags)))
       props
@@ -1158,7 +1161,8 @@ read-only and never creates or modifies Semantic Tags."
            resolved unresolved
            (result (copy-sequence props)))
       (dolist (occurrence occurrences)
-        (let ((tag-id (supertag-tag-resolve-occurrence occurrence)))
+        (let ((tag-id (and (not unresolved-p)
+                           (supertag-tag-resolve-occurrence occurrence))))
           (if tag-id
               (push tag-id resolved)
             (push occurrence unresolved))))
@@ -1261,6 +1265,20 @@ or `supertag-sync-max-delete-count'."
               (+ count (or (plist-get counters :nodes-deleted) 0))))
       count)))
 
+(defun supertag-sync--parsed-hash (props)
+  "Return the hash PROPS get when none of their Tag Occurrences resolves."
+  (supertag-node-hash (supertag-sync--resolve-node-tag-occurrences props t)))
+
+(defun supertag-sync--projected-hash (props)
+  "Return the hash of PROPS, whose Tag Occurrences are already resolved.
+The parser process hashed the node as `supertag-sync--parsed-hash' does and
+left the result in :parsed-hash.  That is the hash of PROPS when none of
+their occurrences resolved to a Semantic Tag."
+  (let ((parsed (plist-get props :parsed-hash)))
+    (if (and parsed (null (plist-get props :tags)))
+        parsed
+      (supertag-node-hash props))))
+
 (defun supertag-db-add-with-hash (id props &optional counters)
   "Add node with ID and PROPS to database, including hash value.
 Existing creation time is preserved while file-backed properties are updated.
@@ -1270,7 +1288,11 @@ COUNTERS is an optional plist for tracking statistics."
     (when-let* ((created-at (plist-get existing :created-at)))
       (setq props (plist-put (copy-sequence props) :created-at created-at)))
     (setq props (supertag-sync--resolve-node-tag-occurrences props))
-    (let ((node-hash (supertag-node-hash props)))
+    (let ((node-hash (supertag-sync--projected-hash props)))
+      ;; :parsed-hash is a note from the parser process, not a node property.
+      (when (plist-member props :parsed-hash)
+        (setq props (copy-sequence props))
+        (cl-remf props :parsed-hash))
       ;; Ensure :id, :type and :hash are added to props while preserving existing fields
       (let ((node-props (plist-put props :id id)))
         (setq node-props (plist-put node-props :type :node))
@@ -1299,7 +1321,7 @@ If OLD-NODE doesn't have a hash value, calculate it on the fly."
           (supertag-sync--resolve-node-tag-occurrences new-node))
          (old-hash (or (plist-get old-node :hash)
                        (supertag-node-hash old-node)))
-         (new-hash (supertag-node-hash projected-new)))
+         (new-hash (supertag-sync--projected-hash projected-new)))
     ;; The stored hash is not refreshed when only the location is rewritten
     ;; (`supertag-node-set-location'), so compare :file directly.
     (or (not (equal (plist-get old-node :file)
@@ -1455,26 +1477,31 @@ Handles both colon-separated (:tag1:tag2:) and space-separated formats."
                                 (split-string clean ":" t)
                               (split-string clean nil t)))))))
 
+(defun supertag-sync--file-node-props (file file-header)
+  "Return the properties of the file node of FILE, from FILE-HEADER.
+FILE-HEADER is a plist from `supertag-sync--parse-file-header' that holds
+an :id."
+  (append (list :id (plist-get file-header :id)
+                :file file
+                :level 0
+                :link-type (or (plist-get file-header :link-type) 'id)
+                :title (plist-get file-header :title)
+                :tags (plist-get file-header :file-tags)
+                :ref-to (plist-get file-header :ref-to)
+                :position 1
+                :content nil
+                :properties nil)
+          (when-let* ((named-links (plist-get file-header :named-links)))
+            (list :named-links named-links))))
+
 (defun supertag-sync--upsert-file-node (file file-header counters)
   "Upsert a file node for FILE using FILE-HEADER properties.
 FILE-HEADER is a plist from `supertag-sync--parse-file-header'.
 Return its persistent ID, or nil when the selected policy finds none."
   (when-let* ((file-id (plist-get file-header :id)))
-    (let* ((title (plist-get file-header :title))
-           (file-tags (plist-get file-header :file-tags))
-           (props (append (list :id file-id
-                        :file file
-                        :level 0
-                        :link-type (or (plist-get file-header :link-type) 'id)
-                        :title title
-                        :tags file-tags
-                        :ref-to (plist-get file-header :ref-to)
-                        :position 1
-                        :content nil
-                        :properties nil)
-                          (when-let* ((named-links
-                                      (plist-get file-header :named-links)))
-                            (list :named-links named-links))))
+    (let* ((props (append (supertag-sync--file-node-props file file-header)
+                          (when-let* ((hash (plist-get file-header :parsed-hash)))
+                            (list :parsed-hash hash))))
            (existing (supertag-node-get file-id)))
       (if existing
           (when (supertag-node-changed-p existing props)
@@ -3226,6 +3253,31 @@ With REQUEUE non-nil, put the files it held back at the head of the queue."
         (org-link-set-parameters type)))
     (org-link-make-regexps)))
 
+(defun supertag-sync-parser--hash-records (file records)
+  "In the parser process, return RECORDS of FILE with every node hashed.
+Hashing is most of what the session would otherwise do for a node that did
+not change.  The hash goes in :parsed-hash, on a copy: the node records are
+shared with the memo of parsed headings and their hash moves with them."
+  (let ((header (plist-get records :header))
+        (nodes (plist-get records :nodes)))
+    (when (plist-get header :id)
+      (setq records
+            (plist-put (copy-sequence records) :header
+                       (append header
+                               (list :parsed-hash
+                                     (supertag-sync--parsed-hash
+                                      (supertag-sync--file-node-props
+                                       file header)))))))
+    (when nodes
+      (setq records
+            (plist-put (copy-sequence records) :nodes
+                       (mapcar (lambda (node)
+                                 (append node
+                                         (list :parsed-hash
+                                               (supertag-sync--parsed-hash node))))
+                               nodes))))
+    records))
+
 (defun supertag-sync-parser--read (file old-hash force)
   "In the parser process, return the answer for FILE as a plist.
 OLD-HASH and FORCE are as for `supertag-sync--read-file-records'."
@@ -3239,7 +3291,8 @@ OLD-HASH and FORCE are as for `supertag-sync--read-file-records'."
              (append
               (list :size (file-attribute-size attributes)
                     :mtime (file-attribute-modification-time attributes))
-              (supertag-sync--read-file-records file old-hash force t))))
+              (supertag-sync-parser--hash-records
+               file (supertag-sync--read-file-records file old-hash force t)))))
        (error (list :error (error-message-string err))))
      (with-current-buffer (messages-buffer)
        (when (> (point-max) logged)

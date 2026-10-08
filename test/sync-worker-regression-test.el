@@ -1213,6 +1213,10 @@ A deleted-file node and a heading whose ID is absent are still deleted."
         (should-not supertag-sync-parser--broken)
         (should-not supertag-async--failed-items)
         (should (equal here (supertag-sync-worker-test--projection)))
+        ;; The hash the parser process sends along is not a node property.
+        (maphash (lambda (_id node)
+                   (should-not (plist-member node :parsed-hash)))
+                 (supertag-store-get-collection :nodes))
         (dolist (file files)
           (should (gethash file (supertag-sync--get-state-table))))
         ;; A heading that left its file is deleted from an answer too.

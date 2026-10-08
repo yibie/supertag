@@ -60,7 +60,19 @@
 (defcustom supertag-async-idle-delay 0.5
   "Seconds of idle time to wait before processing the next job in the queue.
 Lower values make sync faster but might interfere with typing.
-Higher values ensure Emacs is truly idle."
+Higher values ensure Emacs is truly idle.
+This is the wait before a file is parsed in this session.  A file handed
+to the parser process is handed over at once, and its records wait for
+`supertag-async-apply-idle-delay'."
+  :type 'number
+  :group 'supertag-async)
+
+(defcustom supertag-async-apply-idle-delay 0.1
+  "Seconds of idle time before records from the parser process are applied.
+Applying them is the only part of a background sync this session does when
+the parser process is used, and it stops for pending input after
+`supertag-async-slice-seconds'.  Never longer than
+`supertag-async-idle-delay'."
   :type 'number
   :group 'supertag-async)
 
@@ -123,8 +135,7 @@ Returns the new queue length."
         (delete item supertag-async--failed-items))
   ;; Add to end
   (setq supertag-async--queue (append supertag-async--queue (list item)))
-  ;; Ensure timer is running
-  (supertag-async--ensure-timer)
+  (supertag-async--hand-out)
   (length supertag-async--queue))
 
 (defun supertag-async-enqueue-many (items)
@@ -145,7 +156,7 @@ item, but in one pass over the queue however many items there are."
         (setq supertag-async--queue
               (nconc (cl-delete-if #'incoming-p supertag-async--queue)
                      fresh))))
-    (supertag-async--ensure-timer))
+    (supertag-async--hand-out))
   (length supertag-async--queue))
 
 (defun supertag-async-clear ()
@@ -181,9 +192,19 @@ starts the timer again."
              (supertag-async--work-ready-p))
     (setq supertag-async--timer
           (run-with-idle-timer
-           supertag-async-idle-delay
+           (if (> supertag-sync-parser--ready 0)
+               (min supertag-async-apply-idle-delay supertag-async-idle-delay)
+             supertag-async-idle-delay)
            nil ;; Run once (we will re-schedule if more work remains)
            #'supertag-async--worker))))
+
+(defun supertag-async--hand-out ()
+  "Start on the queue: now for the parser process, when idle for this session.
+Handing a file to the parser process costs this session nothing worth
+waiting for an idle moment, and the file is read that much sooner."
+  (when (supertag-sync-parser--usable-p)
+    (supertag-sync-parser--dispatch))
+  (supertag-async--ensure-timer))
 
 (defun supertag-async--attempt (item function)
   "Call FUNCTION, which processes ITEM, and retain ITEM when it fails.
@@ -2857,18 +2878,22 @@ Processes FILE for synchronization."
 The session then only applies the parsed records, so it stays responsive
 while many files or a very large one are synchronized.  With nil, or when
 that process cannot be used, files are parsed in this session during idle
-time.  A full rescan always parses in this session."
+time.  A full rescan always parses in this session.
+The process is started with automatic sync and stays until that stops or
+Emacs exits, so a saved file is read without waiting for one to start."
   :type 'boolean
   :group 'supertag-sync)
 
 (defconst supertag-sync-parser--window 64
   "Most files that may be at the parser process, answered or not, at once.")
 
+(defconst supertag-sync-parser--remembered-files 256
+  "Most files whose last parse the parser process remembers.
+It stays for the session, and without a bound it would keep the records
+of every file of a first import.")
+
 (defconst supertag-sync-parser--silence-seconds 300
   "Seconds without an answer after which the parser process counts as stuck.")
-
-(defconst supertag-sync-parser--linger-seconds 300
-  "Seconds an idle parser process is kept before it is ended.")
 
 (defconst supertag-sync-parser--org-variables
   '(org-todo-keywords org-comment-string org-archive-tag org-footnote-section
@@ -3062,11 +3087,11 @@ With REQUEUE non-nil, put the files it held back at the head of the queue."
         (run-with-timer seconds nil #'supertag-sync-parser--check)))
 
 (defun supertag-sync-parser--check ()
-  "End the parser process when it is idle, or silent over files it holds."
+  "End the parser process when it is silent over files it holds."
   (setq supertag-sync-parser--timer nil)
   (cond
    ((not (process-live-p supertag-sync-parser--process)) nil)
-   ((not (supertag-async-busy-p)) (supertag-sync-parser--stop))
+   ((not (supertag-async-busy-p)) nil)
    ((and (nthcdr supertag-sync-parser--ready supertag-sync-parser--in-flight)
          (> (- (float-time) supertag-sync-parser--heard-at)
             supertag-sync-parser--silence-seconds))
@@ -3076,10 +3101,13 @@ With REQUEUE non-nil, put the files it held back at the head of the queue."
    (t (supertag-sync-parser--watch supertag-sync-parser--silence-seconds))))
 
 (defun supertag-sync-parser--drained ()
-  "Note that the queue has no work left for the parser process."
+  "Note that the queue has no work left for the parser process.
+The process stays, so that the next saved file does not wait for one to
+start."
   (setq supertag-sync-parser--config nil)
-  (when (process-live-p supertag-sync-parser--process)
-    (supertag-sync-parser--watch supertag-sync-parser--linger-seconds)))
+  (when (timerp supertag-sync-parser--timer)
+    (cancel-timer supertag-sync-parser--timer)
+    (setq supertag-sync-parser--timer nil)))
 
 (defun supertag-sync-parser--dispatch ()
   "Hand queued files to the parser process while it has room for them."
@@ -3301,6 +3329,13 @@ with."
     (ignore-errors (set-language-environment environment)))
   (when-let* ((priority (plist-get init :coding-priority)))
     (ignore-errors (apply #'set-coding-system-priority priority)))
+  ;; Org's first start and first parse take many times what later ones do.
+  ;; That is paid here, before the first request is read, not during it.
+  (ignore-errors
+    (let ((supertag-sync--is-full-rescan-p t))
+      (with-temp-buffer
+        (insert "* Warm\n:PROPERTIES:\n:ID: warm\n:END:\n[[id:warm][warm]]\n")
+        (supertag-sync--parse-nodes "/supertag-warm.org"))))
   (condition-case nil
       (while t
         (let ((request (read-from-minibuffer "" nil nil t)))
@@ -3310,7 +3345,11 @@ with."
                     (cons 'supertag-parsed
                           (apply #'supertag-sync-parser--read entry))))
             (terpri)
-            (flush-standard-output))))
+            (flush-standard-output))
+          ;; Files being edited are few; an import is not worth remembering.
+          (when (> (hash-table-count supertag-sync--parse-memo)
+                   supertag-sync-parser--remembered-files)
+            (clrhash supertag-sync--parse-memo))))
     ;; Standard input closed: the session is gone or has ended us.
     (end-of-file nil))
   (kill-emacs 0))
@@ -3329,6 +3368,10 @@ If INTERVAL is nil, use `supertag-sync-auto-interval`."
 
   ;; Initialize the async queue with our processor
   (supertag-async-init #'supertag-sync--async-processor)
+  ;; Started now, the parser process is ready by the time a file is saved.
+  (when (and (supertag-sync-parser--usable-p)
+             (not (process-live-p supertag-sync-parser--process)))
+    (supertag-sync-parser--start))
 
   ;; Ensure store is initialized before starting auto-sync
   (unless (hash-table-p supertag--store)

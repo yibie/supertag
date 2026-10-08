@@ -1255,9 +1255,8 @@ A deleted-file node and a heading whose ID is absent are still deleted."
       (supertag-sync-worker-test--write
        file "* First" ":PROPERTIES:" ":ID: document-node" ":END:")
       (supertag-async-enqueue file)
-      ;; Hand the file out, wait for the answer, then change the file
+      ;; The file is handed out; wait for the answer, then change the file
       ;; before the answer is applied.
-      (supertag-sync-parser--dispatch)
       (let ((deadline (+ (float-time) 60)))
         (while (and (= 0 supertag-sync-parser--ready) (< (float-time) deadline))
           (accept-process-output nil 0.02)))
@@ -1267,10 +1266,55 @@ A deleted-file node and a heading whose ID is absent are still deleted."
       (supertag-sync-parser--apply-next)
       (should (equal "Property Node"
                      (plist-get (supertag-node-get "document-node") :title)))
-      (should (equal (list file) supertag-async--queue))
+      ;; It is with the parser process again, not applied and not lost.
+      (should-not supertag-async--queue)
+      (should (equal (list file) supertag-sync-parser--in-flight))
       (supertag-sync-worker-test--drain-parser)
       (should (equal "Second, and longer"
                      (plist-get (supertag-node-get "document-node") :title))))))
+
+(ert-deftest supertag-sync-parser-process-reads-a-queued-file-at-once ()
+  "A queued file goes to the parser process without waiting for idle time,
+its records wait the shorter idle delay, and the process outlives the queue."
+  (supertag-document-test-with-vault
+    (supertag-sync-worker-test--with-parser
+      (supertag-sync-worker-test--write
+       file "* Read at once" ":PROPERTIES:" ":ID: document-node" ":END:")
+      (supertag-async-enqueue file)
+      (should-not supertag-async--queue)
+      (should (equal (list file) supertag-sync-parser--in-flight))
+      (let ((process supertag-sync-parser--process))
+        (should (process-live-p process))
+        (supertag-sync-worker-test--drain-parser)
+        (should (equal "Read at once"
+                       (plist-get (supertag-node-get "document-node") :title)))
+        ;; The next saved file does not wait for a process to start.
+        (should (eq process supertag-sync-parser--process))
+        (should (process-live-p process))
+        (should-not supertag-sync-parser--timer)))))
+
+(ert-deftest supertag-async-records-of-the-parser-wait-the-apply-delay ()
+  "Answers of the parser process are applied after the shorter idle delay."
+  (let ((supertag-async-idle-delay 0.5)
+        (supertag-async-apply-idle-delay 0.1)
+        (supertag-async--timer nil)
+        (supertag-async--queue nil)
+        (supertag-sync-parse-in-subprocess nil)
+        delays)
+    (cl-letf (((symbol-function 'run-with-idle-timer)
+               (lambda (seconds &rest _) (push seconds delays) 'timer)))
+      (let ((supertag-sync-parser--ready 1))
+        (supertag-async--ensure-timer))
+      (setq supertag-async--timer nil)
+      (let ((supertag-sync-parser--ready 0)
+            (supertag-async--queue (list "/tmp/a.org")))
+        (supertag-async--ensure-timer))
+      (setq supertag-async--timer nil)
+      ;; Never longer than the delay before parsing in this session.
+      (let ((supertag-sync-parser--ready 1)
+            (supertag-async-idle-delay 0.05))
+        (supertag-async--ensure-timer)))
+    (should (equal '(0.1 0.5 0.05) (nreverse delays)))))
 
 (ert-deftest supertag-sync-parser-process-drains-before-removed-files-are-dropped ()
   "A renamed file keeps its nodes: nothing is dropped while answers are out."

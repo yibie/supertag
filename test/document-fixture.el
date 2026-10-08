@@ -33,6 +33,9 @@
           (supertag-async--failed-items nil)
           (supertag-async--timer nil)
           (supertag-async--processor-fn #'supertag-sync--async-processor)
+          ;; Users drain the queue by hand, also in Emacs children the test
+          ;; runner's own setting does not reach.
+          (supertag-sync-parse-in-subprocess nil)
           (supertag-automation--enabled nil)
           (supertag-automation-sync--enabled nil)
           (org-id-locations nil)

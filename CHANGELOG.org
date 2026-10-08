@@ -64,8 +64,15 @@
 - The files background sync reads are now read and parsed by one separate
   batch Emacs, and this session only applies the records it sends back.
   Emacs stays responsive while a whole vault or one very large file is
-  synchronized.  The process starts when there are files to read and ends
-  after five minutes without any.
+  synchronized.  The process starts with automatic sync and stays until
+  that stops or Emacs exits, so there is one more Emacs running.  It
+  remembers the last parse of at most 256 files.
+- A file is handed to that process the moment it is queued, for example by
+  a save, instead of after =supertag-async-idle-delay= of idle time.  The
+  records it sends back are applied once Emacs has been idle for
+  =supertag-async-apply-idle-delay= (new, default 0.1 seconds).
+  =supertag-async-idle-delay= still is the wait before a file is parsed in
+  this session.
 - The process parses with this session's Org options, relation types and
   link types.  When an extractor other than the built-in ones is
   registered, or the process cannot start, files are parsed in this session

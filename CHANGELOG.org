@@ -83,6 +83,15 @@
 - The process also hashes each node it reads.  A node none of whose tags is
   a defined Tag is no longer hashed again in this session, which was most
   of the pause after saving a very large file.
+- From the second time the process parses a file, it sends back only the
+  nodes that changed since its last parse, with a count and a checksum of
+  the ones it left out.  This session applies them when the nodes it holds
+  for the file match that count and checksum, and otherwise asks for every
+  node.  A node with a tag is sent every time.  Saving a very large file
+  after a small edit now pauses Emacs for about as long as the edit is big.
+- When automatic sync starts and Emacs is idle, the process parses up to 8
+  files of at least 200 KB that changed last, so that the first save of one
+  of them is already answered that way.
 - While background sync has files left to read, the database is not written
   after every batch of them.  It is written once the last file is done, and
   as before when Emacs exits.

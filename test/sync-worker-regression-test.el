@@ -1248,6 +1248,198 @@ A deleted-file node and a heading whose ID is absent are still deleted."
         (should-not (supertag-node-get "parser-b"))
         (should (supertag-node-get "parser-a"))))))
 
+(defmacro supertag-sync-worker-test--with-checked-answers (answers &rest body)
+  "Run BODY, pushing to ANSWERS (ANSWER . CHECKED) for every parser answer."
+  (declare (indent 1) (debug t))
+  `(unwind-protect
+       (progn
+         (advice-add 'supertag-sync-parser--checked-answer :around
+                     (lambda (check file answer)
+                       (let ((checked (funcall check file answer)))
+                         (push (cons answer checked) ,answers)
+                         checked))
+                     '((name . collect-answers)))
+         ,@body)
+     (advice-remove 'supertag-sync-parser--checked-answer 'collect-answers)))
+
+(defun supertag-sync-worker-test--answer-ids (answer)
+  "Return the sorted IDs of the nodes ANSWER holds."
+  (sort (mapcar (lambda (node) (plist-get node :id)) (plist-get answer :nodes))
+        #'string<))
+
+(ert-deftest supertag-sync-parser-process-answers-a-save-with-the-changed-nodes ()
+  "The second parse of a file sends the nodes that changed, and no other."
+  (supertag-document-test-with-vault
+    (supertag-sync-worker-test--with-parser
+      (let (answers)
+        (supertag-sync-worker-test--with-checked-answers answers
+          (supertag-sync-worker-test--write
+           file
+           "* Stays" ":PROPERTIES:" ":ID: changed-stays" ":END:" "Same text."
+           "* Edited" ":PROPERTIES:" ":ID: changed-edited" ":END:" "Old text."
+           "* Leaves" ":PROPERTIES:" ":ID: changed-leaves" ":END:"
+           "* Tagged #changedtag" ":PROPERTIES:" ":ID: changed-tagged" ":END:")
+          (supertag-async-enqueue file)
+          (supertag-sync-worker-test--drain-parser)
+          ;; The first parse of a file has nothing to compare with.
+          (should (= 1 (length answers)))
+          (should-not (plist-get (caar answers) :changed-only))
+          (let ((stays (supertag-node-get "changed-stays")))
+            (setq answers nil)
+            (supertag-sync-worker-test--write
+             file
+             "* Stays" ":PROPERTIES:" ":ID: changed-stays" ":END:" "Same text."
+             "* Edited, now" ":PROPERTIES:" ":ID: changed-edited" ":END:" "New text."
+             "* Tagged #changedtag" ":PROPERTIES:" ":ID: changed-tagged" ":END:"
+             "* Arrives" ":PROPERTIES:" ":ID: changed-arrives" ":END:")
+            (supertag-async-enqueue file)
+            (supertag-sync-worker-test--drain-parser)
+            (should (= 1 (length answers)))
+            (let ((answer (caar answers)))
+              (should (plist-get answer :changed-only))
+              (should (cdar answers))
+              ;; A node with a Tag Occurrence is sent every time.
+              (should (equal '("changed-arrives" "changed-edited" "changed-tagged")
+                             (supertag-sync-worker-test--answer-ids answer)))
+              (should (equal '("changed-leaves") (plist-get answer :gone)))
+              (should (equal 1 (car (plist-get answer :kept)))))
+            (should (eq stays (supertag-node-get "changed-stays")))
+            (should (equal "Edited, now"
+                           (plist-get (supertag-node-get "changed-edited") :title)))
+            (should (supertag-node-get "changed-arrives"))
+            (should (supertag-node-get "changed-tagged"))
+            (should-not (supertag-node-get "changed-leaves"))
+            (should-not supertag-async--failed-items)
+            (should (equal (plist-get (cdar answers) :hash)
+                           (plist-get (gethash file (supertag-sync--get-state-table))
+                                      :content-hash)))))))))
+
+(ert-deftest supertag-sync-parser-process-answer-the-store-does-not-match-is-read-whole ()
+  "Changed nodes are not applied to a Store that lacks the nodes left out."
+  (supertag-document-test-with-vault
+    (supertag-sync-worker-test--with-parser
+      (let (answers)
+        (supertag-sync-worker-test--with-checked-answers answers
+          (supertag-sync-worker-test--write
+           file
+           "* One" ":PROPERTIES:" ":ID: whole-one" ":END:" "Text."
+           "* Two" ":PROPERTIES:" ":ID: whole-two" ":END:" "Text."
+           "* Three" ":PROPERTIES:" ":ID: whole-three" ":END:" "Text.")
+          (supertag-async-enqueue file)
+          (supertag-sync-worker-test--drain-parser)
+          ;; The Store loses a node and has another one changed, neither of
+          ;; which the parser process hears about.
+          (supertag-sync--delete-node "whole-one")
+          (supertag-store-put-entity
+           :nodes "whole-two"
+           (plist-put (copy-sequence (supertag-node-get "whole-two"))
+                      :hash (make-string 40 ?0)))
+          (setq answers nil)
+          (supertag-sync-worker-test--write
+           file
+           "* One" ":PROPERTIES:" ":ID: whole-one" ":END:" "Text."
+           "* Two" ":PROPERTIES:" ":ID: whole-two" ":END:" "Text."
+           "* Three, edited" ":PROPERTIES:" ":ID: whole-three" ":END:" "Text.")
+          (supertag-async-enqueue file)
+          (supertag-sync-worker-test--drain-parser)
+          ;; First the changed nodes, which are refused; then every node.
+          (should (= 2 (length answers)))
+          (let ((refused (cadr answers))
+                (whole (car answers)))
+            (should (plist-get (car refused) :changed-only))
+            (should-not (cdr refused))
+            (should-not (plist-get (car whole) :changed-only))
+            (should (equal '("whole-one" "whole-three" "whole-two")
+                           (supertag-sync-worker-test--answer-ids (car whole)))))
+          (should (supertag-node-get "whole-one"))
+          (should-not (equal (make-string 40 ?0)
+                             (plist-get (supertag-node-get "whole-two") :hash)))
+          (should (equal "Three, edited"
+                         (plist-get (supertag-node-get "whole-three") :title)))
+          (should-not supertag-async--failed-items))))))
+
+(ert-deftest supertag-sync-parser-process-remembers-a-file-before-it-is-saved ()
+  "A file the parser process was asked to remember is answered by its changes."
+  (supertag-document-test-with-vault
+    (supertag-sync-worker-test--write
+     file
+     "* Kept" ":PROPERTIES:" ":ID: remember-kept" ":END:" "Text."
+     "* Edited" ":PROPERTIES:" ":ID: remember-edited" ":END:" "Text.")
+    ;; The Store knows the file from a parse in this session.
+    (supertag-sync--async-processor file)
+    (should (supertag-node-get "remember-kept"))
+    (supertag-sync-worker-test--with-parser
+      (let (answers)
+        (supertag-sync-worker-test--with-checked-answers answers
+          (let ((kept (supertag-node-get "remember-kept")))
+            (should (supertag-sync-parser-remember (list file)))
+            (should (equal (list (cons 'remember file))
+                           supertag-sync-parser--in-flight))
+            (supertag-sync-worker-test--drain-parser)
+            ;; Nothing of that parse reaches the Store.
+            (should-not answers)
+            (should (eq kept (supertag-node-get "remember-kept")))
+            (supertag-sync-worker-test--write
+             file
+             "* Kept" ":PROPERTIES:" ":ID: remember-kept" ":END:" "Text."
+             "* Edited here" ":PROPERTIES:" ":ID: remember-edited" ":END:" "Text.")
+            (supertag-async-enqueue file)
+            (supertag-sync-worker-test--drain-parser)
+            (should (= 1 (length answers)))
+            (should (plist-get (caar answers) :changed-only))
+            (should (cdar answers))
+            (should (equal '("remember-edited")
+                           (supertag-sync-worker-test--answer-ids (caar answers))))
+            (should (eq kept (supertag-node-get "remember-kept")))
+            (should (equal "Edited here"
+                           (plist-get (supertag-node-get "remember-edited")
+                                      :title)))))))))
+
+(ert-deftest supertag-sync-parser-settings-drop-what-is-remembered-only-on-change ()
+  "The parser process forgets its parses when settings change a parse."
+  (let ((supertag-sync-parser--applied-settings t)
+        (supertag-sync--parse-memo (make-hash-table :test 'equal))
+        (supertag-sync-parser--told (make-hash-table :test 'equal))
+        (supertag-text-link-relation-types nil)
+        (supertag-text-link--session-types nil)
+        (org-link-parameters (copy-sequence org-link-parameters)))
+    (unwind-protect
+        (cl-flet ((remembered-after (settings)
+                    (puthash "/v/a.org" t supertag-sync-parser--told)
+                    (puthash "/v/a.org" t supertag-sync--parse-memo)
+                    (supertag-sync-parser--apply-settings settings)
+                    (and (gethash "/v/a.org" supertag-sync-parser--told)
+                         (gethash "/v/a.org" supertag-sync--parse-memo))))
+          (should (assoc "file" org-link-parameters))
+          (should (assoc "id" org-link-parameters))
+          (should-not (remembered-after '(:link-types ("file"))))
+          (should (remembered-after '(:link-types ("file"))))
+          ;; The session loaded a link type this process already has.
+          (should (remembered-after '(:link-types ("file" "id"))))
+          ;; One it does not have makes other links of the same text.
+          (should-not (remembered-after
+                       '(:link-types ("file" "id" "parsersettingstype"))))
+          (should (assoc "parsersettingstype" org-link-parameters))
+          (should (remembered-after
+                   '(:link-types ("file" "id" "parsersettingstype"))))
+          (should-not (remembered-after
+                       '(:relation-types ("parsersettingsrel")
+                         :link-types ("file" "id" "parsersettingstype")))))
+      (setq supertag-text-link-relation-types nil)
+      (supertag-text-link-refresh))))
+
+(ert-deftest supertag-sync-parser-large-files-are-the-ones-changed-last ()
+  "The files to remember are the large ones, newest first, and only a few."
+  (supertag-document-test-with-vault
+    (let ((table (supertag-sync--get-state-table))
+          (supertag-sync-parser--remember-files 2))
+      (puthash "/v/small.org" (list :mtime '(100 0) :size 1000) table)
+      (puthash "/v/old.org" (list :mtime '(10 0) :size 900000) table)
+      (puthash "/v/new.org" (list :mtime '(30 0) :size 900000) table)
+      (puthash "/v/mid.org" (list :mtime '(20 0) :size 900000) table)
+      (should (equal '("/v/new.org" "/v/mid.org")
+                     (supertag-sync-parser--large-files))))))
+
 (ert-deftest supertag-sync-parser-process-answer-for-older-text-is-not-applied ()
   "Records of text that changed after it was read are parsed again."
   (supertag-document-test-with-vault

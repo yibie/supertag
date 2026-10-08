@@ -108,10 +108,18 @@ Must accept a single argument (the item).")
 
 (defvar supertag-sync-parser--in-flight nil
   "Files handed to the parser process whose records are not applied yet.
-Oldest first; the process answers in this order.")
+Oldest first; the process answers in this order.  An element (remember .
+FILE) stands for a file the process only parses to remember it; see
+`supertag-sync-parser-remember'.")
 
 (defvar supertag-sync-parser--ready 0
   "Number of complete answers of the parser process waiting to be applied.")
+
+(defvar supertag-sync-parser--whole-files (make-hash-table :test 'equal)
+  "Files the parser process has to answer with every node the next time.
+The process leaves out of an answer the nodes it found the same as in its
+last parse of the file.  A file is listed here when that turned out not to
+be what the Store holds.")
 
 ;;; Core Functions
 
@@ -1580,7 +1588,10 @@ Only the queue worker binds this; a sync the user asked for runs to the end.")
 file was not parsed and :unchanged is t; with IDS non-nil, :ids then lists
 the IDs of its heading nodes.  Otherwise :header holds the properties of
 the file node and :nodes the records of its heading nodes.
-Nothing here reads or writes the Store, so the parser process runs it too."
+Nothing here reads or writes the Store, so the parser process runs it too.
+An answer of that process may also be :changed-only: :nodes then leaves out
+the nodes the Store already holds, and :gone lists the IDs that left the
+file; see `supertag-sync-parser--changed-only'."
   (with-temp-buffer
     (insert-file-contents file)
     (let ((hash (secure-hash 'sha1 (current-buffer))))
@@ -1607,9 +1618,26 @@ Return `reconciled' when FILE was parsed and its vanished nodes removed."
          (allow-destructive (supertag-sync--allow-destructive-p))
          (deferred-entry (gethash file supertag-sync--deferred-files))
          (deferred-deletions nil))
-    (if (not should-parse)
-        ;; Just update state (mtime + hash)
-        (supertag-sync-update-state file content-hash)
+    (cond
+     ((not should-parse)
+      ;; Just update state (mtime + hash)
+      (supertag-sync-update-state file content-hash))
+     ((plist-get records :changed-only)
+      ;; The parser process compared the nodes with the Store's hashes and
+      ;; left out those that are the same.
+      (supertag-sync--upsert-file-node file file-header counters)
+      (dolist (id (plist-get records :gone))
+        (if allow-destructive
+            (progn
+              (supertag-sync--delete-node id)
+              (setf (plist-get counters :nodes-deleted)
+                    (1+ (or (plist-get counters :nodes-deleted) 0))))
+          (setq deferred-deletions t)))
+      (dolist (node-props nodes-from-file)
+        (supertag-sync--reconcile-node node-props counters))
+      (unless deferred-deletions
+        (supertag-sync-update-state file content-hash)))
+     (t
       (when supertag-sync--verified-ids
         (when-let* ((file-id (plist-get file-header :id)))
           (puthash file-id (cons file t) supertag-sync--verified-ids))
@@ -1655,7 +1683,7 @@ Return `reconciled' when FILE was parsed and its vanished nodes removed."
         ;; deferred, so the retry survives an Emacs restart (the
         ;; deferred-files marker below is in-memory only).
         (unless deferred-deletions
-          (supertag-sync-update-state file content-hash))))
+          (supertag-sync-update-state file content-hash)))))
 
     (when (and allow-destructive deferred-entry)
       (remhash file supertag-sync--deferred-files))
@@ -2892,6 +2920,15 @@ short-lived process, which lists the files and their change times."
 (defconst supertag-sync-parser--window 64
   "Most files that may be at the parser process, answered or not, at once.")
 
+(defconst supertag-sync-parser--remember-size 200000
+  "Size in bytes from which a file is worth remembering before it is saved.")
+
+(defconst supertag-sync-parser--remember-files 8
+  "Most files the parser process is asked to remember when a session starts.")
+
+(defvar supertag-sync-parser--remember-timer nil
+  "Timer that has the parser process remember the large files, or nil.")
+
 (defconst supertag-sync-parser--remembered-files 256
   "Most files whose last parse the parser process remembers.
 It stays for the session, and without a bound it would keep the records
@@ -3066,7 +3103,8 @@ the registered Org link types.  Collected once for each run of the queue."
 With REQUEUE non-nil, put the files it held back at the head of the queue."
   (when requeue
     (setq supertag-async--queue
-          (nconc supertag-sync-parser--in-flight supertag-async--queue)))
+          (nconc (cl-delete-if #'consp supertag-sync-parser--in-flight)
+                 supertag-async--queue)))
   (when-let* ((process supertag-sync-parser--process))
     ;; Cleared first, so that the sentinel sees an intended end.
     (setq supertag-sync-parser--process nil)
@@ -3126,7 +3164,12 @@ start."
         (while (and supertag-async--queue (> room 0))
           (let ((file (pop supertag-async--queue)))
             (push file files)
-            (push (cons file (supertag-sync--file-parse-request file)) entries)
+            (push (cons file
+                        (append (supertag-sync--file-parse-request file)
+                                (when (gethash file supertag-sync-parser--whole-files)
+                                  (remhash file supertag-sync-parser--whole-files)
+                                  '(whole))))
+                  entries)
             (cl-decf room)))
         (setq supertag-sync-parser--in-flight
               (nconc supertag-sync-parser--in-flight (nreverse files))
@@ -3137,6 +3180,105 @@ start."
                  " :files " (supertag-sync-parser--print (nreverse entries))
                  ")\n"))
         (supertag-sync-parser--watch supertag-sync-parser--silence-seconds)))))
+
+(defun supertag-sync-parser--hash-mix (mix hash)
+  "Return MIX combined with HASH, a node hash, whatever the order of nodes."
+  (logxor mix (string-to-number (substring hash 0 15) 16)))
+
+(defun supertag-sync-parser--checked-answer (file answer)
+  "Return ANSWER for FILE as it can be applied to the Store, or nil.
+An answer with every node is returned as it is.  One with the changed nodes
+only left out the nodes that had the hash of the parser process's last
+parse of FILE, and tells their number and their hashes mixed in :kept.  It
+is returned, its :gone narrowed to the nodes the Store holds for FILE, when
+the other heading nodes the Store holds for FILE are that many and mix to
+the same; otherwise the Store is not what the process compared with, and
+the value is nil."
+  (if (not (plist-get answer :changed-only))
+      answer
+    (let ((changed (make-hash-table :test 'equal))
+          (gone (make-hash-table :test 'equal))
+          (kept (plist-get answer :kept))
+          (count 0)
+          (mix 0)
+          deleted)
+      (dolist (node (plist-get answer :nodes))
+        (puthash (plist-get node :id) t changed))
+      (dolist (id (plist-get answer :gone))
+        (puthash id t gone))
+      (when (catch 'unhashed
+              (pcase-dolist (`(,id . ,node) (supertag-find-nodes-by-file file))
+                (cond
+                 ((supertag-node-file-node-p node))
+                 ((gethash id changed))
+                 ((gethash id gone) (push id deleted))
+                 (t
+                  (let ((hash (plist-get node :hash)))
+                    (unless (stringp hash)
+                      (throw 'unhashed nil))
+                    (setq count (1+ count)
+                          mix (supertag-sync-parser--hash-mix mix hash))))))
+              (and (eql count (car-safe kept))
+                   (eql mix (cdr-safe kept))))
+        (plist-put (copy-sequence answer) :gone (nreverse deleted))))))
+
+(defun supertag-sync-parser-remember (files)
+  "Have the parser process parse FILES now, to remember what they hold.
+The process then answers the next save of one of them with the nodes that
+changed; see `supertag-sync-parser--changed-only'.  Nothing of the answer
+reaches the Store.  Return non-nil when the process was asked."
+  (when (and files (supertag-sync-parser--usable-p))
+    (when-let* ((process (if (process-live-p supertag-sync-parser--process)
+                             supertag-sync-parser--process
+                           (supertag-sync-parser--start))))
+      (setq supertag-sync-parser--in-flight
+            (nconc supertag-sync-parser--in-flight
+                   (mapcar (lambda (file) (cons 'remember file)) files))
+            supertag-sync-parser--heard-at (float-time))
+      (process-send-string
+       process
+       (concat "(:settings " (supertag-sync-parser--settings)
+               " :files " (supertag-sync-parser--print
+                           (mapcar (lambda (file) (list file nil nil 'remember))
+                                   files))
+               ")\n"))
+      (supertag-sync-parser--watch supertag-sync-parser--silence-seconds)
+      t)))
+
+(defvar supertag-sync--scan-process)
+(defvar supertag-sync--scan-answer)
+
+(defun supertag-sync-parser--large-files ()
+  "Return the large files of the vault that were changed last, newest first.
+These are the files worth `supertag-sync-parser-remember': saving one of
+them costs the most, and the file changed last is the likeliest to be
+saved next."
+  (let (large)
+    (maphash
+     (lambda (file state)
+       (when (and (listp state) (keywordp (car state))
+                  (>= (or (plist-get state :size) 0)
+                      supertag-sync-parser--remember-size))
+         (push (cons file (plist-get state :mtime)) large)))
+     (supertag-sync--get-state-table))
+    (mapcar #'car
+            (seq-take (sort large (lambda (a b)
+                                    (time-less-p (cdr b) (cdr a))))
+                      supertag-sync-parser--remember-files))))
+
+(defun supertag-sync-parser--remember-large-files ()
+  "Have the parser process remember the large files that were changed last.
+Waits while files are queued or the directories are being checked: those
+come first."
+  (setq supertag-sync-parser--remember-timer nil)
+  (when (supertag-sync-parser--usable-p)
+    (if (or (supertag-async-busy-p)
+            supertag-sync--scan-process
+            supertag-sync--scan-answer)
+        (setq supertag-sync-parser--remember-timer
+              (run-with-timer 5 nil
+                              #'supertag-sync-parser--remember-large-files))
+      (supertag-sync-parser-remember (supertag-sync-parser--large-files)))))
 
 (defun supertag-sync-parser--filter (process text)
   "Collect TEXT, which the parser PROCESS answered, for the next idle time."
@@ -3174,6 +3316,8 @@ start."
       (setq supertag-sync-parser--in-flight answered)
       (cond
        ((null unanswered) nil)
+       ;; It ended over a file it was only to remember: nothing is lost.
+       ((consp (car unanswered)) (pop unanswered))
        ((not supertag-sync-parser--answered)
         ;; It never got as far as one file: its environment is the problem.
         (supertag-sync-parser--give-up supertag-sync-parser--errors))
@@ -3186,7 +3330,8 @@ start."
                    "Data safety: the Org source file was not modified, and its filename is retained for retry. "
                    "Next: fix the cause, then run M-x supertag-sync-full-rescan.")
            file))))
-      (setq supertag-async--queue (nconc unanswered supertag-async--queue)))
+      (setq supertag-async--queue
+            (nconc (cl-delete-if #'consp unanswered) supertag-async--queue)))
     (supertag-async--ensure-timer)))
 
 (defun supertag-sync-parser--take ()
@@ -3215,12 +3360,17 @@ start."
   (when-let* ((answer (supertag-sync-parser--take))
               (file (plist-get answer :file)))
     (setq supertag-sync-parser--in-flight
-          (cl-delete file supertag-sync-parser--in-flight
+          (cl-delete (if (plist-get answer :remembered)
+                         (cons 'remember file)
+                       file)
+                     supertag-sync-parser--in-flight
                      :test #'equal :count 1))
     (dolist (text (plist-get answer :messages))
       (message "%s" text))
     (let ((attributes (file-attributes file)))
       (cond
+       ;; The process parsed FILE only to remember it.
+       ((plist-get answer :remembered) nil)
        ((or (plist-get answer :missing) (null attributes))
         (supertag-sync--after-queued-file nil))
        ;; Whatever stopped the parse there is reported by parsing here.
@@ -3235,8 +3385,12 @@ start."
                    (file-attribute-modification-time attributes))))
         (supertag-async-enqueue file))
        (t
-        (supertag-async--attempt
-         file (lambda () (supertag-sync--apply-parsed-file file answer))))))))
+        (if-let* ((checked (supertag-sync-parser--checked-answer file answer)))
+            (supertag-async--attempt
+             file (lambda () (supertag-sync--apply-parsed-file file checked)))
+          ;; The nodes the answer left out are not what the Store holds.
+          (puthash file t supertag-sync-parser--whole-files)
+          (supertag-async-enqueue file)))))))
 
 (defun supertag-sync--apply-parsed-file (file records)
   "Apply RECORDS, which the parser process read from FILE, to the Store."
@@ -3254,27 +3408,41 @@ start."
 
 ;; The functions below run in the parser process.
 
-(defvar supertag-sync-parser--applied-settings nil
-  "In the parser process, the settings of the last request.")
+(defvar supertag-sync-parser--applied-settings t
+  "In the parser process, the settings of the last request, or t before it.
+Without its link types: see `supertag-sync-parser--apply-settings'.")
 
 (defun supertag-sync-parser--apply-settings (settings)
-  "In the parser process, parse from now on as SETTINGS say."
-  (unless (equal settings supertag-sync-parser--applied-settings)
-    (setq supertag-sync-parser--applied-settings settings)
-    ;; Records remembered under other settings are no longer the same parse.
-    (clrhash supertag-sync--parse-memo)
-    (dolist (feature (plist-get settings :features))
-      (require feature nil t))
-    (pcase-dolist (`(,symbol . ,value) (plist-get settings :variables))
-      (set symbol value))
-    (require 'supertag-link)
-    (setq supertag-text-link-relation-types (plist-get settings :relation-types)
-          supertag-text-link--session-types nil)
-    (supertag-text-link-refresh)
-    (dolist (type (plist-get settings :link-types))
+  "In the parser process, parse from now on as SETTINGS say.
+What the process remembers of earlier parses is dropped when SETTINGS make
+a parse come out differently, and only then.  The link types of the session
+grow when its first Org buffer loads `org-modules'; this process loaded
+those before its first parse, so that alone changes nothing here."
+  (let ((types (plist-get settings :link-types))
+        (rest (cl-loop for (key value) on settings by #'cddr
+                       unless (eq key :link-types)
+                       append (list key value)))
+        (changed nil))
+    (unless (equal rest supertag-sync-parser--applied-settings)
+      (setq supertag-sync-parser--applied-settings rest
+            changed t)
+      (dolist (feature (plist-get settings :features))
+        (require feature nil t))
+      (pcase-dolist (`(,symbol . ,value) (plist-get settings :variables))
+        (set symbol value))
+      (require 'supertag-link)
+      (setq supertag-text-link-relation-types (plist-get settings :relation-types)
+            supertag-text-link--session-types nil)
+      (supertag-text-link-refresh))
+    (dolist (type types)
       (unless (assoc type org-link-parameters)
-        (org-link-set-parameters type)))
-    (org-link-make-regexps)))
+        (org-link-set-parameters type)
+        (setq changed t)))
+    (when changed
+      ;; Records remembered under other settings are not the same parse.
+      (clrhash supertag-sync--parse-memo)
+      (clrhash supertag-sync-parser--told)
+      (org-link-make-regexps))))
 
 (defun supertag-sync-parser--hash-records (file records)
   "In the parser process, return RECORDS of FILE with every node hashed.
@@ -3301,9 +3469,63 @@ shared with the memo of parsed headings and their hash moves with them."
                                nodes))))
     records))
 
-(defun supertag-sync-parser--read (file old-hash force)
+(defvar supertag-sync-parser--told (make-hash-table :test 'equal)
+  "In the parser process, the node hashes of each file as it last parsed it.
+A value maps the ID of a heading node to its hash, or to nil for a node
+that has to be sent every time.")
+
+(defun supertag-sync-parser--changed-only (file records whole)
+  "In the parser process, drop from RECORDS the nodes FILE had the last time.
+A node that has the hash it had in the last parse of FILE is left out of
+:nodes; :kept is (COUNT . MIX) for the nodes left out, their number and
+`supertag-sync-parser--hash-mix' of their hashes; :gone lists the IDs that
+left FILE; and :changed-only is t.  A large file that was edited in one
+place then costs the session what the edit does, not what the file does.
+The session applies such an answer only when :kept is what its Store holds.
+A node with a Tag Occurrence is sent every time: whether it changed depends
+on the Semantic Tags of the session.
+RECORDS are returned as they are when FILE was not parsed, when this is its
+first parse, and when WHOLE is non-nil."
+  (if (plist-get records :unchanged)
+      records
+    (let ((before (gethash file supertag-sync-parser--told))
+          (now (make-hash-table :test 'equal))
+          (parsed (make-hash-table :test 'equal))
+          (count 0)
+          (mix 0)
+          changed gone)
+      ;; Of two headings with one ID the session keeps the later one.
+      (dolist (node (plist-get records :nodes))
+        (puthash (plist-get node :id) node parsed))
+      (maphash
+       (lambda (id node)
+         (let ((hash (and (null (plist-get node :tag-occurrences))
+                          (null (plist-get node :tags))
+                          (plist-get node :parsed-hash))))
+           (puthash id hash now)
+           (if (and before hash (equal hash (gethash id before)))
+               (setq count (1+ count)
+                     mix (supertag-sync-parser--hash-mix mix hash))
+             (push node changed))))
+       parsed)
+      (puthash file now supertag-sync-parser--told)
+      (if (or whole (null before))
+          records
+        (maphash (lambda (id _hash)
+                   (unless (gethash id parsed)
+                     (push id gone)))
+                 before)
+        (append (list :changed-only t :kept (cons count mix) :gone gone
+                      :nodes (nreverse changed))
+                (cl-loop for (key value) on records by #'cddr
+                         unless (eq key :nodes)
+                         append (list key value)))))))
+
+(defun supertag-sync-parser--read (file old-hash force &optional how)
   "In the parser process, return the answer for FILE as a plist.
-OLD-HASH and FORCE are as for `supertag-sync--read-file-records'."
+OLD-HASH and FORCE are as for `supertag-sync--read-file-records'.  HOW is
+nil, or `whole' for an answer with every node, or `remember' to parse FILE
+for `supertag-sync-parser--changed-only' and answer with no node at all."
   (let ((logged (with-current-buffer (messages-buffer) (point-max))))
     (append
      (list :file file)
@@ -3314,9 +3536,19 @@ OLD-HASH and FORCE are as for `supertag-sync--read-file-records'."
              (append
               (list :size (file-attribute-size attributes)
                     :mtime (file-attribute-modification-time attributes))
-              (supertag-sync-parser--hash-records
-               file (supertag-sync--read-file-records file old-hash force t)))))
+              (let ((records
+                     (supertag-sync-parser--changed-only
+                      file
+                      (supertag-sync-parser--hash-records
+                       file (supertag-sync--read-file-records
+                             file old-hash force t))
+                      (eq how 'whole))))
+                (if (eq how 'remember)
+                    nil
+                  records)))))
        (error (list :error (error-message-string err))))
+     (when (eq how 'remember)
+       (list :remembered t))
      (with-current-buffer (messages-buffer)
        (when (> (point-max) logged)
          (list :messages
@@ -3337,6 +3569,8 @@ with."
   ;; Org's first start and first parse take many times what later ones do.
   ;; That is paid here, before the first request is read, not during it.
   (ignore-errors
+    ;; Link types of `org-modules' are registered before anything is parsed.
+    (org-load-modules-maybe)
     (let ((supertag-sync--is-full-rescan-p t))
       (with-temp-buffer
         (insert "* Warm\n:PROPERTIES:\n:ID: warm\n:END:\n[[id:warm][warm]]\n")
@@ -3352,9 +3586,11 @@ with."
             (terpri)
             (flush-standard-output))
           ;; Files being edited are few; an import is not worth remembering.
-          (when (> (hash-table-count supertag-sync--parse-memo)
+          (when (> (max (hash-table-count supertag-sync--parse-memo)
+                        (hash-table-count supertag-sync-parser--told))
                    supertag-sync-parser--remembered-files)
-            (clrhash supertag-sync--parse-memo))))
+            (clrhash supertag-sync--parse-memo)
+            (clrhash supertag-sync-parser--told))))
     ;; Standard input closed: the session is gone or has ended us.
     (end-of-file nil))
   (kill-emacs 0))
@@ -3669,6 +3905,11 @@ If INTERVAL is nil, use `supertag-sync-auto-interval`."
   (when (and (supertag-sync-parser--usable-p)
              (not (process-live-p supertag-sync-parser--process)))
     (supertag-sync-parser--start))
+  (when (timerp supertag-sync-parser--remember-timer)
+    (cancel-timer supertag-sync-parser--remember-timer))
+  (setq supertag-sync-parser--remember-timer
+        (run-with-idle-timer supertag-sync-idle-delay nil
+                             #'supertag-sync-parser--remember-large-files))
 
   ;; Ensure store is initialized before starting auto-sync
   (unless (hash-table-p supertag--store)
@@ -3689,6 +3930,9 @@ If INTERVAL is nil, use `supertag-sync-auto-interval`."
     (setq supertag-sync--timer nil)
     (message "Auto-sync stopped"))
   (supertag-sync--scan-forget)
+  (when (timerp supertag-sync-parser--remember-timer)
+    (cancel-timer supertag-sync-parser--remember-timer)
+    (setq supertag-sync-parser--remember-timer nil))
   ;; Stop the async worker
   (supertag-async-clear))
 

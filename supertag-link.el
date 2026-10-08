@@ -112,7 +112,8 @@ All conflicts are checked before registrations change.  Existing third-party
 or Org protocols fail explicitly; registrations owned by this service may be
 refreshed idempotently.  Reindex after changing the vocabulary."
   (interactive)
-  (let ((types (supertag-text-link-relation-types)))
+  (let ((types (supertag-text-link-relation-types))
+        changed)
     ;; Preflight the complete desired set before removing or adding anything.
     (dolist (type types)
       (when (member type supertag-text-link--protected-types)
@@ -125,15 +126,20 @@ refreshed idempotently.  Reindex after changing the vocabulary."
        (unless (member type types)
          (when (supertag-text-link--owned-current-p type)
            (setq org-link-parameters
-                 (assoc-delete-all type org-link-parameters)))
+                 (assoc-delete-all type org-link-parameters)
+                 changed t))
          (remhash type supertag-text-link--owned-registrations)))
      (copy-hash-table supertag-text-link--owned-registrations))
     (dolist (type types)
       (unless (supertag-text-link--owned-current-p type)
         (org-link-set-parameters type :follow #'supertag-text-link-follow)
         (puthash type (copy-tree (assoc type org-link-parameters))
-                 supertag-text-link--owned-registrations)))
-    (org-link-make-regexps)
+                 supertag-text-link--owned-registrations)
+        (setq changed t)))
+    ;; Every parse of a file refreshes, and almost none changes anything;
+    ;; Org's link regexps only need rebuilding after a registration did.
+    (when changed
+      (org-link-make-regexps))
     types))
 
 (defun supertag-text-link-accept-session-type (type)

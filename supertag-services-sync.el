@@ -1266,37 +1266,49 @@ Projection; Semantic Facts live in their own Store collections."
                 (1+ (or (plist-get counters :nodes-updated) 0))))))
      (t old-props))))
 
+(defun supertag-sync--buffer-may-hold-named-links-p ()
+  "Return non-nil when the current buffer could hold a named relation link.
+A link of a relation type spells that type before a colon, so a buffer
+without such text needs no parse to know it has none."
+  (when-let* ((types (supertag-text-link-relation-types)))
+    (save-excursion
+      (goto-char (point-min))
+      (let ((case-fold-search t))
+        (re-search-forward (concat (regexp-opt types) ":") nil t)))))
+
 (defun supertag-sync--extract-file-header-named-links ()
   "Extract named links from a stripped copy of the current file header."
-  (let ((text (buffer-substring-no-properties (point-min) (point-max))))
-    (with-temp-buffer
-      (insert text)
-      (let ((inhibit-modification-hooks t)
-            (org-mode-hook nil)
-            (org-inhibit-startup t)
-            (org-agenda-inhibit-startup t))
-        (delay-mode-hooks (org-mode))
-        (setq-local org-element-use-cache nil)
-        (supertag-sync--strip-embed-block-contents
-         (or (buffer-file-name) "<file-header>"))
-        (narrow-to-region
-         (point-min)
-         (save-excursion
-           (goto-char (point-min))
-           (if (re-search-forward "^\\*+\\s-" nil t)
-               (match-beginning 0)
-             (point-max))))
-        (supertag--extract-named-links
-         (org-element-contents (org-element-parse-buffer)))))))
+  ;; The copy below starts Org mode and parses again, for every file.
+  (when (supertag-sync--buffer-may-hold-named-links-p)
+    (let ((text (buffer-substring-no-properties (point-min) (point-max))))
+      (with-temp-buffer
+        (insert text)
+        (let ((inhibit-modification-hooks t)
+              (org-mode-hook nil)
+              (org-inhibit-startup t)
+              (org-agenda-inhibit-startup t))
+          (delay-mode-hooks (org-mode))
+          (setq-local org-element-use-cache nil)
+          (supertag-sync--strip-embed-block-contents
+           (or (buffer-file-name) "<file-header>"))
+          (narrow-to-region
+           (point-min)
+           (save-excursion
+             (goto-char (point-min))
+             (if (re-search-forward "^\\*+\\s-" nil t)
+                 (match-beginning 0)
+               (point-max))))
+          (supertag--extract-named-links
+           (org-element-contents (org-element-parse-buffer))))))))
 
-(defun supertag-sync--parse-file-header ()
-  "Parse file header in current buffer for file node properties.
-Returns a plist with identity, title, tags, and top-level :ref-to links.
-Identity selection follows `supertag-file-id-source'."
-  (supertag-text-link-refresh)
+(defun supertag-sync--file-header-identity ()
+  "Return (ID . LINK-TYPE) for the file in the current buffer.
+Both are nil when the file has no identity.  Identity selection follows
+`supertag-file-id-source'.  Only the text is searched, so a caller that
+wants the ID alone pays for no parse."
   (save-excursion
     (goto-char (point-min))
-    (let (org-id denote-id id link-type title file-tags ref-to named-links)
+    (let (org-id denote-id)
       ;; A file-level Org ID must be in the drawer at the start of the file.
       (skip-chars-forward " \t\r\n")
       (when (looking-at "^:PROPERTIES:")
@@ -1314,14 +1326,27 @@ Identity selection follows `supertag-file-id-source'."
         (setq denote-id (string-trim (match-string 1))))
       (pcase supertag-file-id-source
         ((or 'org-roam 'org-id)
-         (setq id org-id link-type (and org-id 'id)))
+         (cons org-id (and org-id 'id)))
         ('denote
-         (setq id denote-id link-type (and denote-id 'denote)))
+         (cons denote-id (and denote-id 'denote)))
         ('auto
-         (setq id (or org-id denote-id)
-               link-type (cond (org-id 'id) (denote-id 'denote))))
-        ('disabled nil)
-        (_ (user-error "Unknown file node policy: %S" supertag-file-id-source)))
+         (cons (or org-id denote-id)
+               (cond (org-id 'id) (denote-id 'denote))))
+        ('disabled (cons nil nil))
+        (_ (user-error "Unknown file node policy: %S"
+                       supertag-file-id-source))))))
+
+(defun supertag-sync--parse-file-header ()
+  "Parse file header in current buffer for file node properties.
+Returns a plist with identity, title, tags, and top-level :ref-to links.
+Identity selection follows `supertag-file-id-source'."
+  (supertag-text-link-refresh)
+  (save-excursion
+    (goto-char (point-min))
+    (let* ((identity (supertag-sync--file-header-identity))
+           (id (car identity))
+           (link-type (cdr identity))
+           title file-tags ref-to named-links)
       ;; Read #+TITLE:
       (goto-char (point-min))
       (when (re-search-forward
@@ -1399,6 +1424,13 @@ Return its persistent ID, or nil when the selected policy finds none."
                 (1+ (or (plist-get counters :nodes-created) 0)))))
       file-id)))
 
+(defvar supertag-sync--verified-ids nil
+  "Hash table of the node IDs a full rescan read from their files, or nil.
+A value is (FILE . FILE-NODE-P): the file the ID was read from, and whether
+it was read as the identity of the file itself.  `supertag-reindex-org'
+binds it so the validation that ends the rescan does not read every file a
+second time.")
+
 (defvar supertag-sync--yield-to-input nil
   "Non-nil while a background sync may abandon parsing when the user types.
 Only the queue worker binds this; a sync the user asked for runs to the end.")
@@ -1459,6 +1491,12 @@ nothing has been written to the Store in that case."
 
      ;; Upsert file node
      (t
+      (when supertag-sync--verified-ids
+        (when-let* ((file-id (plist-get file-header :id)))
+          (puthash file-id (cons file t) supertag-sync--verified-ids))
+        (dolist (node-props nodes-from-file)
+          (puthash (plist-get node-props :id) (cons file nil)
+                   supertag-sync--verified-ids)))
       (supertag-sync--upsert-file-node file file-header counters)
       ;; Parse & Update heading nodes
       (let* ((current-nodes-in-file (make-hash-table :test 'equal))
@@ -1743,7 +1781,7 @@ Returns t if the node ID is found, nil otherwise."
          (with-temp-buffer
            (insert-file-contents-literally file)
            (let ((supertag-file-id-source policy))
-             (equal id (plist-get (supertag-sync--parse-file-header) :id)))))))
+             (equal id (car (supertag-sync--file-header-identity))))))))
 
 (defun supertag-sync-validate-nodes (&optional counters)
   "Delete every node that no Org file backs, and return how many were deleted.
@@ -1760,9 +1798,17 @@ mass-deletion caps.  COUNTERS is a plist for tracking :nodes-deleted."
          ;; Current file nodes carry their identity kind.  Legacy nodes do
          ;; not, so preserve them while the file exists rather than guessing.
          (let ((file (plist-get node :file))
-               (link-type (plist-get node :link-type)))
+               (link-type (plist-get node :link-type))
+               (verified (and supertag-sync--verified-ids
+                              (gethash id supertag-sync--verified-ids))))
            (when (cond
                   ((null file) t)
+                  ;; This rescan just read the ID from this very file.
+                  ((and verified
+                        (equal (car verified) file)
+                        (eq (cdr verified)
+                            (and (supertag-node-file-node-p node) t)))
+                   nil)
                   ((not (supertag-node-file-node-p node))
                    (not (supertag-sync--id-exists-in-file-p id file)))
                   ((not (file-exists-p file)) t)
@@ -1855,7 +1901,7 @@ are intentionally excluded."
 
 (defun supertag--extract-named-links (elements)
   "Extract configured named node links from Org ELEMENTS."
-  (when elements
+  (when (and elements (supertag-text-link-relation-types))
     (delete-dups
      (org-element-map elements 'link #'supertag--link-named-relation))))
 
@@ -2376,7 +2422,7 @@ that stripped text."
 MIGRATION-MODE and NODE-ID are as for
 `supertag--parse-org-nodes-from-current-buffer'."
   ;; Parse without triggering org-mode initialization.
-  (let* ((file-id (plist-get (supertag-sync--parse-file-header) :id))
+  (let* ((file-id (car (supertag-sync--file-header-identity)))
          (parsed-ast (if node-id
                          (supertag--parse-node-tree node-id)
                        (org-element-parse-buffer)))
@@ -2582,7 +2628,7 @@ changed since then are parsed again."
               (let ((nodes (supertag-sync--parse-prepared-buffer file)))
                 (supertag-sync--remember-parse file header units nodes)
                 nodes)
-            (let ((file-id (plist-get (supertag-sync--parse-file-header) :id))
+            (let ((file-id (car (supertag-sync--file-header-identity)))
                   nodes)
               (dolist (unit units)
                 (let* ((entry (gethash (plist-get unit :key) known))
@@ -2708,6 +2754,7 @@ Return a report plist whose :status is `complete', `aborted', or `failed'."
          (counters '(:nodes-created 0 :nodes-updated 0 :nodes-deleted 0
                      :references-created 0 :references-deleted 0))
          (supertag-sync--is-full-rescan-p t)
+         (supertag-sync--verified-ids (make-hash-table :test 'equal))
          (supertag-automation-sync--enabled nil)
          report)
     (supertag-sync--snapshot-set snapshot)

@@ -35,6 +35,19 @@
   (default 0.05).  One idle cycle keeps reading files for that long, always
   at least one file, and still stops when you type.  It used to read one
   file and then wait for the next idle.
+** Less repeated work per file when indexing
+- The header of a file is parsed once per sync instead of three times.
+  The two extra passes only wanted the ID of the file, which is now read
+  from the text.
+- The header is no longer copied and parsed a second time for named
+  relation links unless the file spells one of
+  =supertag-text-link-relation-types= before a colon.  With no relation
+  types configured, that is never.
+- A full rescan no longer reads every file a second time to check that
+  the IDs it just read are still there.  It checks only the nodes it did
+  not come across.
+- =supertag-text-link-refresh= rebuilds Org's link regexps only when a
+  registration changed; every parse of a file calls it.
 ** AI property extraction uses Superchat Sinks
 - Submit extraction through the current Superchat Sink contract, removing the
   retired delivery callback. Route final results and all failures through the

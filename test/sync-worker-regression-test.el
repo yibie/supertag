@@ -926,6 +926,102 @@ A deleted-file node and a heading whose ID is absent are still deleted."
         (should (equal '("slow") seen))
         (should (equal '("next") supertag-async--queue))))))
 
+;;; Work a parse or a full rescan used to repeat for every file.
+
+(ert-deftest supertag-sync-header-named-links-parse-only-when-possible ()
+  "The header's named links need a second parse only when the text could hold one."
+  (let ((supertag-text-link-relation-types nil)
+        (supertag-text-link--session-types nil)
+        (parses 0))
+    (advice-add 'org-element-parse-buffer :before
+                (lambda (&rest _) (cl-incf parses)) '((name . count-parses)))
+    (unwind-protect
+        (with-temp-buffer
+          (insert "Depends on [[supports:target-a][A]].\n* Heading\n")
+          (should-not (supertag-sync--extract-file-header-named-links))
+          (should (= 0 parses))
+          (let ((supertag-text-link-relation-types '("supports")))
+            ;; The header parse registers the type with Org before this.
+            (supertag-text-link-refresh)
+            (should (equal '((:relation-name "supports" :target-id "target-a"))
+                           (supertag-sync--extract-file-header-named-links)))
+            (should (= 1 parses))
+            (erase-buffer)
+            (insert "No relation here, only [[id:plain][a link]].\n")
+            (should-not (supertag-sync--extract-file-header-named-links))
+            (should (= 1 parses))))
+      (advice-remove 'org-element-parse-buffer 'count-parses)
+      (supertag-text-link-refresh))))
+
+(ert-deftest supertag-sync-file-header-identity-matches-header-parse ()
+  "The identity read from the text alone is the one the header parse reports."
+  (dolist (text '(":PROPERTIES:\n:ID: org-one\n:END:\n#+TITLE: Note\n"
+                  "#+TITLE: Note\n#+IDENTIFIER: denote-one\n"
+                  ":PROPERTIES:\n:ID: org-two\n:END:\n#+IDENTIFIER: denote-two\n"
+                  "#+TITLE: No identity\n* Heading\n:PROPERTIES:\n:ID: h\n:END:\n"))
+    (dolist (policy '(org-id org-roam denote auto disabled))
+      (with-temp-buffer
+        (insert text)
+        (goto-char (point-max))
+        (let* ((supertag-file-id-source policy)
+               (header (supertag-sync--parse-file-header))
+               (identity (supertag-sync--file-header-identity)))
+          (should (equal (car identity) (plist-get header :id)))
+          (should (eq (cdr identity) (plist-get header :link-type)))
+          (should (= (point) (point-max))))))))
+
+(ert-deftest supertag-sync-full-rescan-validates-only-unread-ids ()
+  "A full rescan reads no file a second time, and still drops stale nodes."
+  (supertag-document-test-with-vault
+    (let ((note (supertag-sync-worker-test--write
+                 (expand-file-name "note.org" tmp)
+                 ":PROPERTIES:" ":ID: rescan-file" ":END:" "#+TITLE: Note"
+                 "* Kept" ":PROPERTIES:" ":ID: rescan-kept" ":END:"))
+          (rereads 0))
+      (should (eq 'complete (plist-get (supertag-reindex-org) :status)))
+      ;; Neither of these is in the text any more: one heading and one
+      ;; earlier identity of the file.
+      (supertag-node-create (list :id "rescan-stale" :type :node :level 1
+                                  :file note :title "Stale"))
+      (supertag-node-create (list :id "rescan-old-file" :type :node :level 0
+                                  :link-type 'id :file note :title "Old"))
+      (advice-add 'insert-file-contents-literally :before
+                  (lambda (&rest _) (cl-incf rereads)) '((name . count-rereads)))
+      (unwind-protect
+          (should (eq 'complete (plist-get (supertag-reindex-org) :status)))
+        (advice-remove 'insert-file-contents-literally 'count-rereads))
+      (should (supertag-node-get "rescan-file"))
+      (should (supertag-node-get "rescan-kept"))
+      (should-not (supertag-node-get "rescan-stale"))
+      (should-not (supertag-node-get "rescan-old-file"))
+      ;; Only the old identity had to be looked for in the file.
+      (should (= 1 rereads)))))
+
+(ert-deftest supertag-text-link-refresh-rebuilds-regexps-only-on-change ()
+  "Refreshing rebuilds Org's link regexps only when a registration changed."
+  (let ((supertag-text-link-relation-types nil)
+        (supertag-text-link--session-types nil)
+        (rebuilds 0))
+    (supertag-text-link-refresh)
+    (advice-add 'org-link-make-regexps :before
+                (lambda (&rest _) (cl-incf rebuilds)) '((name . count-rebuilds)))
+    (unwind-protect
+        (progn
+          (supertag-text-link-refresh)
+          (should (= 0 rebuilds))
+          (let ((supertag-text-link-relation-types '("refreshrel")))
+            (supertag-text-link-refresh)
+            (should (< 0 rebuilds))
+            (should (assoc "refreshrel" org-link-parameters))
+            (setq rebuilds 0)
+            (supertag-text-link-refresh)
+            (should (= 0 rebuilds)))
+          (supertag-text-link-refresh)
+          (should (< 0 rebuilds))
+          (should-not (assoc "refreshrel" org-link-parameters)))
+      (advice-remove 'org-link-make-regexps 'count-rebuilds)
+      (supertag-text-link-refresh))))
+
 (provide 'sync-worker-regression-test)
 ;;; sync-worker-regression-test.el ends here
 

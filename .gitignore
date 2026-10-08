@@ -95,3 +95,6 @@ picture/
 # Local backup directory is not a source delivery.
 /sueprtag-backup/
 
+# Third-party reference material kept locally; not part of the package.
+/reference/
+

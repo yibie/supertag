@@ -2270,13 +2270,24 @@ revision zero), rebuilds indexes, and keeps presence advisory."
                    (mapcar #'abbreviate-file-name candidates))))))
         (supertag-index-rebuild-all)))
 
+(defvar supertag-save-defer-functions nil
+  "Functions asked before the save that follows a change.
+When one returns non-nil the Store is not saved now.  Whoever answers so
+calls `supertag-schedule-save' once the reason has passed.  A save that was
+asked for, and the save when Emacs exits, do not ask.")
+
+(defun supertag-db--save-after-change ()
+  "Save the Store unless `supertag-save-defer-functions' asks to wait."
+  (unless (run-hook-with-args-until-success 'supertag-save-defer-functions)
+    (supertag-save-store)))
+
 (defun supertag-schedule-save ()
   "Schedule a delayed save.
 Waits for 2 seconds of idle time before saving to avoid frequent saves."
   (when supertag-db--auto-save-timer
     (cancel-timer supertag-db--auto-save-timer))
   (setq supertag-db--auto-save-timer
-        (run-with-idle-timer 2 nil #'supertag-save-store)))
+        (run-with-idle-timer 2 nil #'supertag-db--save-after-change)))
 
 (defun supertag-setup-auto-save ()
   "Set up auto-save timer."

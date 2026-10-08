@@ -49,6 +49,9 @@ while IFS= read -r suite; do
         supertag-db-backup-directory (expand-file-name "backups/" user-emacs-directory)
         supertag-sync-state-file (expand-file-name "sync-state.el" user-emacs-directory)
         org-id-locations-file (expand-file-name "ids" user-emacs-directory)
+        ;; Suites drive the queue by hand and read its result at once; the
+        ;; ones about the parser process turn it on themselves.
+        supertag-sync-parse-in-subprocess nil
         load-prefer-newer t)
   (dolist (dir (list "tests" "test" "."))
     (let ((path (expand-file-name dir)))

@@ -50,6 +50,22 @@
   registration changed; every parse of a file calls it.
 - A file with no ID below any of its headings holds no heading node, and is
   no longer put in Org mode and parsed to find that out.
+** Background sync parses in a separate process
+- The files background sync reads are now read and parsed by one separate
+  batch Emacs, and this session only applies the records it sends back.
+  Emacs stays responsive while a whole vault or one very large file is
+  synchronized.  The process starts when there are files to read and ends
+  after five minutes without any.
+- The process parses with this session's Org options, relation types and
+  link types.  When an extractor other than the built-in ones is
+  registered, or the process cannot start, files are parsed in this session
+  as before.  A file that ends the process is set aside and reported; the
+  files behind it are read again.
+- Add =supertag-sync-parse-in-subprocess= (default on).  Set it to nil to
+  parse in this session.  A full rescan always parses in this session.
+- While background sync has files left to read, the database is not written
+  after every batch of them.  It is written once the last file is done, and
+  as before when Emacs exits.
 ** Saving in a sync directory that goes through a symlink
 - A saved file is synchronized under the name a directory scan gives it.
   When a configured directory was a symlink, the save queued the file by

@@ -995,6 +995,39 @@ A deleted-file node and a heading whose ID is absent are still deleted."
         (should (equal '("slow") seen))
         (should (equal '("next") supertag-async--queue))))))
 
+(ert-deftest supertag-sync-store-save-waits-for-the-queue-to-drain ()
+  "The save a change schedules waits while the queue is being drained."
+  (let ((supertag-async--queue nil)
+        (supertag-async--failed-items nil)
+        (supertag-async--timer nil)
+        (supertag-sync-parser--in-flight nil)
+        (supertag-db--auto-save-timer nil)
+        (saves 0))
+    (cl-letf (((symbol-function 'supertag-save-store)
+               (lambda (&rest _) (cl-incf saves)))
+              ((symbol-function 'input-pending-p) #'ignore))
+      (unwind-protect
+          (let ((supertag-async--processor-fn #'ignore))
+            (supertag-async-enqueue-many '("a" "b"))
+            (should (timerp supertag-async--timer))
+            (supertag-db--save-after-change)
+            (should (= 0 saves))
+            ;; The drained queue schedules the save it held back.
+            (let ((supertag-async-slice-seconds 600))
+              (supertag-async--worker))
+            (should-not supertag-async--queue)
+            (should (timerp supertag-db--auto-save-timer))
+            (supertag-db--save-after-change)
+            (should (= 1 saves))
+            ;; A queue nobody is draining does not hold a save back.
+            (setq supertag-async--queue (list "stuck"))
+            (supertag-db--save-after-change)
+            (should (= 2 saves)))
+        (when (timerp supertag-async--timer)
+          (cancel-timer supertag-async--timer))
+        (when (timerp supertag-db--auto-save-timer)
+          (cancel-timer supertag-db--auto-save-timer))))))
+
 ;;; Work a parse or a full rescan used to repeat for every file.
 
 (ert-deftest supertag-sync-header-named-links-parse-only-when-possible ()
@@ -1091,11 +1124,223 @@ A deleted-file node and a heading whose ID is absent are still deleted."
       (advice-remove 'org-link-make-regexps 'count-rebuilds)
       (supertag-text-link-refresh))))
 
+;;; Parsing in another process.
+
+(defmacro supertag-sync-worker-test--with-parser (&rest body)
+  "Run BODY with queued files going to a real parser process."
+  (declare (indent 0) (debug t))
+  `(let ((supertag-sync-parse-in-subprocess t)
+         (supertag-sync-parser--broken nil)
+         (supertag-sync-parser--in-flight nil)
+         (supertag-sync-parser--ready 0))
+     (unwind-protect
+         (progn ,@body)
+       (supertag-sync-parser--stop))))
+
+(defun supertag-sync-worker-test--drain-parser ()
+  "Run the queue until the parser process has nothing left to answer."
+  (let ((deadline (+ (float-time) 60)))
+    (while (and (supertag-async-busy-p) (< (float-time) deadline))
+      (supertag-async--worker)
+      (when supertag-sync-parser--in-flight
+        (accept-process-output nil 0.02)))
+    (should-not (supertag-async-busy-p))))
+
+(defun supertag-sync-worker-test--projection ()
+  "Return every node and relation of the Store without wall-clock fields."
+  (let (rows)
+    (dolist (collection '(:nodes :relations))
+      (maphash
+       (lambda (id entity)
+         (let ((copy (copy-tree entity)))
+           (dolist (key '(:created-at :modified-at :updated-at))
+             (setq copy (plist-put copy key nil)))
+           (push (format "%S %S" (if (eq collection :nodes) id (plist-get copy :type))
+                         (if (eq collection :nodes)
+                             copy
+                           (list (plist-get copy :from) (plist-get copy :to)
+                                 (plist-get copy :name))))
+                 rows)))
+       (supertag-store-get-collection collection)))
+    (sort rows #'string<)))
+
+(ert-deftest supertag-sync-parser-process-projects-what-this-session-would ()
+  "Files parsed in the parser process leave the Store an in-session parse does."
+  (supertag-document-test-with-vault
+    (let* ((supertag-text-link-relation-types '("supports"))
+           (supertag-sync-import-org-tags t)
+           (files
+            (list (supertag-sync-worker-test--write
+                   (expand-file-name "a.org" tmp)
+                   ":PROPERTIES:" ":ID: parser-file" ":END:"
+                   "#+title: 文件标题" "#+filetags: :project:"
+                   "Before the first heading: [[id:parser-b][乙]]."
+                   "* 甲 heading #project :native:" ":PROPERTIES:" ":ID: parser-a"
+                   ":STATUS: 进行中" ":END:"
+                   "Body with \"quotes\", a backslash \\ and [[supports:parser-b][乙]]."
+                   "** Child #undefined" ":PROPERTIES:" ":ID: parser-child" ":END:"
+                   "See [[id:parser-b]].")
+                  (supertag-sync-worker-test--write
+                   (expand-file-name "b.org" tmp)
+                   "* TODO 乙 heading" ":PROPERTIES:" ":ID: parser-b" ":END:"
+                   "Back to [[id:parser-a][甲]].")
+                  (supertag-sync-worker-test--write
+                   (expand-file-name "c.org" tmp)
+                   "* No identity here" "Plain text.")))
+           here)
+      (supertag-tag-create '(:id "project" :name "project"))
+      (supertag-tag-create '(:id "native" :name "native"))
+      (dolist (file files)
+        (supertag-sync--async-processor file))
+      (setq here (supertag-sync-worker-test--projection))
+      (should (equal '("native" "project")
+                     (sort (copy-sequence
+                            (plist-get (supertag-node-get "parser-a") :tags))
+                           #'string<)))
+      (should (equal '("undefined")
+                     (plist-get (supertag-node-get "parser-child")
+                                :unresolved-tags)))
+      (should (supertag-sync-worker-test--linked-p "parser-a" "parser-b"))
+      ;; Start over from an empty projection of the same files.
+      (dolist (id '("parser-file" "parser-a" "parser-child" "parser-b"))
+        (supertag-sync--delete-node id))
+      (dolist (file files)
+        (remhash file (supertag-sync--get-state-table)))
+      (should-not (supertag-node-get "parser-a"))
+      (supertag-sync-worker-test--with-parser
+        (supertag-async-enqueue-many files)
+        (supertag-sync-worker-test--drain-parser)
+        (should-not supertag-sync-parser--broken)
+        (should-not supertag-async--failed-items)
+        (should (equal here (supertag-sync-worker-test--projection)))
+        (dolist (file files)
+          (should (gethash file (supertag-sync--get-state-table))))
+        ;; A heading that left its file is deleted from an answer too.
+        (supertag-sync-worker-test--write
+         (cadr files) "* Nothing with an identity")
+        (supertag-async-enqueue (cadr files))
+        (supertag-sync-worker-test--drain-parser)
+        (should-not (supertag-node-get "parser-b"))
+        (should (supertag-node-get "parser-a"))))))
+
+(ert-deftest supertag-sync-parser-process-answer-for-older-text-is-not-applied ()
+  "Records of text that changed after it was read are parsed again."
+  (supertag-document-test-with-vault
+    (supertag-sync-worker-test--with-parser
+      (supertag-sync-worker-test--write
+       file "* First" ":PROPERTIES:" ":ID: document-node" ":END:")
+      (supertag-async-enqueue file)
+      ;; Hand the file out, wait for the answer, then change the file
+      ;; before the answer is applied.
+      (supertag-sync-parser--dispatch)
+      (let ((deadline (+ (float-time) 60)))
+        (while (and (= 0 supertag-sync-parser--ready) (< (float-time) deadline))
+          (accept-process-output nil 0.02)))
+      (should (= 1 supertag-sync-parser--ready))
+      (supertag-sync-worker-test--write
+       file "* Second, and longer" ":PROPERTIES:" ":ID: document-node" ":END:")
+      (supertag-sync-parser--apply-next)
+      (should (equal "Property Node"
+                     (plist-get (supertag-node-get "document-node") :title)))
+      (should (equal (list file) supertag-async--queue))
+      (supertag-sync-worker-test--drain-parser)
+      (should (equal "Second, and longer"
+                     (plist-get (supertag-node-get "document-node") :title))))))
+
+(ert-deftest supertag-sync-parser-process-drains-before-removed-files-are-dropped ()
+  "A renamed file keeps its nodes: nothing is dropped while answers are out."
+  (supertag-document-test-with-vault
+    (supertag-sync-worker-test--with-parser
+      (let* ((renamed (expand-file-name "renamed.org" (file-name-directory file)))
+             (created (plist-get (supertag-node-get "document-node") :created-at))
+             (supertag-sync-max-delete-ratio 1.0)
+             (supertag-sync-max-delete-count 0)
+             (drained 0))
+        (rename-file file renamed)
+        (supertag-async-enqueue renamed)
+        (supertag-sync--drop-removed-files (list file))
+        (add-hook 'supertag-async-drained-hook (lambda () (cl-incf drained)))
+        (unwind-protect
+            (progn
+              ;; The queue is empty once the file is handed out, but the
+              ;; work is not done.
+              (supertag-async--worker)
+              (should-not supertag-async--queue)
+              (should (supertag-async-busy-p))
+              (should (= 0 drained))
+              (should (equal file (plist-get (supertag-node-get "document-node")
+                                             :file)))
+              (supertag-sync-worker-test--drain-parser)
+              (should (= 1 drained)))
+          (setq supertag-async-drained-hook
+                (cl-remove-if-not #'symbolp supertag-async-drained-hook)))
+        (should (equal renamed
+                       (plist-get (supertag-node-get "document-node") :file)))
+        (should (equal created
+                       (plist-get (supertag-node-get "document-node") :created-at)))
+        (should-not (supertag-find-nodes-by-file file))))))
+
+(ert-deftest supertag-sync-parser-process-that-dies-loses-no-file ()
+  "A parser process that ends hands its files back; one that cannot start
+leaves parsing to this session."
+  (supertag-document-test-with-vault
+    (let ((files (cl-loop for n from 1 to 3
+                          collect (supertag-sync-worker-test--write
+                                   (expand-file-name (format "d%d.org" n) tmp)
+                                   (format "* Note %d" n) ":PROPERTIES:"
+                                   (format ":ID: dies-%d" n) ":END:"))))
+      (supertag-sync-worker-test--with-parser
+        (supertag-async-enqueue-many files)
+        (supertag-sync-parser--dispatch)
+        (should (= 3 (length supertag-sync-parser--in-flight)))
+        ;; As if it had answered before and then died on the first file.
+        (setq supertag-sync-parser--answered t)
+        (let ((process supertag-sync-parser--process))
+          (delete-process process)
+          (supertag-sync-parser--sentinel process "killed\n"))
+        (should-not supertag-sync-parser--in-flight)
+        (should (equal (list (car files)) supertag-async--failed-items))
+        (should (equal (cdr files) supertag-async--queue))
+        (should-not supertag-sync-parser--broken)
+        (setq supertag-async--failed-items nil)
+        (supertag-sync-worker-test--drain-parser)
+        (should (supertag-node-get "dies-2"))
+        (should (supertag-node-get "dies-3"))
+        (should-not (supertag-node-get "dies-1")))
+      ;; A process that never answers at all is not tried again.
+      (supertag-sync-worker-test--with-parser
+        (supertag-async-enqueue (car files))
+        (supertag-sync-parser--dispatch)
+        (setq supertag-sync-parser--answered nil)
+        (let ((process supertag-sync-parser--process))
+          (delete-process process)
+          (supertag-sync-parser--sentinel process "killed\n"))
+        (should supertag-sync-parser--broken)
+        (should (equal (list (car files)) supertag-async--queue))
+        (should-not (supertag-sync-parser--usable-p))
+        (supertag-document-test-drain)
+        (should (supertag-node-get "dies-1"))))))
+
+(ert-deftest supertag-sync-parser-process-is-not-used-with-custom-extractors ()
+  "Extractors registered in this session keep parsing in this session."
+  (let ((supertag-sync-parse-in-subprocess t)
+        (supertag-sync-parser--broken nil)
+        (supertag-async--processor-fn #'supertag-sync--async-processor)
+        (supertag-extractor--registry
+         (copy-tree supertag-extractor--registry)))
+    (should (supertag-sync-parser--usable-p))
+    (supertag-extractor-register :name 'mine :priority 90 :fn #'ignore)
+    (should-not (supertag-sync-parser--usable-p)))
+  (let ((supertag-sync-parse-in-subprocess nil)
+        (supertag-sync-parser--broken nil)
+        (supertag-async--processor-fn #'supertag-sync--async-processor))
+    (should-not (supertag-sync-parser--usable-p))))
+
 (provide 'sync-worker-regression-test)
 ;;; sync-worker-regression-test.el ends here
 
 ;;; V2-SYNC-B independent queue entry, lifecycle and real projection controls.
-(defconst supertag-sync-worker-test--syb-program ";;; -*- lexical-binding: t; -*-\n(require 'ert)\n(require 'cl-lib)\n(let* ((tree (getenv \"SYB_TREE\")) (tmp (file-truename (getenv \"SYB_TMP\"))) (case (getenv \"SYB_CASE\"))\n       (before (equal (getenv \"SUPERTAG_SYB_STAGE\") \"before\"))\n       (entry (if (string-prefix-p \"git\" case) 'supertag-git\n                (if (member case '(\"owner\" \"preset\" \"queue\" \"quit\"))\n                    (if before 'supertag-core-async 'supertag-services-sync) 'supertag-services-sync)))\n       (root (expand-file-name \"org/\" tmp)) (file (expand-file-name \"one.org\" root))\n       (data (expand-file-name \"data/\" tmp)) (state-file (expand-file-name \"sync-state.el\" data))\n       (fn-names '(supertag-async-init supertag-async-enqueue supertag-async-clear\n                   supertag-async-clear-failed supertag-async--ensure-timer supertag-async--worker))\n       (vars '(supertag-async--queue supertag-async--failed-items supertag-async--timer\n               supertag-async--processor-fn supertag-async-idle-delay supertag-async-slice-seconds))\n       (preset nil) (seen nil) (failure nil))\n  (setq user-emacs-directory (file-name-as-directory tmp) default-directory tmp after-init-time nil\n        supertag-data-directory data supertag-db-file (expand-file-name \"store.el\" data)\n        supertag-db-backup-directory (expand-file-name \"backups/\" data)\n        supertag-sync-state-file state-file org-id-locations-file (expand-file-name \"ids\" tmp)\n        org-id-track-globally nil supertag-sync-directories (list root)\n        supertag-active-sync-directory nil supertag-sync-directories-mode 'unified\n        supertag-sync-auto-start nil supertag-file-id-source 'disabled supertag-tag-auto-enable nil)\n  (make-directory root t)\n  (cl-labels\n      ((bytes (p) (when (file-exists-p p) (with-temp-buffer (insert-file-contents-literally p) (buffer-string))))\n       (note (title) (with-temp-file file (insert (format \"* %s\\n:PROPERTIES:\\n:ID: syb-node\\n:END:\\nBody\\n\" title))))\n       (fire () (let ((timer supertag-async--timer))\n                  (should (timerp timer)) (should (memq timer timer-idle-list))\n                  (should (eq 'supertag-async--worker (timer--function timer)))\n                  (should-not (timer--repeat-delay timer))\n                  ;; Deterministic invocation of actual one-shot callback, not proof of idle-loop scheduling.\n                  (cancel-timer timer) (funcall (timer--function timer))))\n       (graph (label)\n         (princ (format \"SYB-GRAPH %s %S processor=%S\\n\" label\n                        (mapcar (lambda (f) (cons f (featurep f)))\n                                '(supertag-core-async supertag-services-sync supertag-git org supertag-query supertag-link supertag-service-org))\n                        (and (boundp 'supertag-async--processor-fn) supertag-async--processor-fn)))))\n    (unwind-protect\n        (progn\n          (when (equal case \"preset\")\n            (setq supertag-async--queue (list \"prequeued\") supertag-async--failed-items (list \"prefailed\")\n                  supertag-async--timer (run-with-idle-timer 600 nil #'ignore)\n                  supertag-async--processor-fn (lambda (item) (push item seen))\n                  supertag-async-idle-delay 77 supertag-async-slice-seconds 3)\n            (setq preset (mapcar #'symbol-value vars)))\n          (when (string-match-p \"qd\" case)\n            (when (string-suffix-p \"orgfirst\" case) (require 'org))\n            (setq org-babel-load-languages '((supertag-query-block . t))))\n          (graph 'pre-entry)\n          (condition-case err (require entry) (error (setq failure err)))\n          (princ (format \"SYB-ENTRY case=%s entry=%s failure=%S org=%S query=%S queue-bound=%S\\n\"\n                         case entry failure (featurep 'org) (featurep 'supertag-query) (boundp 'supertag-async--queue)))\n          (if (string-match-p \"qd\" case)\n              (progn\n                (princ (format \"SYB-QD facts=%S\\n\" (list failure (featurep 'org) (featurep 'supertag-query)\n                                                          (mapcar #'fboundp fn-names) (boundp 'supertag-async--queue))))\n                (should-not failure)\n                (should (featurep 'org)) (should (featurep 'supertag-query))\n                (dolist (n fn-names) (should (fboundp n)))\n                (should-not supertag-async--processor-fn))\n            (should-not failure)\n            (dolist (n fn-names)\n              (should (fboundp n))\n              (should (equal (if (and before (not (getenv \"SYB_OWNER_RED\"))) \"supertag-core-async.el\" \"supertag-services-sync.el\")\n                             (file-name-nondirectory (symbol-file n 'defun)))))\n            (dolist (v vars) (should (boundp v)))\n            (should (get 'supertag-async 'custom-group))\n            (should (equal \"Asynchronous processing settings for Supertag.\" (get 'supertag-async 'group-documentation)))\n            (should (eq 'number (get 'supertag-async-idle-delay 'custom-type)))\n            (should (eq 'number (get 'supertag-async-slice-seconds 'custom-type)))\n            (unless before\n              (should-not (featurep 'supertag-core-async)) (should-not (locate-library \"supertag-core-async\"))\n              (should-not (cl-find-if (lambda (x) (and (stringp (car x)) (equal \"supertag-core-async.el\" (file-name-nondirectory (car x))))) load-history)))\n            (pcase case\n              (\"owner\"\n               (should-not supertag-async--queue) (should-not supertag-async--failed-items)\n               (should-not supertag-async--processor-fn) (should-not supertag-async--timer)\n               (when before (should-not (featurep 'org)) (should-not (featurep 'supertag-services-sync))))\n              (\"preset\"\n               (should (cl-every #'identity (cl-mapcar #'eq preset (mapcar #'symbol-value vars))))\n               (let ((cell (symbol-function 'supertag-async-enqueue)))\n                 (require entry) (should (eq cell (symbol-function 'supertag-async-enqueue))))\n               (load (expand-file-name (concat (symbol-name entry) \".el\") tree) nil nil t)\n               (should (cl-every #'identity (cl-mapcar #'eq preset (mapcar #'symbol-value vars))))\n               (should (= 77 supertag-async-idle-delay)) (should (= 3 supertag-async-slice-seconds)))\n              (\"queue\"\n               (setq supertag-async-idle-delay 600 supertag-async-slice-seconds 600)\n               (should (= 1 (supertag-async-enqueue \"A\")))\n               (let ((timer supertag-async--timer))\n                 (should (= 600 (float-time (timer--time timer))))\n                 (supertag-async-enqueue \"B\") (supertag-async-enqueue \"A\")\n                 (should (eq timer supertag-async--timer)) (should (equal '(\"B\" \"A\") supertag-async--queue))\n                 (fire) (should (equal '(\"B\" \"A\") supertag-async--queue))\n                 (should-not (eq timer supertag-async--timer)) (should-not supertag-async--timer))\n               (let ((timer supertag-async--timer))\n                 (setq supertag-async--failed-items '(\"A\"))\n                 (supertag-async-init\n                  (lambda (item) (push item seen) (when (equal item \"A\") (error \"SYB ordinary failure\"))))\n                 (should (eq timer supertag-async--timer))\n                 (should-not supertag-async--queue) (should-not supertag-async--failed-items)\n                 (supertag-async-enqueue \"A\") (supertag-async-enqueue \"B\") (fire)\n                 (should (equal '(\"B\" \"A\") seen)) (should-not supertag-async--queue)\n                 (should (equal '(\"A\") supertag-async--failed-items))\n                 (supertag-async-enqueue \"A\") (should-not supertag-async--failed-items)\n                 (setq supertag-async--failed-items '(\"X\" \"Y\"))\n                 (should (= 2 (supertag-async-clear-failed))) (should-not supertag-async--failed-items)\n                 (let ((timer supertag-async--timer))\n                   (supertag-async-clear) (should (eq timer supertag-async--timer))\n                   (should-not supertag-async--queue))\n                 (setq seen nil supertag-async-slice-seconds 0)\n                 (supertag-async-init (lambda (item) (push item seen) (when (equal item \"A\") (supertag-async-enqueue \"A\"))))\n                 (supertag-async-enqueue \"A\") (supertag-async-enqueue \"B\") (fire)\n                 (should (equal '(\"B\" \"A\") supertag-async--queue))\n                 (fire) (should (equal '(\"A\") supertag-async--queue))\n                 (should (equal '(\"B\" \"A\") seen))))\n              (\"quit\"\n               (setq supertag-async-idle-delay 600 supertag-async-slice-seconds 600)\n               (supertag-async-init (lambda (item) (push item seen) (signal 'quit nil)))\n               (supertag-async-enqueue \"A\") (supertag-async-enqueue \"B\")\n               (let ((caught nil)) (condition-case nil (fire) (quit (setq caught t))) (should caught))\n               (should (equal '(\"A\") seen)) (should (equal '(\"B\") supertag-async--queue))\n               (should-not supertag-async--failed-items) (should-not supertag-async--timer))\n              (_\n               (note \"Alpha\") (setq supertag-async-idle-delay 600)\n               (should-not supertag-async--processor-fn)\n               (if (equal case \"git\")\n                   (progn (supertag-git--project-files root '(\"one.org\") nil)\n                          (should (equal (list file) supertag-async--queue))\n                          (should-not (supertag-node-get \"syb-node\")))\n                 (supertag-async-enqueue file))\n               (let ((idle supertag-async--timer))\n                 (supertag-sync-start-auto-sync 600)\n                 (should-not supertag-async--queue) (should (eq idle supertag-async--timer))\n                 (should (eq 'supertag-sync--async-processor supertag-async--processor-fn))\n                 (should (timerp supertag-sync--timer)) (should (= 600 (timer--repeat-delay supertag-sync--timer)))\n                 ;; Cancel only the periodic test timer before deterministic real idle callback.\n                 (cancel-timer supertag-sync--timer)\n                 (if (equal case \"git\") (supertag-git--project-files root '(\"one.org\") nil) (supertag-async-enqueue file))\n                 (fire)\n                 (should (equal \"Alpha\" (plist-get (supertag-node-get \"syb-node\") :title)))\n                 (should (= 1 (length (supertag-find-nodes-by-file file))))\n                 (should (gethash file (supertag-sync--get-state-table))) (should (bytes state-file))\n                 (should-not supertag-async--queue) (should-not supertag-async--failed-items)\n                 (princ (format \"SYB-ACTUAL title=%S index=%S state=%S\\n\"\n                                (plist-get (supertag-node-get \"syb-node\") :title)\n                                (supertag-find-nodes-by-file file) (gethash file (supertag-sync--get-state-table))))\n                 (when (getenv \"SYB_WRONG_OUTPUT\") (should (equal \"Impossible\" (plist-get (supertag-node-get \"syb-node\") :title))))\n                 (when (equal case \"projection\")\n                   (let ((disk (bytes state-file)))\n                     (note \"Changed\") (supertag-async-enqueue file)\n                     (cl-letf (((symbol-function 'supertag-sync-save-state)\n                                (lambda () (should-not supertag--transaction-active)\n                                  (princ \"SYB-INJECT after-real-process-before-save\\n\") (error \"SYB named save failure\")))) (fire))\n                     (should (equal \"Changed\" (plist-get (supertag-node-get \"syb-node\") :title)))\n                     (should (equal disk (bytes state-file))) (should (equal (list file) supertag-async--failed-items))\n                     (should-not supertag-async--queue)\n                     (supertag-async-enqueue file) (should-not supertag-async--failed-items) (fire)\n                     (should-not supertag-async--queue) (should-not supertag-async--failed-items)\n                     (supertag-async-enqueue (concat file \".missing\")) (fire)\n                     (should-not supertag-async--failed-items)))\n                 (let ((timer nil))\n                   (supertag-async-enqueue file) (setq timer supertag-async--timer)\n                   (puthash \"x\" t supertag-sync--deferred-files) (puthash \"y\" t supertag-sync--internal-modifications)\n                   (supertag-sync--reset-runtime)\n                   (should (= 0 (hash-table-count supertag-sync--deferred-files)))\n                   (should (= 0 (hash-table-count supertag-sync--internal-modifications)))\n                   (should (equal (list file) supertag-async--queue)) (should (eq timer supertag-async--timer))\n                   (setq supertag-async--failed-items '(\"old\"))\n                   (supertag-sync-stop-auto-sync)\n                   (should-not supertag-sync--timer) (should-not supertag-async--queue) (should-not supertag-async--failed-items)\n                   (should (eq timer supertag-async--timer)) (should (memq timer timer-idle-list)))))))\n          (graph 'complete)\n          (princ (format \"SYB-DONE %s\\n\" case)))\n      (setq emacs-startup-hook nil kill-emacs-hook nil org-mode-hook nil enable-theme-functions nil)\n      (mapc #'cancel-timer (append timer-list timer-idle-list)))))\n")
+(defconst supertag-sync-worker-test--syb-program ";;; -*- lexical-binding: t; -*-\n(require 'ert)\n(require 'cl-lib)\n(let* ((tree (getenv \"SYB_TREE\")) (tmp (file-truename (getenv \"SYB_TMP\"))) (case (getenv \"SYB_CASE\"))\n       (before (equal (getenv \"SUPERTAG_SYB_STAGE\") \"before\"))\n       (entry (if (string-prefix-p \"git\" case) 'supertag-git\n                (if (member case '(\"owner\" \"preset\" \"queue\" \"quit\"))\n                    (if before 'supertag-core-async 'supertag-services-sync) 'supertag-services-sync)))\n       (root (expand-file-name \"org/\" tmp)) (file (expand-file-name \"one.org\" root))\n       (data (expand-file-name \"data/\" tmp)) (state-file (expand-file-name \"sync-state.el\" data))\n       (fn-names '(supertag-async-init supertag-async-enqueue supertag-async-clear\n                   supertag-async-clear-failed supertag-async--ensure-timer supertag-async--worker))\n       (vars '(supertag-async--queue supertag-async--failed-items supertag-async--timer\n               supertag-async--processor-fn supertag-async-idle-delay supertag-async-slice-seconds))\n       (preset nil) (seen nil) (failure nil))\n  (setq user-emacs-directory (file-name-as-directory tmp) default-directory tmp after-init-time nil\n        supertag-data-directory data supertag-db-file (expand-file-name \"store.el\" data)\n        supertag-db-backup-directory (expand-file-name \"backups/\" data)\n        supertag-sync-state-file state-file org-id-locations-file (expand-file-name \"ids\" tmp)\n        org-id-track-globally nil supertag-sync-directories (list root)\n        supertag-active-sync-directory nil supertag-sync-directories-mode 'unified\n        supertag-sync-auto-start nil supertag-file-id-source 'disabled supertag-tag-auto-enable nil\n        supertag-sync-parse-in-subprocess nil)\n  (make-directory root t)\n  (cl-labels\n      ((bytes (p) (when (file-exists-p p) (with-temp-buffer (insert-file-contents-literally p) (buffer-string))))\n       (note (title) (with-temp-file file (insert (format \"* %s\\n:PROPERTIES:\\n:ID: syb-node\\n:END:\\nBody\\n\" title))))\n       (fire () (let ((timer supertag-async--timer))\n                  (should (timerp timer)) (should (memq timer timer-idle-list))\n                  (should (eq 'supertag-async--worker (timer--function timer)))\n                  (should-not (timer--repeat-delay timer))\n                  ;; Deterministic invocation of actual one-shot callback, not proof of idle-loop scheduling.\n                  (cancel-timer timer) (funcall (timer--function timer))))\n       (graph (label)\n         (princ (format \"SYB-GRAPH %s %S processor=%S\\n\" label\n                        (mapcar (lambda (f) (cons f (featurep f)))\n                                '(supertag-core-async supertag-services-sync supertag-git org supertag-query supertag-link supertag-service-org))\n                        (and (boundp 'supertag-async--processor-fn) supertag-async--processor-fn)))))\n    (unwind-protect\n        (progn\n          (when (equal case \"preset\")\n            (setq supertag-async--queue (list \"prequeued\") supertag-async--failed-items (list \"prefailed\")\n                  supertag-async--timer (run-with-idle-timer 600 nil #'ignore)\n                  supertag-async--processor-fn (lambda (item) (push item seen))\n                  supertag-async-idle-delay 77 supertag-async-slice-seconds 3)\n            (setq preset (mapcar #'symbol-value vars)))\n          (when (string-match-p \"qd\" case)\n            (when (string-suffix-p \"orgfirst\" case) (require 'org))\n            (setq org-babel-load-languages '((supertag-query-block . t))))\n          (graph 'pre-entry)\n          (condition-case err (require entry) (error (setq failure err)))\n          (princ (format \"SYB-ENTRY case=%s entry=%s failure=%S org=%S query=%S queue-bound=%S\\n\"\n                         case entry failure (featurep 'org) (featurep 'supertag-query) (boundp 'supertag-async--queue)))\n          (if (string-match-p \"qd\" case)\n              (progn\n                (princ (format \"SYB-QD facts=%S\\n\" (list failure (featurep 'org) (featurep 'supertag-query)\n                                                          (mapcar #'fboundp fn-names) (boundp 'supertag-async--queue))))\n                (should-not failure)\n                (should (featurep 'org)) (should (featurep 'supertag-query))\n                (dolist (n fn-names) (should (fboundp n)))\n                (should-not supertag-async--processor-fn))\n            (should-not failure)\n            (dolist (n fn-names)\n              (should (fboundp n))\n              (should (equal (if (and before (not (getenv \"SYB_OWNER_RED\"))) \"supertag-core-async.el\" \"supertag-services-sync.el\")\n                             (file-name-nondirectory (symbol-file n 'defun)))))\n            (dolist (v vars) (should (boundp v)))\n            (should (get 'supertag-async 'custom-group))\n            (should (equal \"Asynchronous processing settings for Supertag.\" (get 'supertag-async 'group-documentation)))\n            (should (eq 'number (get 'supertag-async-idle-delay 'custom-type)))\n            (should (eq 'number (get 'supertag-async-slice-seconds 'custom-type)))\n            (unless before\n              (should-not (featurep 'supertag-core-async)) (should-not (locate-library \"supertag-core-async\"))\n              (should-not (cl-find-if (lambda (x) (and (stringp (car x)) (equal \"supertag-core-async.el\" (file-name-nondirectory (car x))))) load-history)))\n            (pcase case\n              (\"owner\"\n               (should-not supertag-async--queue) (should-not supertag-async--failed-items)\n               (should-not supertag-async--processor-fn) (should-not supertag-async--timer)\n               (when before (should-not (featurep 'org)) (should-not (featurep 'supertag-services-sync))))\n              (\"preset\"\n               (should (cl-every #'identity (cl-mapcar #'eq preset (mapcar #'symbol-value vars))))\n               (let ((cell (symbol-function 'supertag-async-enqueue)))\n                 (require entry) (should (eq cell (symbol-function 'supertag-async-enqueue))))\n               (load (expand-file-name (concat (symbol-name entry) \".el\") tree) nil nil t)\n               (should (cl-every #'identity (cl-mapcar #'eq preset (mapcar #'symbol-value vars))))\n               (should (= 77 supertag-async-idle-delay)) (should (= 3 supertag-async-slice-seconds)))\n              (\"queue\"\n               (setq supertag-async-idle-delay 600 supertag-async-slice-seconds 600)\n               (should (= 1 (supertag-async-enqueue \"A\")))\n               (let ((timer supertag-async--timer))\n                 (should (= 600 (float-time (timer--time timer))))\n                 (supertag-async-enqueue \"B\") (supertag-async-enqueue \"A\")\n                 (should (eq timer supertag-async--timer)) (should (equal '(\"B\" \"A\") supertag-async--queue))\n                 (fire) (should (equal '(\"B\" \"A\") supertag-async--queue))\n                 (should-not (eq timer supertag-async--timer)) (should-not supertag-async--timer))\n               (let ((timer supertag-async--timer))\n                 (setq supertag-async--failed-items '(\"A\"))\n                 (supertag-async-init\n                  (lambda (item) (push item seen) (when (equal item \"A\") (error \"SYB ordinary failure\"))))\n                 (should (eq timer supertag-async--timer))\n                 (should-not supertag-async--queue) (should-not supertag-async--failed-items)\n                 (supertag-async-enqueue \"A\") (supertag-async-enqueue \"B\") (fire)\n                 (should (equal '(\"B\" \"A\") seen)) (should-not supertag-async--queue)\n                 (should (equal '(\"A\") supertag-async--failed-items))\n                 (supertag-async-enqueue \"A\") (should-not supertag-async--failed-items)\n                 (setq supertag-async--failed-items '(\"X\" \"Y\"))\n                 (should (= 2 (supertag-async-clear-failed))) (should-not supertag-async--failed-items)\n                 (let ((timer supertag-async--timer))\n                   (supertag-async-clear) (should (eq timer supertag-async--timer))\n                   (should-not supertag-async--queue))\n                 (setq seen nil supertag-async-slice-seconds 0)\n                 (supertag-async-init (lambda (item) (push item seen) (when (equal item \"A\") (supertag-async-enqueue \"A\"))))\n                 (supertag-async-enqueue \"A\") (supertag-async-enqueue \"B\") (fire)\n                 (should (equal '(\"B\" \"A\") supertag-async--queue))\n                 (fire) (should (equal '(\"A\") supertag-async--queue))\n                 (should (equal '(\"B\" \"A\") seen))))\n              (\"quit\"\n               (setq supertag-async-idle-delay 600 supertag-async-slice-seconds 600)\n               (supertag-async-init (lambda (item) (push item seen) (signal 'quit nil)))\n               (supertag-async-enqueue \"A\") (supertag-async-enqueue \"B\")\n               (let ((caught nil)) (condition-case nil (fire) (quit (setq caught t))) (should caught))\n               (should (equal '(\"A\") seen)) (should (equal '(\"B\") supertag-async--queue))\n               (should-not supertag-async--failed-items) (should-not supertag-async--timer))\n              (_\n               (note \"Alpha\") (setq supertag-async-idle-delay 600)\n               (should-not supertag-async--processor-fn)\n               (if (equal case \"git\")\n                   (progn (supertag-git--project-files root '(\"one.org\") nil)\n                          (should (equal (list file) supertag-async--queue))\n                          (should-not (supertag-node-get \"syb-node\")))\n                 (supertag-async-enqueue file))\n               (let ((idle supertag-async--timer))\n                 (supertag-sync-start-auto-sync 600)\n                 (should-not supertag-async--queue) (should (eq idle supertag-async--timer))\n                 (should (eq 'supertag-sync--async-processor supertag-async--processor-fn))\n                 (should (timerp supertag-sync--timer)) (should (= 600 (timer--repeat-delay supertag-sync--timer)))\n                 ;; Cancel only the periodic test timer before deterministic real idle callback.\n                 (cancel-timer supertag-sync--timer)\n                 (if (equal case \"git\") (supertag-git--project-files root '(\"one.org\") nil) (supertag-async-enqueue file))\n                 (fire)\n                 (should (equal \"Alpha\" (plist-get (supertag-node-get \"syb-node\") :title)))\n                 (should (= 1 (length (supertag-find-nodes-by-file file))))\n                 (should (gethash file (supertag-sync--get-state-table))) (should (bytes state-file))\n                 (should-not supertag-async--queue) (should-not supertag-async--failed-items)\n                 (princ (format \"SYB-ACTUAL title=%S index=%S state=%S\\n\"\n                                (plist-get (supertag-node-get \"syb-node\") :title)\n                                (supertag-find-nodes-by-file file) (gethash file (supertag-sync--get-state-table))))\n                 (when (getenv \"SYB_WRONG_OUTPUT\") (should (equal \"Impossible\" (plist-get (supertag-node-get \"syb-node\") :title))))\n                 (when (equal case \"projection\")\n                   (let ((disk (bytes state-file)))\n                     (note \"Changed\") (supertag-async-enqueue file)\n                     (cl-letf (((symbol-function 'supertag-sync-save-state)\n                                (lambda () (should-not supertag--transaction-active)\n                                  (princ \"SYB-INJECT after-real-process-before-save\\n\") (error \"SYB named save failure\")))) (fire))\n                     (should (equal \"Changed\" (plist-get (supertag-node-get \"syb-node\") :title)))\n                     (should (equal disk (bytes state-file))) (should (equal (list file) supertag-async--failed-items))\n                     (should-not supertag-async--queue)\n                     (supertag-async-enqueue file) (should-not supertag-async--failed-items) (fire)\n                     (should-not supertag-async--queue) (should-not supertag-async--failed-items)\n                     (supertag-async-enqueue (concat file \".missing\")) (fire)\n                     (should-not supertag-async--failed-items)))\n                 (let ((timer nil))\n                   (supertag-async-enqueue file) (setq timer supertag-async--timer)\n                   (puthash \"x\" t supertag-sync--deferred-files) (puthash \"y\" t supertag-sync--internal-modifications)\n                   (supertag-sync--reset-runtime)\n                   (should (= 0 (hash-table-count supertag-sync--deferred-files)))\n                   (should (= 0 (hash-table-count supertag-sync--internal-modifications)))\n                   (should (equal (list file) supertag-async--queue)) (should (eq timer supertag-async--timer))\n                   (setq supertag-async--failed-items '(\"old\"))\n                   (supertag-sync-stop-auto-sync)\n                   (should-not supertag-sync--timer) (should-not supertag-async--queue) (should-not supertag-async--failed-items)\n                   (should (eq timer supertag-async--timer)) (should (memq timer timer-idle-list)))))))\n          (graph 'complete)\n          (princ (format \"SYB-DONE %s\\n\" case)))\n      (setq emacs-startup-hook nil kill-emacs-hook nil org-mode-hook nil enable-theme-functions nil)\n      (mapc #'cancel-timer (append timer-list timer-idle-list)))))\n")
 
 (defun supertag-sync-worker-test--syb-child (case)
   "Run CASE against real source in an isolated fresh child process."

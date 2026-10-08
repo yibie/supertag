@@ -43,6 +43,7 @@
 | 配置项 | 默认值 | 作用 |
 |---|---|---|
 | `supertag-async-slice-seconds` | `0.05` | 一个空闲周期连续读取文件的时长；每个周期至少处理一个文件 |
+| `supertag-sync-parse-in-subprocess` | `t` | 后台同步在独立的 Emacs 进程里读取并解析文件，当前会话只应用结果；设为 nil 则在当前会话解析 |
 | `supertag-async-idle-delay` | `0.5` | 队列中下一个任务前的空闲等待秒数 |
 | `supertag-sync-auto-create-node` | `nil` | 已弃用，保留兼容：同步不会自造节点 ID，nil 就是当前行为 |
 | `supertag-sync-auto-interval` | `900` | 自动同步的间隔秒数 |

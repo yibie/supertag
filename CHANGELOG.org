@@ -1,5 +1,6 @@
 * Changelog
 * [Unreleased]
+* [0.3.0] - 2026-10-08
 ** Promote no longer asks before saving
 - =supertag-promote= no longer asks whether it may save the affected files
   after the preview.  Choosing in the preview is the confirmation.

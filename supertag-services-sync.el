@@ -805,11 +805,14 @@ STATE may be a time value or a plist containing the :mtime keyword."
 Returns t if file has been modified since last sync."
   (let ((state-table (supertag-sync--get-state-table)))
     (when-let* ((state (gethash file state-table)))
-      (let ((last-sync (supertag-sync--normalize-time
-                        (supertag-sync--state-mtime state)))
-            (mtime (file-attribute-modification-time
-                       (file-attributes file))))
-        (and last-sync mtime (time-less-p last-sync mtime))))))
+      (supertag-sync--state-older-than-p
+       state (file-attribute-modification-time (file-attributes file))))))
+
+(defun supertag-sync--state-older-than-p (state mtime)
+  "Return non-nil when STATE was recorded before a file changed at MTIME."
+  (let ((last-sync (supertag-sync--normalize-time
+                    (supertag-sync--state-mtime state))))
+    (and last-sync mtime (time-less-p last-sync mtime))))
 
 (defun supertag-get-modified-files ()
   "Get list of files that need synchronization.
@@ -2880,7 +2883,9 @@ while many files or a very large one are synchronized.  With nil, or when
 that process cannot be used, files are parsed in this session during idle
 time.  A full rescan always parses in this session.
 The process is started with automatic sync and stays until that stops or
-Emacs exits, so a saved file is read without waiting for one to start."
+Emacs exits, so a saved file is read without waiting for one to start.
+The periodic check of a large vault's directories is likewise left to a
+short-lived process, which lists the files and their change times."
   :type 'boolean
   :group 'supertag-sync)
 
@@ -3354,6 +3359,298 @@ with."
     (end-of-file nil))
   (kill-emacs 0))
 
+;;; --- The directory check, with the directories read by another process ---
+
+;; Listing a large vault and looking at every file in it takes seconds, and
+;; `supertag-sync--check-and-sync' does both in this session.  For a large
+;; vault the timer of automatic sync has a short-lived Emacs do them and
+;; applies its answer in idle slices; what is queued and what is removed
+;; stays the same.
+
+(defconst supertag-sync--scan-in-session-files 2000
+  "Most known files for which the directory check stays in this session.
+Up to this many, reading the directories here costs less than starting a
+process does.")
+
+(defconst supertag-sync--scan-frame-size 500
+  "Files in one line of the answer of the scan process.")
+
+(defconst supertag-sync--scan-timeout 300
+  "Seconds after which a scan process that has not answered is given up.")
+
+(defvar supertag-sync--scan-process nil
+  "The process reading the sync directories, or nil when none is.")
+
+(defvar supertag-sync--scan-answer nil
+  "The answer of the scan process while it is being applied, or nil.
+A plist: `:buffer' holds the text, `:position' the first line not yet
+applied, `:seen' a table of the files it lists, `:files' those files and
+`:changed' the ones to queue, both newest first.")
+
+(defvar supertag-sync--scan-timer nil
+  "Idle timer that applies the next part of the scan answer.")
+
+(defvar supertag-sync--scan-broken nil
+  "Non-nil once a scan process failed; the check then runs in this session.")
+
+(defun supertag-sync--scan-forget ()
+  "End the scan process and drop what it answered."
+  (when-let* ((process supertag-sync--scan-process))
+    ;; Cleared first, so that the sentinel sees an intended end.
+    (setq supertag-sync--scan-process nil)
+    (when-let* ((errors (process-get process 'errors)))
+      (delete-process errors))
+    (let ((buffer (process-buffer process)))
+      (delete-process process)
+      (when (buffer-live-p buffer)
+        (kill-buffer buffer))))
+  (when-let* ((buffer (plist-get supertag-sync--scan-answer :buffer)))
+    (when (buffer-live-p buffer)
+      (kill-buffer buffer)))
+  (when (timerp supertag-sync--scan-timer)
+    (cancel-timer supertag-sync--scan-timer))
+  (setq supertag-sync--scan-answer nil
+        supertag-sync--scan-timer nil))
+
+(defun supertag-sync--scan-give-up ()
+  "Run the directory check in this session, now and from now on."
+  (supertag-sync--scan-forget)
+  (setq supertag-sync--scan-broken t)
+  (supertag-sync--check-and-sync))
+
+(defun supertag-sync--scan-elsewhere-p ()
+  "Return non-nil when the vault is large, or nothing is known of its size."
+  (let ((known (hash-table-count (supertag-sync--get-state-table)))
+        (snapshot (supertag-sync--snapshot-get)))
+    (or (and (zerop known) (null snapshot))
+        (> (max known (length (plist-get snapshot :files)))
+           supertag-sync--scan-in-session-files))))
+
+(defun supertag-sync--check-and-sync-in-background ()
+  "Check the sync directories and queue what changed, reading them elsewhere.
+Does what `supertag-sync--check-and-sync' does, and calls it when the vault
+is small or the directories cannot be read by another process.  A check
+still under way is left to finish."
+  (supertag-sync--ensure-state-source)
+  (cond
+   ((and supertag-sync--scan-process
+         (> (- (float-time) (process-get supertag-sync--scan-process 'started))
+            supertag-sync--scan-timeout))
+    (supertag-sync--scan-give-up))
+   ((or supertag-sync--scan-process supertag-sync--scan-answer) nil)
+   ((and supertag-sync-parse-in-subprocess
+         supertag-sync-snapshot-guard
+         (not supertag-sync--scan-broken)
+         (supertag-sync--effective-directories)
+         (supertag-sync--scan-elsewhere-p)
+         (supertag-sync--scan-start))
+    nil)
+   (t (supertag-sync--check-and-sync))))
+
+(defun supertag-sync--scan-start ()
+  "Start the scan process and return it, or nil when it cannot be started."
+  (condition-case nil
+      (let* ((errors (make-pipe-process
+                      :name "supertag-sync-scan-errors"
+                      :buffer nil :noquery t
+                      :filter #'ignore :sentinel #'ignore))
+             (process
+              (make-process
+               :name "supertag-sync-scan"
+               :buffer (generate-new-buffer " *supertag-sync-scan*" t)
+               :command
+               (list (expand-file-name invocation-name invocation-directory)
+                     "-Q" "--batch" "--eval"
+                     (prin1-to-string
+                      '(let ((init (read-from-minibuffer "" nil nil t)))
+                         (setq load-path (plist-get init :load-path)
+                               load-prefer-newer
+                               (plist-get init :load-prefer-newer))
+                         (require 'supertag-services-sync)
+                         (supertag-sync-scan-serve init))))
+               :connection-type 'pipe
+               ;; Both directions carry ASCII only; see
+               ;; `supertag-sync-parser--print'.
+               :coding 'binary
+               :noquery t
+               :stderr errors
+               :sentinel #'supertag-sync--scan-sentinel)))
+        (process-put process 'errors errors)
+        (process-put process 'started (float-time))
+        (setq supertag-sync--scan-process process)
+        (process-send-string
+         process
+         (concat (supertag-sync-parser--print
+                  (list :load-path load-path
+                        :load-prefer-newer load-prefer-newer
+                        :file-name-coding (list file-name-coding-system
+                                                default-file-name-coding-system)
+                        :directories (supertag-sync--effective-directories)
+                        :exclude supertag-sync-exclude-directories
+                        :pattern supertag-sync-file-pattern))
+                 "\n"))
+        process)
+    (error
+     (supertag-sync--scan-forget)
+     (setq supertag-sync--scan-broken t)
+     nil)))
+
+(defun supertag-sync--scan-sentinel (process _event)
+  "Take up the answer of PROCESS, the scan process, once it has ended."
+  (when (and (eq process supertag-sync--scan-process)
+             (not (process-live-p process)))
+    (let ((buffer (process-buffer process)))
+      (setq supertag-sync--scan-process nil)
+      (when-let* ((errors (process-get process 'errors)))
+        (delete-process errors))
+      (if (and (eq (process-exit-status process) 0)
+               (buffer-live-p buffer)
+               (with-current-buffer buffer
+                 (goto-char (point-max))
+                 (forward-line -1)
+                 (looking-at-p "(supertag-scan-done ")))
+          (progn
+            (setq supertag-sync--scan-answer
+                  (list :buffer buffer
+                        :position 1
+                        :seen (make-hash-table :test 'equal)
+                        :files nil
+                        :changed nil))
+            (supertag-sync--scan-wait))
+        ;; No answer to trust: read the directories here, as before.
+        (when (buffer-live-p buffer)
+          (kill-buffer buffer))
+        (supertag-sync--scan-give-up)))))
+
+(defun supertag-sync--scan-wait ()
+  "Apply the next part of the scan answer when Emacs is next idle."
+  (unless (timerp supertag-sync--scan-timer)
+    (setq supertag-sync--scan-timer
+          (run-with-idle-timer
+           (min supertag-async-apply-idle-delay supertag-async-idle-delay)
+           nil #'supertag-sync--scan-apply))))
+
+(defun supertag-sync--scan-apply ()
+  "Apply lines of the scan answer for one slice, and finish after the last."
+  (setq supertag-sync--scan-timer nil)
+  (when-let* ((answer supertag-sync--scan-answer))
+    (let ((state-table (supertag-sync--get-state-table))
+          (seen (plist-get answer :seen))
+          (files (plist-get answer :files))
+          (changed (plist-get answer :changed))
+          (deadline (+ (float-time) supertag-async-slice-seconds))
+          end)
+      (with-current-buffer (plist-get answer :buffer)
+        (goto-char (plist-get answer :position))
+        (while (and (null end)
+                    (< (float-time) deadline)
+                    (not (input-pending-p)))
+          (let ((form (condition-case nil
+                          (read (current-buffer))
+                        (error 'unreadable))))
+            (forward-line 1)
+            (if (not (eq (car-safe form) 'supertag-scan-files))
+                ;; The last line of the answer, or one that cannot be used.
+                (setq end form)
+              (pcase-dolist (`(,file ,mtime) (cdr form))
+                (puthash file t seen)
+                (push file files)
+                (let ((state (gethash file state-table)))
+                  (when (or (null state)
+                            (supertag-sync--state-older-than-p state mtime))
+                    (push file changed)))))))
+        (setq answer (plist-put answer :position (point))))
+      (setq answer (plist-put answer :files files)
+            answer (plist-put answer :changed changed)
+            supertag-sync--scan-answer answer)
+      (cond
+       ((null end) (supertag-sync--scan-wait))
+       ((eq (car-safe end) 'supertag-scan-done)
+        (supertag-sync--scan-finish (cdr end)))
+       (t (supertag-sync--scan-give-up))))))
+
+(defun supertag-sync--scan-finish (result)
+  "Queue and remove files as the applied scan answer and RESULT say.
+RESULT is the last line of the answer: the snapshot without its files."
+  (let* ((answer supertag-sync--scan-answer)
+         (seen (plist-get answer :seen))
+         (changed (nreverse (plist-get answer :changed)))
+         (files (plist-get answer :files)))
+    (supertag-sync--scan-forget)
+    (if (not (eq (plist-get result :status) 'complete))
+        ;; Rare, and the check in this session says what is wrong.
+        (supertag-sync--check-and-sync)
+      (supertag-sync--snapshot-set
+       (list :status 'complete
+             :files files
+             :scope (plist-get result :scope)
+             :errors nil
+             :observed-at (plist-get result :observed-at)))
+      (supertag-sync--with-directory-truenames
+        (let (removed)
+          (maphash
+           (lambda (file _state)
+             ;; A file synchronized after the directories were read is not
+             ;; in the answer; only one gone or out of scope is removed.
+             (unless (or (gethash file seen)
+                         (supertag-sync--in-sync-scope-p file))
+               (push file removed)))
+           (supertag-sync--get-state-table))
+          (maphash (lambda (file _state)
+                     (cond
+                      ((not (file-exists-p file))
+                       (remhash file supertag-sync--deferred-files))
+                      ((supertag-sync--in-sync-scope-p file)
+                       (push file changed))))
+                   supertag-sync--deferred-files)
+          (when changed
+            (supertag-async-enqueue-many changed)
+            (unless supertag-sync-quiet-when-idle
+              (message "Queued %d files for async sync." (length changed))))
+          ;; Removed files go last: a renamed file is queued above as a new
+          ;; one.
+          (when removed
+            (supertag-sync--drop-removed-files removed))
+          (unless (or changed removed)
+            (supertag--diagnose-empty-sync supertag-sync-quiet-when-idle)))))))
+
+;; The function below runs in the scan process.
+
+(defun supertag-sync-scan-serve (init)
+  "Print the files of the sync directories with their change times, and end.
+This is all the scan process does.  INIT is the form the session sent."
+  (setq kill-emacs-hook nil)
+  (pcase-let ((`(,coding ,default-coding) (plist-get init :file-name-coding)))
+    (setq file-name-coding-system coding
+          default-file-name-coding-system default-coding))
+  (let* ((supertag-sync-directories-mode 'unified)
+         (supertag-sync-directories (plist-get init :directories))
+         (supertag-sync-exclude-directories (plist-get init :exclude))
+         (supertag-sync-file-pattern (plist-get init :pattern))
+         (snapshot (supertag-sync--snapshot-build))
+         ;; Collected newest first; a directory is listed in name order.
+         (files (reverse (plist-get snapshot :files))))
+    (while files
+      (let ((count 0)
+            frame)
+        (while (and files (< count supertag-sync--scan-frame-size))
+          (let* ((file (pop files))
+                 (attributes (file-attributes file)))
+            (when attributes
+              (push (list file (file-attribute-modification-time attributes))
+                    frame)))
+          (cl-incf count))
+        (princ (supertag-sync-parser--print
+                (cons 'supertag-scan-files (nreverse frame))))
+        (terpri)))
+    (princ (supertag-sync-parser--print
+            (list 'supertag-scan-done
+                  :status (plist-get snapshot :status)
+                  :scope (plist-get snapshot :scope)
+                  :observed-at (plist-get snapshot :observed-at))))
+    (terpri))
+  (kill-emacs 0))
+
 (defun supertag-sync-start-auto-sync (&optional interval)
   "Start automatic synchronization with INTERVAL seconds.
 If INTERVAL is nil, use `supertag-sync-auto-interval`."
@@ -3383,7 +3680,7 @@ If INTERVAL is nil, use `supertag-sync-auto-interval`."
          (or interval supertag-sync-auto-interval) ; Then, repeat at the configured interval
          (lambda ()
            "Safe wrapper for scheduling sync during idle periods."
-           (supertag-sync--check-and-sync)))))
+           (supertag-sync--check-and-sync-in-background)))))
 
 (defun supertag-sync-stop-auto-sync ()
   "Stop automatic synchronization."
@@ -3391,6 +3688,7 @@ If INTERVAL is nil, use `supertag-sync-auto-interval`."
     (cancel-timer supertag-sync--timer)
     (setq supertag-sync--timer nil)
     (message "Auto-sync stopped"))
+  (supertag-sync--scan-forget)
   ;; Stop the async worker
   (supertag-async-clear))
 
@@ -3888,6 +4186,8 @@ Provides helpful hints to the user about configuration issues."
   (clrhash supertag-sync--deferred-files)
   (clrhash supertag-sync--internal-modifications)
   (clrhash supertag-sync--parse-memo)
+  ;; A check of the previous vault's directories says nothing of this one.
+  (supertag-sync--scan-forget)
   ;; The queue outlives this, so the files handed out go back into it.
   (supertag-sync-parser--stop t))
 

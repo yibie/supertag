@@ -86,6 +86,12 @@
 - While background sync has files left to read, the database is not written
   after every batch of them.  It is written once the last file is done, and
   as before when Emacs exits.
+- The periodic check of the sync directories lists the files of a vault of
+  more than 2,000 files, or of one not indexed yet, in a short-lived batch
+  Emacs.  This session applies the list during idle time and queues and
+  removes the same files as before.  Smaller vaults are still listed in this
+  session, as is every vault when =supertag-sync-parse-in-subprocess= or
+  =supertag-sync-snapshot-guard= is nil, or after that process failed once.
 ** Background sync starts as soon as Emacs is idle
 - The first check of the sync directories runs once Emacs has been idle
   for half a second after startup.  It used to wait three seconds and then

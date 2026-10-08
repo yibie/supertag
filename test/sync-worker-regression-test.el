@@ -1405,6 +1405,160 @@ leaves parsing to this session."
         (supertag-async--processor-fn #'supertag-sync--async-processor))
     (should-not (supertag-sync-parser--usable-p))))
 
+;;; The directory check read by another process.
+
+(defmacro supertag-sync-worker-test--with-scan (&rest body)
+  "Run BODY with the directory check read by a real scan process.
+Queued files stay in the queue, so the check is all that is observed."
+  (declare (indent 0) (debug t))
+  `(let ((supertag-sync-parse-in-subprocess t)
+         (supertag-sync--scan-in-session-files -1)
+         (supertag-sync--scan-broken nil)
+         (supertag-sync--scan-process nil)
+         (supertag-sync--scan-answer nil)
+         (supertag-sync--scan-timer nil)
+         (supertag-sync--removed-files nil))
+     (unwind-protect
+         (cl-letf (((symbol-function 'supertag-async--hand-out) #'ignore))
+           ,@body)
+       (supertag-sync--scan-forget))))
+
+(defun supertag-sync-worker-test--finish-scan ()
+  "Wait for the scan process to end and apply all of its answer."
+  (let ((deadline (+ (float-time) 60)))
+    (while (and supertag-sync--scan-process (< (float-time) deadline))
+      (accept-process-output nil 0.05))
+    (should-not supertag-sync--scan-process)
+    (while supertag-sync--scan-answer
+      (when (timerp supertag-sync--scan-timer)
+        (cancel-timer supertag-sync--scan-timer))
+      (supertag-sync--scan-apply))))
+
+(defun supertag-sync-worker-test--check-outcome ()
+  "Return the files a directory check queued and the ones it found removed."
+  (list (sort (copy-sequence supertag-async--queue) #'string<)
+        (sort (copy-sequence supertag-sync--removed-files) #'string<)))
+
+(ert-deftest supertag-sync-scan-process-finds-what-this-session-would ()
+  "A check read by the scan process queues and removes the same files."
+  (supertag-document-test-with-vault
+    (supertag-sync-worker-test--with-scan
+      (let* ((skipped (file-name-as-directory (expand-file-name "skipped" tmp)))
+             (supertag-sync-exclude-directories (list skipped))
+             (new (progn
+                    (make-directory (expand-file-name "sub" tmp) t)
+                    (supertag-sync-worker-test--write
+                     (expand-file-name "sub/新笔记.org" tmp)
+                     "* 新" ":PROPERTIES:" ":ID: scan-new" ":END:")))
+             here)
+        (make-directory skipped t)
+        (supertag-sync-worker-test--write
+         (expand-file-name "out.org" skipped) "* Out of scope")
+        (supertag-sync-worker-test--write
+         (expand-file-name "notes.txt" tmp) "Not an Org file.")
+        ;; Changed after it was synchronized, and gone.
+        (set-file-times file (time-add nil 10))
+        (delete-file plain)
+        (supertag-sync--check-and-sync)
+        (setq here (supertag-sync-worker-test--check-outcome))
+        (should (equal (list (sort (list file new) #'string<) (list plain))
+                       here))
+        (setq supertag-async--queue nil
+              supertag-sync--removed-files nil)
+        (supertag-sync--snapshot-set nil)
+        (supertag-sync--check-and-sync-in-background)
+        (should (processp supertag-sync--scan-process))
+        ;; Nothing is decided before the answer is in.
+        (should-not supertag-async--queue)
+        (supertag-sync-worker-test--finish-scan)
+        (should-not supertag-sync--scan-broken)
+        (should (equal here (supertag-sync-worker-test--check-outcome)))
+        (should (eq 'complete (supertag-sync--snapshot-status)))))))
+
+(ert-deftest supertag-sync-scan-process-leaves-an-unchanged-symlinked-vault ()
+  "Read through a symlink, an unchanged vault has nothing queued or removed."
+  (supertag-document-test-with-vault
+    (let* ((link (make-temp-name
+                  (expand-file-name "supertag-scan-link-"
+                                    (file-truename temporary-file-directory))))
+           (supertag-sync-directories (list (file-name-as-directory link)))
+           (supertag-active-sync-directory (file-name-as-directory link)))
+      (make-symbolic-link (directory-file-name tmp) link)
+      (unwind-protect
+          (supertag-sync-worker-test--with-scan
+            (should (eq 'complete (plist-get (supertag-reindex-org) :status)))
+            (setq supertag-async--queue nil)
+            (let ((known (hash-table-count (supertag-sync--get-state-table))))
+              (should (> known 0))
+              (supertag-sync--check-and-sync-in-background)
+              (should (processp supertag-sync--scan-process))
+              (supertag-sync-worker-test--finish-scan)
+              (should-not supertag-sync--scan-broken)
+              (should (equal '(nil nil)
+                             (supertag-sync-worker-test--check-outcome)))
+              (should (= known
+                         (hash-table-count (supertag-sync--get-state-table))))))
+        (delete-file link)))))
+
+(ert-deftest supertag-sync-scan-process-that-fails-is-replaced-by-this-session ()
+  "A scan process that ends without an answer leaves the check to the session."
+  (supertag-document-test-with-vault
+    (supertag-sync-worker-test--with-scan
+      (let ((new (supertag-sync-worker-test--write
+                  (expand-file-name "new.org" tmp)
+                  "* New" ":PROPERTIES:" ":ID: scan-fallback" ":END:")))
+        ;; Without a load path the process cannot load Supertag.
+        (let ((load-path nil))
+          (supertag-sync--check-and-sync-in-background))
+        (should (processp supertag-sync--scan-process))
+        (supertag-sync-worker-test--finish-scan)
+        (should supertag-sync--scan-broken)
+        (should (equal (list new) supertag-async--queue))
+        ;; From now on no process is started.
+        (setq supertag-async--queue nil)
+        (supertag-sync--check-and-sync-in-background)
+        (should-not supertag-sync--scan-process)))))
+
+(ert-deftest supertag-sync-scan-answer-with-an-unreadable-line-is-not-used ()
+  "An answer that cannot be read in full decides nothing."
+  (supertag-document-test-with-vault
+    (supertag-sync-worker-test--with-scan
+      (let ((buffer (generate-new-buffer " *supertag-scan-test*" t))
+            (checked 0))
+        (with-current-buffer buffer
+          (insert "(supertag-scan-files (\"/nowhere/a.org\" (1 2 3 4)))\n"
+                  "(supertag-scan-files (\"/nowhere/b.org\"\n"
+                  "(supertag-scan-done :status complete)\n"))
+        (setq supertag-sync--scan-answer
+              (list :buffer buffer :position 1
+                    :seen (make-hash-table :test 'equal)
+                    :files nil :changed nil))
+        (cl-letf (((symbol-function 'supertag-sync--check-and-sync)
+                   (lambda () (cl-incf checked))))
+          (supertag-sync-worker-test--finish-scan))
+        (should (= 1 checked))
+        (should supertag-sync--scan-broken)
+        (should-not supertag-async--queue)
+        (should-not supertag-sync--removed-files)
+        (should-not (buffer-live-p buffer))))))
+
+(ert-deftest supertag-sync-directory-check-of-a-small-vault-stays-in-session ()
+  "A vault of a few files is checked without starting a process."
+  (supertag-document-test-with-vault
+    (supertag-sync-worker-test--with-scan
+      (let ((supertag-sync--scan-in-session-files 2000)
+            (new (supertag-sync-worker-test--write
+                  (expand-file-name "new.org" tmp)
+                  "* New" ":PROPERTIES:" ":ID: scan-small" ":END:")))
+        (should-not (supertag-sync--scan-elsewhere-p))
+        (supertag-sync--check-and-sync-in-background)
+        (should-not supertag-sync--scan-process)
+        (should (equal (list new) supertag-async--queue))
+        ;; A vault nothing is known of may be of any size.
+        (clrhash (supertag-sync--get-state-table))
+        (supertag-sync--snapshot-set nil)
+        (should (supertag-sync--scan-elsewhere-p))))))
+
 (ert-deftest supertag-sync-auto-start-waits-for-idle-and-retries-on-a-timer ()
   "The first attempt is an idle timer; a retry is an ordinary one."
   (let ((supertag-sync-auto-start t)

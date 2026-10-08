@@ -304,7 +304,8 @@ Consider running: M-x supertag-sync-full-rescan" db-file)
 ;; --- Hooks for persistence ---
 (add-hook 'kill-emacs-hook #'supertag-save-store)
 (add-hook 'kill-emacs-hook #'supertag-cleanup-all-timers) ; Clean up all timers on exit
-(add-hook 'kill-emacs-hook #'supertag-sync-save-state) ; Save sync state on exit
+;; Appended so that it runs after the Store has been saved.
+(add-hook 'kill-emacs-hook #'supertag-sync-save-state-on-exit t)
 (add-hook 'kill-emacs-hook #'supertag-sync-stop-auto-sync) ; Stop auto-sync on exit
 ;; Best-effort delete this host's own cross-machine presence claim on exit
 ;; (only if it still names this host; see `supertag--presence-release').

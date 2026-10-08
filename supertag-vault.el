@@ -344,7 +344,6 @@ Otherwise, returns `supertag-sync-directories` unchanged."
 
 (defun supertag-vault--persist-current ()
   "Persist current vault state/store, signaling failure to the caller."
-  (when (fboundp 'supertag-sync-save-state) (supertag-sync-save-state))
   (when (and (fboundp 'supertag-dirty-p) (supertag-dirty-p)
              (fboundp 'supertag-save-store)
              (progn
@@ -352,6 +351,8 @@ Otherwise, returns `supertag-sync-directories` unchanged."
                (or (supertag-dirty-p)
                    (eq (plist-get supertag--store-origin :status) :failed))))
     (user-error "Current vault was not saved; switch aborted"))
+  ;; After the Store, which the sync state describes.
+  (when (fboundp 'supertag-sync-save-state) (supertag-sync-save-state))
   (when (fboundp 'supertag-scheduler-stop)
     (supertag-scheduler-stop))
   t)

@@ -856,13 +856,7 @@ Returns a string containing the Org content."
       (buffer-string)))
 
 (defvar supertag-sync--state-unsaved nil
-  "Non-nil while the queue has changed sync state that is not on disk.")
-
-(defvar supertag-sync--state-saved-at 0.0
-  "When the sync state was last written, as a float time.")
-
-(defconst supertag-sync--state-checkpoint-seconds 30
-  "How long a draining queue may run before its sync state is written.")
+  "Non-nil while sync state that is not on disk waits for the Store.")
 
 (defun supertag-sync-save-state ()
   "Save sync state to file."
@@ -874,8 +868,29 @@ Returns a string containing the Org content."
             (print-level nil))
         (prin1 supertag-sync--state (current-buffer))))
     (setq supertag-sync--state-source state-file
-          supertag-sync--state-unsaved nil
-          supertag-sync--state-saved-at (float-time))))
+          supertag-sync--state-unsaved nil)))
+
+;; The state says which files' nodes are in the Store.  Written ahead of the
+;; Store, it would hide those files from the next session if this one ended
+;; first, and their nodes would stay missing until a full rescan.
+(defun supertag-sync--state-changed ()
+  "Note sync state that is not on disk and write it once the Store is."
+  (setq supertag-sync--state-unsaved t)
+  (unless (supertag-dirty-p)
+    (supertag-sync-save-state)))
+
+(defun supertag-sync--save-state-after-store ()
+  "Write sync state that was waiting for the Store to be saved."
+  (when supertag-sync--state-unsaved
+    (supertag-sync-save-state)))
+
+(add-hook 'supertag-persistence-after-save-hook
+          #'supertag-sync--save-state-after-store)
+
+(defun supertag-sync-save-state-on-exit ()
+  "Write the sync state when Emacs exits, unless the Store was not saved."
+  (unless (supertag-dirty-p)
+    (supertag-sync-save-state)))
 
 (defun supertag-sync-load-state ()
   "Load sync state from file.
@@ -1730,7 +1745,7 @@ state is kept so that the next check tries again."
         (let ((state-table (supertag-sync--get-state-table)))
           (dolist (file files)
             (remhash file state-table)))
-        (supertag-sync-save-state)))))
+        (supertag-sync--state-changed)))))
 
 (add-hook 'supertag-async-drained-hook #'supertag-sync--flush-removed-files)
 
@@ -2828,21 +2843,15 @@ MIGRATION-MODE is retained for caller compatibility; all modes require IDs."
         :references-created 0 :references-deleted 0))
 
 (defun supertag-sync--after-queued-file (counters)
-  "Note what COUNTERS say a queued file changed and checkpoint the sync state."
+  "Note that the sync state changed when COUNTERS say a queued file did.
+The state is written by the Store save that follows the queue; state that
+is lost only makes the next check read those files again."
   (when (and counters
              (> (+ (plist-get counters :nodes-created)
                    (plist-get counters :nodes-updated)
                    (plist-get counters :nodes-deleted))
                 0))
-    (setq supertag-sync--state-unsaved t))
-  ;; Writing the state prints every file's entry, so a long queue writes it
-  ;; at checkpoints and after its last file.  State that is lost only makes
-  ;; the next check read those files again.
-  (when (and supertag-sync--state-unsaved
-             (or (not (supertag-async-busy-p))
-                 (> (- (float-time) supertag-sync--state-saved-at)
-                    supertag-sync--state-checkpoint-seconds)))
-    (supertag-sync-save-state)))
+    (setq supertag-sync--state-unsaved t)))
 
 (defun supertag-sync--async-processor (file)
   "Worker function for the async queue.
@@ -3444,7 +3453,7 @@ Return a report plist whose :status is `complete', `aborted', or `failed'."
           ;; A surrounding caller owns its own commit/save boundary.
           (unless supertag--transaction-active
             (supertag-save-store))
-          (supertag-sync-save-state))))
+          (supertag-sync--state-changed))))
     report))
 
 ;;;###autoload
@@ -3816,7 +3825,7 @@ Provides helpful hints to the user about configuration issues."
 
       ;; Update state and report
       (supertag-sync-update-state file)
-      (supertag-sync-save-state)
+      (supertag-sync--state-changed)
 
       (message "Force resync completed: %d created, %d updated, %d deleted"
                (plist-get counters :nodes-created)

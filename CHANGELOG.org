@@ -21,11 +21,15 @@
   background sync no longer drops a link whose source file was read before
   its target.  Both used to need a full rescan.
 ** Faster first index of a large vault
-- Background sync writes its state when the queue is empty, and every 30
-  seconds while it is not, rather than after every file.  The write prints
-  an entry for every file, so it made a first index slow down as the vault
-  grew.  State lost in a crash only makes the next check read those files
-  again.
+- Background sync no longer writes its state after every file.  The write
+  prints an entry for every file, so it made a first index slow down as the
+  vault grew.
+- The sync state is now written only once the database it describes has
+  been saved: after each successful save, and on exit unless that save
+  failed.  State that reached the disk first could name files whose nodes
+  were never saved, and a session that ended there left those nodes missing
+  until a full rescan.  State lost in a crash only makes the next check
+  read those files again.
 - The nodes of a file are found through an index instead of a pass over
   every node.  This also speeds up a full rescan.
 - Queueing the files of a whole vault and listing them each take one pass

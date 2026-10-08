@@ -182,6 +182,36 @@ the old mtime until destructive cleanup is allowed."
           (should (equal (whole text) (incremental text)))
           (should-not reparsed))))))
 
+;; Most files of a vault may hold no heading node at all, and finding that
+;; out must not cost an Org mode start and a parse of each of them.
+(ert-deftest supertag-sync-parse-skips-org-without-heading-ids ()
+  "Text with no ID below a heading is not put in Org mode to parse it."
+  (let* ((file "/tmp/supertag-no-heading-id.org")
+         (starts 0)
+         (original (symbol-function 'org-mode)))
+    (cl-flet ((parse (text)
+                (setq starts 0)
+                (with-temp-buffer
+                  (insert text)
+                  (supertag--parse-org-nodes-from-current-buffer file))))
+      (cl-letf (((symbol-function 'org-mode)
+                 (lambda (&rest args)
+                   (cl-incf starts)
+                   (apply original args))))
+        ;; The ID of the file itself sits above the first heading.
+        (should-not (parse ":PROPERTIES:\n:ID: file-id\n:END:\n#+title: T\n\nText.\n"))
+        (should (= 0 starts))
+        (should-not (parse (concat ":PROPERTIES:\n:ID: file-id\n:END:\n"
+                                   "* Heading\nBody.\n** Child\nMore.\n")))
+        (should (= 0 starts))
+        (should (equal '("lower")
+                       (mapcar (lambda (node) (plist-get node :id))
+                               (parse "* Heading\n:PROPERTIES:\n:id: lower\n:END:\n"))))
+        (should (= 1 starts))
+        ;; An embed block is still read, so that an unclosed one is reported.
+        (should-not (parse "* Heading\n#+begin_embed: node-x\nGenerated.\n"))
+        (should (= 1 starts))))))
+
 ;; A sync directory that goes through a symlink names its files after the
 ;; link.  A save seen under the truename must not queue a second file, which
 ;; would be parsed on its own and then again under the scanned name.

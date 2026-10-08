@@ -48,6 +48,8 @@
   not come across.
 - =supertag-text-link-refresh= rebuilds Org's link regexps only when a
   registration changed; every parse of a file calls it.
+- A file with no ID below any of its headings holds no heading node, and is
+  no longer put in Org mode and parsed to find that out.
 ** Saving in a sync directory that goes through a symlink
 - A saved file is synchronized under the name a directory scan gives it.
   When a configured directory was a symlink, the save queued the file by

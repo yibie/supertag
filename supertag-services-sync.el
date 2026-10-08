@@ -2442,6 +2442,20 @@ that stripped text."
        (goto-char (point-min))
        ,@body)))
 
+(defun supertag-sync--buffer-may-hold-nodes-p ()
+  "Return nil when the current buffer cannot hold a heading node.
+A heading is a node only through an ID in its property drawer, so text
+with no ID line below its first heading has none, and neither Org mode nor
+a parse is needed to know that.  An embed block still takes the full path,
+which reports the ones left unclosed."
+  (save-excursion
+    (goto-char (point-min))
+    (let ((case-fold-search t))
+      (or (and (re-search-forward "^\\*+ " nil t)
+               (re-search-forward "^[ \t]*:ID:" nil t))
+          (progn (goto-char (point-min))
+                 (re-search-forward "^#\\+begin_embed:" nil t))))))
+
 (defun supertag-sync--parse-prepared-buffer (file &optional migration-mode node-id)
   "Parse every node of FILE from the current, already prepared buffer.
 MIGRATION-MODE and NODE-ID are as for
@@ -2462,8 +2476,12 @@ MIGRATION-MODE and NODE-ID are as for
   "Parse org nodes from current buffer content.
 FILE is used for setting the :file property on nodes.
 When NODE-ID is non-nil, parse its subtree and headline-only ancestor context."
-  (supertag-sync--with-parse-buffer file
-    (supertag-sync--parse-prepared-buffer file migration-mode node-id)))
+  (if (supertag-sync--buffer-may-hold-nodes-p)
+      (supertag-sync--with-parse-buffer file
+        (supertag-sync--parse-prepared-buffer file migration-mode node-id))
+    ;; A caller finds the link types registered either way.
+    (supertag-text-link-refresh)
+    nil))
 
 ;;; --- Parsing only the headings that changed ---
 

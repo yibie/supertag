@@ -1587,11 +1587,16 @@ Checked BEFORE any attempt to `read' the buffer as Lisp, since a
 conflict-marked file is not valid Lisp in either on-disk format and would
 otherwise merely surface as an opaque `read' error indistinguishable from
 any other corruption."
+  ;; One walk over the line starts.  Three anchored searches try a match at
+  ;; every character, which costs most of a second on a 150 MB database.
   (save-excursion
     (goto-char (point-min))
-    (or (re-search-forward "^<<<<<<< " nil t)
-        (progn (goto-char (point-min)) (re-search-forward "^=======$" nil t))
-        (progn (goto-char (point-min)) (re-search-forward "^>>>>>>> " nil t)))))
+    (let (found)
+      (while (and (not found) (not (eobp)))
+        (when (memq (char-after) '(?< ?= ?>))
+          (setq found (looking-at-p "<<<<<<< \\|=======$\\|>>>>>>> ")))
+        (forward-line 1))
+      found)))
 
 (defun supertag--persistence--try-read-store (path)
   "Return store data read from PATH.
@@ -2268,7 +2273,10 @@ revision zero), rebuilds indexes, and keeps presence advisory."
          (t
           (message "Initialized empty Supertag store (no readable DB found; candidates=%S)."
                    (mapcar #'abbreviate-file-name candidates))))))
-        (supertag-index-rebuild-all)))
+    ;; A loaded Store had its indexes rebuilt above, before the after-load
+    ;; subscribers ran.
+    (unless (eq load-status :ok)
+      (supertag-index-rebuild-all))))
 
 (defvar supertag-save-defer-functions nil
   "Functions asked before the save that follows a change.

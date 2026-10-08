@@ -277,6 +277,49 @@ and internal state variables, so tests never touch the real
         (should (string-match-p "Nodes: unreadable" summary))
         (should (string-match-p "Size: [0-9]+ bytes" summary))))))
 
+(ert-deftest supertag-hardening-test-conflict-markers-count-at-line-starts-only ()
+  "Each git marker is recognized at a line start, and nowhere else."
+  (cl-flet ((marked-p (text)
+              (with-temp-buffer
+                (insert text)
+                (and (supertag--persistence--buffer-has-conflict-markers-p) t))))
+    (should (marked-p "<<<<<<< HEAD\n(:a 1)\n"))
+    (should (marked-p "(:a 1)\n=======\n(:b 2)\n"))
+    (should (marked-p "(:a 1)\n=======")) ; last line, no newline
+    (should (marked-p "(:a 1)\n>>>>>>> theirs\n"))
+    (should-not (marked-p ""))
+    (should-not (marked-p "(:a \"<<<<<<< HEAD\")\n"))
+    (should-not (marked-p "(:a 1)\n========\n"))
+    (should-not (marked-p "(:a 1)\n======= x\n"))
+    (should-not (marked-p "(:a 1)\n<<<<<<<\n"))
+    (should-not (marked-p " >>>>>>> theirs\n"))))
+
+(ert-deftest supertag-hardening-test-loading-a-store-rebuilds-indexes-once ()
+  "A successful load rebuilds the derived indexes exactly once."
+  (supertag-hardening-test--with-temp-user-directory
+    (supertag-hardening-test--write-root-store supertag-data-directory '("A"))
+    (let ((rebuild (symbol-function 'supertag-index-rebuild-all))
+          (supertag--store (ht-create))
+          (calls 0))
+      (cl-letf (((symbol-function 'supertag-index-rebuild-all)
+                 (lambda () (cl-incf calls) (funcall rebuild)))
+                ((symbol-function 'message) #'ignore))
+        (supertag-load-store))
+      (should (supertag-store-get-entity :nodes "A"))
+      (should (= 1 calls)))))
+
+(ert-deftest supertag-hardening-test-loading-no-store-still-rebuilds-indexes ()
+  "A vault with no database gets its indexes reset too."
+  (supertag-hardening-test--with-temp-user-directory
+    (let ((rebuild (symbol-function 'supertag-index-rebuild-all))
+          (supertag--store (ht-create))
+          (calls 0))
+      (cl-letf (((symbol-function 'supertag-index-rebuild-all)
+                 (lambda () (cl-incf calls) (funcall rebuild)))
+                ((symbol-function 'message) #'ignore))
+        (supertag-load-store))
+      (should (= 1 calls)))))
+
 (ert-deftest supertag-hardening-test-data-root-summary-reads-legacy-db-name ()
   "The comparison recognizes the older supertag-db.db filename."
   (supertag-hardening-test--with-temp-user-directory

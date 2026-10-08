@@ -99,6 +99,11 @@
   instead of being built each time the command is called.  They are also
   built during idle time, so the first call after startup or after an edit
   does not wait for them.
+** Faster start with a large database
+- Loading the database looks for git conflict markers in one pass over
+  its lines.  Three searches used to cost most of a second on a 170 MB
+  file.
+- A loaded database has its indexes rebuilt once, not twice.
 ** Saving in a sync directory that goes through a symlink
 - A saved file is synchronized under the name a directory scan gives it.
   When a configured directory was a symlink, the save queued the file by

@@ -182,6 +182,45 @@ the old mtime until destructive cleanup is allowed."
           (should (equal (whole text) (incremental text)))
           (should-not reparsed))))))
 
+;; A sync directory that goes through a symlink names its files after the
+;; link.  A save seen under the truename must not queue a second file, which
+;; would be parsed on its own and then again under the scanned name.
+(ert-deftest supertag-sync-save-queues-the-scanned-name ()
+  "A saved file is queued under the name a directory scan gives it."
+  (let* ((root (file-truename (make-temp-file "supertag-symlink-" t)))
+         (real (expand-file-name "real/" root))
+         (link (expand-file-name "link" root))
+         (scanned (expand-file-name "a.org" link))
+         (supertag-sync-directories (list (file-name-as-directory link)))
+         (supertag-sync-directories-mode 'unified)
+         (supertag-sync-exclude-directories nil)
+         (supertag-sync--truename-directory-cache nil)
+         (supertag-sync--state nil)
+         queued)
+    (unwind-protect
+        (progn
+          (make-directory real)
+          (make-symbolic-link real link)
+          (with-temp-file (expand-file-name "a.org" real)
+            (insert "* A\n"))
+          (should (equal (list scanned) (supertag-scan-sync-directories t)))
+          (should (equal scanned (supertag-sync--scanned-name scanned)))
+          (should (equal scanned (supertag-sync--scanned-name
+                                  (expand-file-name "a.org" real))))
+          (cl-letf (((symbol-function 'supertag-async-enqueue)
+                     (lambda (item) (push item queued)))
+                    ((symbol-function 'supertag--is-internal-modification-p)
+                     #'ignore))
+            (dolist (visited (list scanned (expand-file-name "a.org" real)))
+              (with-temp-buffer
+                (delay-mode-hooks (org-mode))
+                (setq buffer-file-name visited)
+                (unwind-protect
+                    (supertag-sync--run-on-save)
+                  (setq buffer-file-name nil)))))
+          (should (equal (list scanned scanned) queued)))
+      (delete-directory root t))))
+
 ;; A saved file is re-read on an idle timer, but the user may resume typing
 ;; before it finishes; the background pass must then drop its work untouched.
 (ert-deftest supertag-sync-background-pass-yields-to-pending-input ()

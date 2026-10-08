@@ -89,7 +89,7 @@
                         nil t)
               (save-buffer)
               (should (= 1 hook-calls))))
-  (should (equal (list (file-truename file)) supertag-async--queue))
+  (should (equal (list file) supertag-async--queue))
   (setq supertag-async--timer nil)
   (supertag-async--worker)
   (should-not supertag-async--queue))

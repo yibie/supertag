@@ -73,7 +73,7 @@
     (setq-local after-save-hook nil)
     (supertag-sync-setup-realtime-hooks)
     (save-buffer))
-  (should (member (file-truename file) supertag-async--queue)))
+  (should (member file supertag-async--queue)))
 
 (defun supertag-document-test-drain ()
   "Execute the real file queue synchronously without idle timing."

@@ -1047,7 +1047,7 @@
                          (lambda (props)
                            (push 'node-create events)
                            (should (string-match-p (regexp-quote id) (supertag-node-feature--disk file)))
-                           (when (eq mode 'hook) (should (member (file-truename file) supertag-async--queue)))
+                           (when (eq mode 'hook) (should (member file supertag-async--queue)))
                            (when (eq fault 'node-before) (error "NODE-G node-before"))
                            (funcall create-real props)))
                         ((symbol-function 'supertag-ops-commit)

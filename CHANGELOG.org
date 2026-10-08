@@ -48,6 +48,11 @@
   not come across.
 - =supertag-text-link-refresh= rebuilds Org's link regexps only when a
   registration changed; every parse of a file calls it.
+** Saving in a sync directory that goes through a symlink
+- A saved file is synchronized under the name a directory scan gives it.
+  When a configured directory was a symlink, the save queued the file by
+  its real path and the next check queued it again by the configured one,
+  so every save read the file twice.
 ** AI property extraction uses Superchat Sinks
 - Submit extraction through the current Superchat Sink contract, removing the
   retired delivery callback. Route final results and all failures through the

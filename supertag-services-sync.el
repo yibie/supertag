@@ -49,6 +49,8 @@
 (declare-function supertag-text-link-refresh "supertag-link" ())
 (autoload 'supertag-text-link-relation-type-p "supertag-link")
 (declare-function supertag-text-link-relation-type-p "supertag-link" (type))
+(autoload 'supertag-text-link-relation-types "supertag-link")
+(declare-function supertag-text-link-relation-types "supertag-link" ())
 ;;; Internal File Queue
 
 (defgroup supertag-async nil
@@ -576,6 +578,29 @@ The same reasoning is spelled out above `supertag-git--truename-dir'."
       (and included
            (not excluded)
            (string-match-p supertag-sync-file-pattern file)))))
+
+(defun supertag-sync--scanned-name (file)
+  "Return the name a scan of the sync directories gives FILE.
+A scan names each file after its configured directory, and the sync state
+and the nodes of the file carry that name.  FILE reached another way, such
+as through its truename while the directory goes through a symlink, would
+otherwise be synchronized as a second file."
+  (let ((dirs (supertag-sync--effective-directories)))
+    (or (and (cl-some (lambda (dir)
+                        (string-prefix-p (file-name-as-directory dir) file))
+                      dirs)
+             file)
+        (let ((true (file-truename file))
+              (roots (supertag-sync--truename-directories dirs))
+              found)
+          (while (and dirs (not found))
+            (when (string-prefix-p (car roots) true)
+              (setq found (concat (file-name-as-directory (car dirs))
+                                  (substring true (length (car roots))))))
+            (setq dirs (cdr dirs)
+                  roots (cdr roots)))
+          found)
+        file)))
 
 (defun supertag-sync--in-sync-scope-p (file)
   "Check if FILE is within synchronization scope.
@@ -2881,11 +2906,13 @@ external modifications (by user/other tools) to avoid unnecessary re-parsing."
               (when supertag-sync-smart-detection-verbose
                 (message "Supertag: Skip sync for internal modification: %s" (file-name-nondirectory file-norm)))
               ;; Update sync state to prevent periodic sync from re-syncing
-              (supertag-sync-update-state file-norm))
+              (supertag-sync-update-state
+               (supertag-sync--scanned-name file-norm)))
           ;; External modification: enqueue for async sync
           (when supertag-sync-smart-detection-verbose
             (message "↻ %s" (file-name-nondirectory file-norm)))
-          (supertag-async-enqueue file-norm))))))
+          (supertag-async-enqueue
+           (supertag-sync--scanned-name file-norm)))))))
 
 
 (defun supertag-sync-setup-realtime-hooks ()

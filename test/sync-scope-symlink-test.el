@@ -27,7 +27,8 @@
        (ignore-errors (delete-directory tmp t)))))
 
 (ert-deftest supertag-sync-scope-symlinked-sync-directory-enqueues-on-save ()
-  "A save under a symlinked sync directory reaches the async queue."
+  "A save under a symlinked sync directory reaches the async queue.
+The file is queued under the name a scan of that directory gives it."
   (supertag-sync-scope-test--with-symlink
     (let* ((file (expand-file-name "note.org" real))
            (supertag-sync-directories (list link))
@@ -47,7 +48,8 @@
           (goto-char (point-max))
           (insert "Draft\n")
           (save-buffer))
-        (should (member (file-truename file) supertag-async--queue))))))
+        (should (equal (list (expand-file-name "note.org" link))
+                       supertag-async--queue))))))
 
 (ert-deftest supertag-sync-scope-matches-through-symlinked-directory ()
   "Configured directories and exclusions are canonicalised in both directions."

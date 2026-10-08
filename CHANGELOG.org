@@ -69,6 +69,14 @@
 - While background sync has files left to read, the database is not written
   after every batch of them.  It is written once the last file is done, and
   as before when Emacs exits.
+** Background sync starts as soon as Emacs is idle
+- The first check of the sync directories runs once Emacs has been idle
+  for half a second after startup.  It used to wait three seconds and then
+  two more, whatever Emacs was doing.  Directories that are not there yet
+  are still retried every =supertag-sync-auto-start-retry-interval=
+  seconds.
+- =supertag-sync-auto-start-initial-delay= is now idle time and defaults
+  to 0.5.
 ** Find lists nodes without formatting them again
 - The candidates =supertag-find-node= lists are kept until a node changes,
   instead of being built each time the command is called.  They are also

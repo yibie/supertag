@@ -1340,6 +1340,55 @@ leaves parsing to this session."
         (supertag-async--processor-fn #'supertag-sync--async-processor))
     (should-not (supertag-sync-parser--usable-p))))
 
+(ert-deftest supertag-sync-auto-start-waits-for-idle-and-retries-on-a-timer ()
+  "The first attempt is an idle timer; a retry is an ordinary one."
+  (let ((supertag-sync-auto-start t)
+        (supertag-sync-auto-start-initial-delay 0.5)
+        (supertag-sync-auto-start-retry-interval 5)
+        (supertag-sync-auto-start-max-retries 2)
+        (supertag-sync--auto-start-timer nil)
+        (supertag-sync--auto-start-retries-left 0)
+        (ready nil)
+        (started 0))
+    (unwind-protect
+        (cl-letf (((symbol-function 'supertag-sync--dirs-ready-p)
+                   (lambda () ready))
+                  ((symbol-function 'supertag-sync-start-auto-sync)
+                   (lambda (&rest _) (cl-incf started))))
+          (supertag-sync-schedule-auto-start)
+          (let ((first supertag-sync--auto-start-timer))
+            (should (memq first timer-idle-list))
+            (should (= 0.5 (float-time (timer--time first))))
+            (should-not (timer--repeat-delay first))
+            ;; Directories are not there yet.
+            (supertag-sync--auto-start-tick)
+            (should (= 0 started))
+            (should-not (memq first timer-idle-list))
+            (should (memq supertag-sync--auto-start-timer timer-list))
+            (should-not (timer--repeat-delay supertag-sync--auto-start-timer))
+            (should (= 1 supertag-sync--auto-start-retries-left)))
+          (let ((retry supertag-sync--auto-start-timer))
+            (setq ready t)
+            (supertag-sync--auto-start-tick)
+            (should (= 1 started))
+            (should-not (memq retry timer-list))
+            (should-not supertag-sync--auto-start-timer)))
+      (supertag-sync--cancel-auto-start))))
+
+(ert-deftest supertag-sync-auto-sync-checks-as-soon-as-it-starts ()
+  "Starting auto-sync schedules the first check without a wait."
+  (let ((supertag-sync--timer nil)
+        (supertag--store (make-hash-table :test 'equal)))
+    (unwind-protect
+        (cl-letf (((symbol-function 'supertag-async-init) #'ignore))
+          (supertag-sync-start-auto-sync 600)
+          (should (memq supertag-sync--timer timer-list))
+          (should (= 600 (timer--repeat-delay supertag-sync--timer)))
+          (should (<= (float-time (timer--time supertag-sync--timer))
+                      (float-time))))
+      (when (timerp supertag-sync--timer)
+        (cancel-timer supertag-sync--timer)))))
+
 (provide 'sync-worker-regression-test)
 ;;; sync-worker-regression-test.el ends here
 

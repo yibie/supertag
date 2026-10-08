@@ -47,7 +47,7 @@
 | `supertag-async-idle-delay` | `0.5` | 队列中下一个任务前的空闲等待秒数 |
 | `supertag-sync-auto-create-node` | `nil` | 已弃用，保留兼容：同步不会自造节点 ID，nil 就是当前行为 |
 | `supertag-sync-auto-interval` | `900` | 自动同步的间隔秒数 |
-| `supertag-sync-auto-start-initial-delay` | `3` | 启动后等几秒再尝试自动开始 |
+| `supertag-sync-auto-start-initial-delay` | `0.5` | Emacs 空闲几秒后首次尝试自动开始 |
 | `supertag-sync-auto-start-max-retries` | `24` | 自动开始最多重试次数 |
 | `supertag-sync-auto-start-retry-interval` | `5` | 自动开始失败后的重试间隔 |
 | `supertag-sync-auto-start` | `t` | Emacs 启动后自动开始同步 |

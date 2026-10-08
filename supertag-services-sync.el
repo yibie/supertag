@@ -393,9 +393,11 @@ to avoid race conditions at early startup."
   :type 'boolean
   :group 'supertag-sync)
 
-(defcustom supertag-sync-auto-start-initial-delay 3
-  "Seconds to wait after startup before the first auto-start attempt."
-  :type 'integer
+(defcustom supertag-sync-auto-start-initial-delay 0.5
+  "Seconds Emacs must be idle before the first auto-start attempt.
+Emacs is not idle while it starts up, so the attempt comes after the init
+file has run."
+  :type 'number
   :group 'supertag-sync)
 
 (defcustom supertag-sync-auto-start-retry-interval 5
@@ -989,18 +991,25 @@ Returns the loaded or initialized sync state."
     (supertag-sync--cancel-auto-start)
     (message "Supertag: auto-sync not started; directories unavailable"))
    (t
-    (setq supertag-sync--auto-start-retries-left (1- supertag-sync--auto-start-retries-left)))))
+    (setq supertag-sync--auto-start-retries-left (1- supertag-sync--auto-start-retries-left))
+    (when (timerp supertag-sync--auto-start-timer)
+      (cancel-timer supertag-sync--auto-start-timer))
+    (setq supertag-sync--auto-start-timer
+          (run-with-timer (max 1 supertag-sync-auto-start-retry-interval) nil
+                          #'supertag-sync--auto-start-tick)))))
 
 (defun supertag-sync-schedule-auto-start ()
   "Schedule deferred auto-start of auto-sync with retries until directories are
-ready."
+ready.
+The first attempt waits for Emacs to be idle, later ones for the retry
+interval."
   (when supertag-sync-auto-start
     (supertag-sync--cancel-auto-start)
     (setq supertag-sync--auto-start-retries-left supertag-sync-auto-start-max-retries)
     (setq supertag-sync--auto-start-timer
-          (run-with-timer
+          (run-with-idle-timer
            (max 0 supertag-sync-auto-start-initial-delay)
-           (max 1 supertag-sync-auto-start-retry-interval)
+           nil
            #'supertag-sync--auto-start-tick))))
 
 
@@ -3346,7 +3355,7 @@ If INTERVAL is nil, use `supertag-sync-auto-interval`."
   ;; Start new timer with safety wrapper (fixed interval, not idle)
   (setq supertag-sync--timer
         (run-with-timer
-         2 ; Start first sync after a short 2-second delay
+         0 ; First sync as soon as timers run
          (or interval supertag-sync-auto-interval) ; Then, repeat at the configured interval
          (lambda ()
            "Safe wrapper for scheduling sync during idle periods."

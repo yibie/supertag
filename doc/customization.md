@@ -70,7 +70,7 @@ source files; where a long default is elided, the source is authoritative.
 | `supertag-async-idle-delay` | `0.5` | idle seconds before the next queued job |
 | `supertag-sync-auto-create-node` | `nil` | deprecated, kept for compatibility: sync never invents node IDs, and nil is current behaviour |
 | `supertag-sync-auto-interval` | `900` | auto-sync interval in seconds |
-| `supertag-sync-auto-start-initial-delay` | `3` | seconds after startup before the first auto-start attempt |
+| `supertag-sync-auto-start-initial-delay` | `0.5` | seconds Emacs must be idle before the first auto-start attempt |
 | `supertag-sync-auto-start-max-retries` | `24` | maximum auto-start retries |
 | `supertag-sync-auto-start-retry-interval` | `5` | retry interval after a failed auto-start |
 | `supertag-sync-auto-start` | `t` | start syncing automatically after Emacs startup |

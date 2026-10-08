@@ -308,10 +308,13 @@ For file nodes, positions after file-level metadata (keywords + :PROPERTIES:)."
 ;;; Find candidate state
 
 (defvar supertag-ui--node-cache nil
-  "Cache for node selection candidates to improve performance.")
+  "Node selection candidates, valid for `supertag-ui--cache-token'.")
 
-(defvar supertag-ui--cache-timestamp nil
-  "Timestamp of when the node cache was last updated.")
+(defvar supertag-ui--cache-token nil
+  "Store identity and node revision `supertag-ui--node-cache' was built from.")
+
+(defvar supertag-ui--warm-timer nil
+  "Idle timer that builds the node candidates ahead of their first use.")
 
 ;;; Node navigation
 
@@ -341,20 +344,32 @@ If OTHER-WINDOW is non-nil, open in another window."
 (defun supertag-ui--clear-node-cache ()
   "Clear the node selection cache to force refresh on next access."
   (setq supertag-ui--node-cache nil
-        supertag-ui--cache-timestamp nil))
+        supertag-ui--cache-token nil))
 
 (defun supertag-ui--get-cached-nodes ()
-  "Get cached node candidates, refreshing if necessary."
-  (let ((current-time (current-time)))
-    ;; Refresh cache if it's older than 30 seconds or doesn't exist
-    (when (or (null supertag-ui--cache-timestamp)
-              (null supertag-ui--node-cache)
-              (time-less-p (time-add supertag-ui--cache-timestamp 30) current-time))
-      (message "Refreshing node cache...")
+  "Return the node candidates, built again when a node changed since."
+  (unless (and supertag-ui--node-cache
+               (supertag-index-source-current-p supertag-ui--cache-token
+                                                '(:nodes)))
+    (let ((token (supertag-index-source-token '(:nodes))))
       (setq supertag-ui--node-cache (supertag-ui--build-node-candidates)
-            supertag-ui--cache-timestamp current-time)
-      (message "Node cache refreshed. Found %d nodes." (length supertag-ui--node-cache)))
-    supertag-ui--node-cache))
+            supertag-ui--cache-token token)))
+  supertag-ui--node-cache)
+
+(defun supertag-ui--warm-node-cache ()
+  "Build the node candidates now unless background sync is changing them.
+Input ends the build, which then starts over at the next idle time."
+  (when (and (hash-table-p supertag--store)
+             (not (and (fboundp 'supertag-async-busy-p)
+                       (supertag-async-busy-p))))
+    (while-no-input (supertag-ui--get-cached-nodes))))
+
+(defun supertag-ui-warm-node-cache-when-idle ()
+  "Keep the node candidates built during idle time.
+Opening Find then lists them without first formatting every node."
+  (unless (timerp supertag-ui--warm-timer)
+    (setq supertag-ui--warm-timer
+          (run-with-idle-timer 2 t #'supertag-ui--warm-node-cache))))
 
 (defun supertag-ui--build-node-candidates ()
   "Build the node candidates list efficiently."
@@ -505,12 +520,11 @@ File nodes (level 0) get a \"📄 \" prefix and fall back to filename when untit
 Return `(:existing ID)', `(:create TITLE)' or nil.  WITH-PREVIEW previews only
   existing nodes in another window and restores the caller context before
 return."
-  (let* ((candidates (supertag-ui--build-node-candidates))
+  ;; Creation is authorized against these candidates, which follow every
+  ;; change to a node.
+  (let* ((candidates (supertag-ui--get-cached-nodes))
          (table (supertag-ui--find-completion-table candidates))
          selection)
-    ;; Find creation authorization must never depend on a stale TTL snapshot.
-    (setq supertag-ui--node-cache candidates
-          supertag-ui--cache-timestamp (current-time))
     (supertag-ui--with-find-preview-context
       (let ((preview
              (lambda (text)

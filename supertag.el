@@ -202,6 +202,7 @@ This function loads all necessary components and sets up the environment."
 
     ;; Step 7: Set up auto-save and daily backup timers
     (supertag-setup-all-timers)
+    (supertag-ui-warm-node-cache-when-idle)
 
     ;; Step 8: Schedule safe auto-start for sync (optional, guarded)
     (when (and (boundp 'supertag-sync-auto-start)

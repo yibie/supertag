@@ -66,6 +66,11 @@
 - While background sync has files left to read, the database is not written
   after every batch of them.  It is written once the last file is done, and
   as before when Emacs exits.
+** Find lists nodes without formatting them again
+- The candidates =supertag-find-node= lists are kept until a node changes,
+  instead of being built each time the command is called.  They are also
+  built during idle time, so the first call after startup or after an edit
+  does not wait for them.
 ** Saving in a sync directory that goes through a symlink
 - A saved file is synchronized under the name a directory scan gives it.
   When a configured directory was a symlink, the save queued the file by

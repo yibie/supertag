@@ -110,6 +110,26 @@
   its lines.  Three searches used to cost most of a second on a 170 MB
   file.
 - A loaded database has its indexes rebuilt once, not twice.
+** The database is saved a piece at a time
+- The save that follows a change, and the periodic auto-save, write the
+  database in idle moments of =supertag-db-save-slice-seconds= (new, default
+  0.05) and stop while you type.  They used to write and verify the whole
+  file in one go, which held Emacs for seconds on a very large database.
+- The database file is replaced only when every piece has been written and
+  read back, and only if neither the database nor the file on disk changed
+  in between.  A change starts the save again; after three saves undone
+  that way the database is written in one go.  A piece that fails also
+  hands over to a save in one go.  While background sync has files left to
+  read, a save undone by a change waits for the last file instead.
+- =supertag-save-store=, the save on exit and the save of a full rescan
+  still write the whole file before they return, and drop a save that is
+  being written.  Set =supertag-db-save-slice-seconds= to nil to save in
+  one go everywhere.
+- The file format and its reader are unchanged.  Strings that occur more
+  than once are now written out each time instead of as =#N#= references,
+  which is what lets a piece be verified on its own.  The file is about
+  14% larger and loads about 7% slower; measured on a database of 100,000
+  files, 172 MB became 197 MB.
 ** Saving in a sync directory that goes through a symlink
 - A saved file is synchronized under the name a directory scan gives it.
   When a configured directory was a symlink, the save queued the file by

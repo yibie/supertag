@@ -1024,7 +1024,7 @@ A deleted-file node and a heading whose ID is absent are still deleted."
         (supertag-sync-parser--in-flight nil)
         (supertag-db--auto-save-timer nil)
         (saves 0))
-    (cl-letf (((symbol-function 'supertag-save-store)
+    (cl-letf (((symbol-function 'supertag-save-store-when-idle)
                (lambda (&rest _) (cl-incf saves)))
               ((symbol-function 'input-pending-p) #'ignore))
       (unwind-protect

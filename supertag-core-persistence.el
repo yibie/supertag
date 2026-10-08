@@ -399,6 +399,18 @@ is aborted and the previous database file is left untouched."
   :type 'boolean
   :group 'supertag)
 
+(defcustom supertag-db-save-slice-seconds 0.05
+  "Seconds a save made while Emacs is idle may work before Emacs runs again.
+The save that follows a change writes the database a piece at a time, in
+idle moments this long, and stops for pending input.  The previous database
+file is replaced only when every piece has been written and verified, and
+only if nothing changed in between; otherwise the save starts again.
+Nil writes the whole database in one go, as `supertag-save-store' and the
+save on exit always do."
+  :type '(choice (const :tag "Write in one go" nil)
+                 (number :tag "Seconds"))
+  :group 'supertag)
+
 (defcustom supertag-db-follow-interval 30
   "Seconds of idle time between checks for a newer database revision.
 Set to nil to disable automatic following.  A clean in-memory store is
@@ -722,9 +734,16 @@ must not shrink the recovery window."
 
 ;;; --- Persistence Functions ---
 
+(defvar supertag-db--dirty-marks 0
+  "Times `supertag-mark-dirty' has run in this session.
+A save written in idle moments compares it, so that a change which marks
+the database dirty without going through the Store's own writers still
+makes that save start again.")
+
 (defun supertag-mark-dirty ()
   "Mark database as having unsaved changes."
-  (setq supertag-db--dirty t))
+  (setq supertag-db--dirty-marks (1+ supertag-db--dirty-marks)
+        supertag-db--dirty t))
 
 (defun supertag-clear-dirty ()
   "Clear database unsaved changes flag."
@@ -1286,13 +1305,20 @@ exact value that was handed to `prin1', so a verifier can compare it with
 ;;
 ;; The database file is local: Git carries only Org files and the portable
 ;; `.supertag-metadata.eld', never this file.  It is therefore written the
-;; cheapest way Emacs offers -- one `prin1' of the Store hash table -- behind
-;; a one-line header that keeps the revision peek cheap:
+;; cheapest way Emacs offers -- the printed form of the Store hash table --
+;; behind a one-line header that keeps the revision peek cheap:
 ;;
 ;;   ;; -*- mode: lisp-data; coding: utf-8-unix -*-
 ;;   ;; supertag-db native format 1, data version X
 ;;   (:supertag-native 1 :revision N :revision-writer "..." :version "..." :nodes N)
 ;;   #s(hash-table ...)
+;;
+;; The Store form is printed a piece at a time -- the opening of a table, a
+;; few hundred of its entities, its closing -- so that a save made while
+;; Emacs is idle can stop between pieces.  One `read' still loads it.  Every
+;; piece is printed without `print-circle', so each reads the same on its
+;; own as inside the form, which is what lets such a save verify its pieces
+;; one by one.
 ;;
 ;; Files in the older line-per-entity canonical format, and pre-6.0 files
 ;; holding a bare hash table, still load; the next save rewrites them.
@@ -1349,41 +1375,133 @@ table never compares `equal' to its copy read back from disk."
       same))
    (t nil)))
 
+(defconst supertag--persistence-piece-entities 500
+  "Entities printed in one piece of the native Store form.")
+
+(cl-defstruct (supertag--native-writer (:constructor supertag--native-writer--make))
+  "Where a piece-by-piece print of the Store has got to."
+  root      ; the table being printed: a shallow copy of the Store
+  pending   ; root entries not yet started, each (KEY . VALUE)
+  table     ; the collection being printed, or nil
+  keys      ; ids of TABLE not yet printed
+  stage     ; `header', `roots' or `done'
+  items)    ; the flat KEY VALUE list of the piece just printed, or nil
+
+(defun supertag--persistence--native-writer (store &optional overrides)
+  "Return a writer that prints STORE in the native format.
+OVERRIDES is a plist of root scalars to print in place of STORE's own.
+The writer's root is a shallow copy of STORE without
+`supertag--persistence--file-only-roots'; its collections are the Store's
+own tables, so nothing may change STORE until the writer is done."
+  (unless (hash-table-p store)
+    (error "supertag--persistence--native-writer: STORE must be a hash table, got: %S"
+           store))
+  (let ((root (copy-hash-table store))
+        pending)
+    (dolist (key supertag--persistence--file-only-roots)
+      (remhash key root))
+    (while overrides
+      (puthash (pop overrides) (pop overrides) root))
+    (maphash (lambda (key value) (push (cons key value) pending)) root)
+    (supertag--native-writer--make :root root
+                                   :pending (nreverse pending)
+                                   :stage 'header)))
+
+(defun supertag--persistence--table-opening (table)
+  "Return the text that opens the printed form of TABLE, up to its entries.
+It comes from the printer, so the test it names is the one the reader
+restores."
+  (let ((text (prin1-to-string (make-hash-table :test (hash-table-test table)))))
+    (setq text (substring text 0 -1))
+    (when (string-suffix-p " data ()" text)
+      (setq text (substring text 0 (- (length " data ()")))))
+    (concat text " data (")))
+
+(defun supertag--persistence--insert-items (writer items)
+  "Insert the elements of ITEMS, a flat KEY VALUE list, and note them in WRITER."
+  (let ((start (point)))
+    (prin1 items (current-buffer))
+    ;; The elements belong to the enclosing table, not to a list of their own.
+    (delete-char -1)
+    (save-excursion
+      (goto-char start)
+      (delete-char 1))
+    (insert "\n")
+    (setf (supertag--native-writer-items writer) items)))
+
+(defun supertag--persistence--native-writer-next (writer)
+  "Insert the next piece of WRITER's Store at point in the current buffer.
+Return nil, inserting nothing, once the whole Store has been printed.
+After a piece that holds entities or a root scalar,
+`supertag--native-writer-items' is the flat KEY VALUE list it printed;
+after any other piece it is nil."
+  (let ((print-escape-nonascii t)
+        (print-length nil)
+        (print-level nil)
+        (print-circle nil)
+        (root (supertag--native-writer-root writer)))
+    (setf (supertag--native-writer-items writer) nil)
+    (pcase (supertag--native-writer-stage writer)
+      ('header
+       (let ((header (list :supertag-native supertag--persistence-native-format)))
+         (dolist (key '(:revision :revision-writer :version))
+           (let ((value (gethash key root supertag--not-found)))
+             (when (or (stringp value) (integerp value))
+               (setq header (append header (list key value))))))
+         ;; The entity count lets `supertag-save-store' recognise a populated
+         ;; database without reading it; file size cannot, because every
+         ;; empty collection is printed too.
+         (let ((nodes (gethash :nodes root)))
+           (when (hash-table-p nodes)
+             (setq header (append header (list :nodes (hash-table-count nodes))))))
+         (insert (format ";; -*- mode: lisp-data; coding: utf-8-unix -*-\n;; supertag-db native format %d, data version %s\n"
+                         supertag--persistence-native-format supertag-data-version))
+         (prin1 header (current-buffer))
+         (insert "\n" (supertag--persistence--table-opening root) "\n"))
+       (setf (supertag--native-writer-stage writer) 'roots)
+       t)
+      ('roots
+       (let ((table (supertag--native-writer-table writer)))
+         (cond
+          ((and table (supertag--native-writer-keys writer))
+           (let ((count 0) items)
+             (while (and (supertag--native-writer-keys writer)
+                         (< count supertag--persistence-piece-entities))
+               (let ((id (pop (supertag--native-writer-keys writer))))
+                 (push id items)
+                 (push (gethash id table) items))
+               (setq count (1+ count)))
+             (supertag--persistence--insert-items writer (nreverse items))))
+          (table
+           (insert "))\n")
+           (setf (supertag--native-writer-table writer) nil))
+          ((supertag--native-writer-pending writer)
+           (let* ((entry (pop (supertag--native-writer-pending writer)))
+                  (value (cdr entry)))
+             (if (not (hash-table-p value))
+                 (supertag--persistence--insert-items writer (list (car entry) value))
+               (prin1 (car entry) (current-buffer))
+               (insert " " (supertag--persistence--table-opening value) "\n")
+               (let (keys)
+                 (maphash (lambda (id _data) (push id keys)) value)
+                 (setf (supertag--native-writer-table writer) value
+                       (supertag--native-writer-keys writer) (nreverse keys))))))
+          (t
+           (insert "))\n")
+           (setf (supertag--native-writer-stage writer) 'done))))
+       t)
+      (_ nil))))
+
 (defun supertag--persistence--write-native-store (store buffer)
   "Insert the native serialization of STORE into BUFFER.
 Returns the root table that was printed: a shallow copy of STORE without
 `supertag--persistence--file-only-roots'.  Its values are the Store's own,
 so `supertag--persistence--verify-native-file' compares the file against
 the live data."
-  (unless (hash-table-p store)
-    (error "supertag--persistence--write-native-store: STORE must be a hash table, got: %S"
-           store))
-  (let ((root (copy-hash-table store)))
-    (dolist (key supertag--persistence--file-only-roots)
-      (remhash key root))
+  (let ((writer (supertag--persistence--native-writer store)))
     (with-current-buffer buffer
-      (let ((print-escape-nonascii t)
-            (print-length nil)
-            (print-level nil)
-            (print-circle t)
-            (header (list :supertag-native supertag--persistence-native-format)))
-        (dolist (key '(:revision :revision-writer :version))
-          (let ((value (gethash key root supertag--not-found)))
-            (when (or (stringp value) (integerp value))
-              (setq header (append header (list key value))))))
-        ;; The entity count lets `supertag-save-store' recognise a populated
-        ;; database without reading it; file size cannot, because every
-        ;; empty collection is printed too.
-        (let ((nodes (gethash :nodes root)))
-          (when (hash-table-p nodes)
-            (setq header (append header (list :nodes (hash-table-count nodes))))))
-        (insert (format ";; -*- mode: lisp-data; coding: utf-8-unix -*-\n;; supertag-db native format %d, data version %s\n"
-                        supertag--persistence-native-format supertag-data-version))
-        (prin1 header buffer)
-        (insert "\n")
-        (prin1 root buffer)
-        (insert "\n")))
-    root))
+      (while (supertag--persistence--native-writer-next writer)))
+    (supertag--native-writer-root writer)))
 
 (defun supertag--persistence--native-format-at-point-p ()
   "Return non-nil when point is at the header form of a native Store file."
@@ -2043,16 +2161,14 @@ it never performs an Org scan."
              (> (supertag--disk-revision) supertag--store-revision))
     (supertag-reload-store)))
 
-(defun supertag-save-store (&optional file force)
-  "Save the current `supertag--store` to FILE, using revision conflict checks.
-FILE is the optional file path and defaults to `supertag-db-file'.  FORCE
-allows an intentional overwrite of a newer disk revision; interactive users
-normally invoke that path through `supertag-save-store-force'."
-  (interactive)
-  (supertag--presence-write)
-  (let* ((file-to-save (or file supertag-db-file))
-         (interactivep (called-interactively-p 'any))
-         (disk-info (supertag--disk-revision-info file-to-save))
+(defun supertag--save-store-revision (file-to-save force interactivep)
+  "Return the revision a save of FILE-TO-SAVE must carry now, or nil.
+Nil means there is nothing to write or a guard refuses the save; the
+reason has then been reported the way `supertag-save-store' reports it.
+FORCE allows an intentional overwrite of a newer disk revision.
+INTERACTIVEP makes a clean Store worth a message.  A clean Store behind
+the disk revision is reloaded, which is not a save either."
+  (let* ((disk-info (supertag--disk-revision-info file-to-save))
          (disk-revision (car disk-info))
          (reasons (supertag--persistence-guard-violations file-to-save)))
     (cond
@@ -2065,10 +2181,12 @@ normally invoke that path through `supertag-save-store-force'."
       nil)
      (reasons
       (message "Supertag auto-save skipped: %s"
-               (mapconcat #'identity reasons "; ")))
+               (mapconcat #'identity reasons "; "))
+      nil)
      ((not (supertag-dirty-p))
       (when interactivep
-        (message "Supertag database has no unsaved changes")))
+        (message "Supertag database has no unsaved changes"))
+      nil)
      (t
       (supertag-persistence-ensure-data-directory)
       (let* ((disk-writer (or (cadr disk-info) "unknown writer"))
@@ -2104,30 +2222,260 @@ normally invoke that path through `supertag-save-store-force'."
                     (and existing-size (> existing-size 1024)))))
             (if (and non-trivial-file (numberp live-node-count)
                      (= live-node-count 0))
-                (message "Protective skip: Live DB has 0 nodes while on-disk DB looks non-trivial (%s). Skipping save to avoid data loss."
-                         (if disk-node-count
-                             (format "%d nodes" disk-node-count)
-                           (format "%s bytes" existing-size)))
-              (let ((next-revision (1+ (max disk-revision ours))))
-                (supertag--persistence-write-store-atomically file-to-save next-revision)
-                (setq supertag--store-revision next-revision
-                      supertag--last-conflict-revision nil)
-                (supertag-clear-dirty)
-                (supertag--record-store-origin :ok)
-                (supertag--presence-write)
-                (supertag-check-daily-backup)
-                (run-hook-wrapped
-                 'supertag-persistence-after-save-hook
-                 (lambda (subscriber)
-                   (condition-case err
-                       (funcall subscriber)
-                     (error
-                      (message "Supertag after-save subscriber %S failed: %s"
-                               subscriber (error-message-string err))))
-                   nil))
-                (when interactivep
-                  (message "Supertag database saved to %s" file-to-save))
-                t))))))))))
+                (progn
+                  (message "Protective skip: Live DB has 0 nodes while on-disk DB looks non-trivial (%s). Skipping save to avoid data loss."
+                           (if disk-node-count
+                               (format "%d nodes" disk-node-count)
+                             (format "%s bytes" existing-size)))
+                  nil)
+              (1+ (max disk-revision ours)))))))))))
+
+(defun supertag--save-store-written (revision)
+  "Record that the database file now holds the Store at REVISION."
+  (setq supertag--store-revision revision
+        supertag--last-conflict-revision nil)
+  (supertag-clear-dirty)
+  (supertag--record-store-origin :ok)
+  (supertag--presence-write)
+  (supertag-check-daily-backup)
+  (run-hook-wrapped
+   'supertag-persistence-after-save-hook
+   (lambda (subscriber)
+     (condition-case err
+         (funcall subscriber)
+       (error
+        (message "Supertag after-save subscriber %S failed: %s"
+                 subscriber (error-message-string err))))
+     nil)))
+
+(defun supertag-save-store (&optional file force)
+  "Save the current `supertag--store` to FILE, using revision conflict checks.
+FILE is the optional file path and defaults to `supertag-db-file'.  FORCE
+allows an intentional overwrite of a newer disk revision; interactive users
+normally invoke that path through `supertag-save-store-force'.
+The whole database is written before this returns; a save still being
+written in idle moments is dropped in its favour."
+  (interactive)
+  (supertag--presence-write)
+  (supertag-db--idle-save-drop)
+  (let* ((file-to-save (or file supertag-db-file))
+         (interactivep (called-interactively-p 'any))
+         (next-revision
+          (supertag--save-store-revision file-to-save force interactivep)))
+    (when next-revision
+      (supertag--persistence-write-store-atomically file-to-save next-revision)
+      (supertag--save-store-written next-revision)
+      (when interactivep
+        (message "Supertag database saved to %s" file-to-save))
+      t)))
+
+;;; --- Saving in idle moments ---
+;;
+;; The save that follows a change writes the same file `supertag-save-store'
+;; does, a piece per step, into a temporary file that replaces the database
+;; only at the end.  It never looks at a Store other than the one it
+;; started from: any change to a collection, to a root scalar or to the
+;; file on disk drops what was written and starts again.
+
+(cl-defstruct (supertag-db--idle-save (:constructor supertag-db--idle-save--make))
+  "A save of the Store being written in idle moments."
+  file        ; the database file to replace
+  temp        ; the temporary file written so far
+  size        ; bytes of TEMP written and verified
+  revision    ; the revision TEMP carries
+  writer      ; the `supertag--native-writer' printing the Store
+  token)      ; what the Store was when the save started
+
+(defvar supertag-db--idle-save nil
+  "The save being written in idle moments, or nil.")
+
+(defvar supertag-db--idle-save-timer nil
+  "Idle timer for the next step of `supertag-db--idle-save'.")
+
+(defvar supertag-db--idle-save-restarts 0
+  "Idle saves in a row that a change to the Store made start again.")
+
+(defconst supertag-db--idle-save-max-restarts 3
+  "Idle saves a changing Store may undo before one is written in one go.")
+
+(defconst supertag-db--idle-save-delay 0.05
+  "Seconds of idle time before the next step of an idle save.")
+
+(defun supertag-db--store-token ()
+  "Return a value that changes whenever the Store's durable content does."
+  (let (collections scalars)
+    (maphash (lambda (key value)
+               (cond
+                ((hash-table-p value) (push key collections))
+                ((not (memq key '(:revision :revision-writer)))
+                 (push (cons key value) scalars))))
+             supertag--store)
+    (list (supertag-index-source-token collections)
+          supertag-db--dirty-marks
+          (copy-tree scalars))))
+
+(defun supertag-db--idle-save-drop ()
+  "Forget the save being written in idle moments and remove its file."
+  (when supertag-db--idle-save-timer
+    (cancel-timer supertag-db--idle-save-timer)
+    (setq supertag-db--idle-save-timer nil))
+  (when supertag-db--idle-save
+    (let ((temp (supertag-db--idle-save-temp supertag-db--idle-save)))
+      (setq supertag-db--idle-save nil)
+      (ignore-errors (delete-file temp)))))
+
+(defun supertag-db--idle-save-arm ()
+  "Run the next step of the idle save when Emacs is next idle."
+  (unless supertag-db--idle-save-timer
+    (setq supertag-db--idle-save-timer
+          (run-with-idle-timer supertag-db--idle-save-delay nil
+                               #'supertag-db--idle-save-step))))
+
+(defun supertag-db--idle-save-append (save piece)
+  "Append the text of buffer PIECE to SAVE's file and verify it there.
+The bytes are read back from the file and must be the text of PIECE; a
+piece holding entities must also read back as those entities."
+  (let* ((temp (supertag-db--idle-save-temp save))
+         (start (supertag-db--idle-save-size save))
+         (items (supertag--native-writer-items (supertag-db--idle-save-writer save)))
+         end)
+    (with-current-buffer piece
+      (let ((coding-system-for-write 'utf-8-unix)
+            (write-region-inhibit-fsync t))
+        (write-region (point-min) (point-max) temp t 'silent)))
+    (setq end (file-attribute-size (file-attributes temp)))
+    (when supertag-db-verify-after-save
+      (with-temp-buffer
+        (let ((coding-system-for-read 'utf-8-unix))
+          (insert-file-contents temp nil start end))
+        (unless (zerop (compare-buffer-substrings piece nil nil
+                                                  (current-buffer) nil nil))
+          (error "a piece of the temp file differs from what was written"))
+        (when items
+          (goto-char (point-max))
+          (insert ")")
+          (goto-char (point-min))
+          (insert "(")
+          (goto-char (point-min))
+          (unless (supertag--persistence--deep-equal items (read (current-buffer)))
+            (error "an entity changed after write")))))
+    (setf (supertag-db--idle-save-size save) end)))
+
+(defun supertag-db--idle-save-finish (save)
+  "Replace the database with SAVE's file, if SAVE still describes the Store.
+Return non-nil when the database was replaced."
+  (let* ((file (supertag-db--idle-save-file save))
+         (temp (supertag-db--idle-save-temp save))
+         (revision (supertag-db--idle-save-revision save))
+         (root (supertag--native-writer-root (supertag-db--idle-save-writer save))))
+    ;; The guards and the disk revision are asked again: another Emacs may
+    ;; have saved, or a guard may have turned, while this was being written.
+    (when (and (equal (supertag-db--idle-save-token save)
+                      (supertag-db--store-token))
+               (eql revision (supertag--save-store-revision file nil nil)))
+      ;; One last write, of nothing, with the sync the pieces went without.
+      (let ((coding-system-for-write 'utf-8-unix)
+            (write-region-inhibit-fsync nil))
+        (write-region "" nil temp t 'silent))
+      (unless (eql (file-attribute-size (file-attributes temp))
+                   (supertag-db--idle-save-size save))
+        (error "the temp file is not the size that was written"))
+      (when (file-exists-p file)
+        (set-file-modes temp (file-modes file)))
+      (when (supertag--persistence--legacy-format-file-p file)
+        (supertag--persistence--snapshot-preformat6 file))
+      (rename-file temp file t)
+      (setq supertag-db--idle-save nil)
+      (puthash :revision revision supertag--store)
+      (puthash :revision-writer (gethash :revision-writer root) supertag--store)
+      (supertag--save-store-written revision)
+      t)))
+
+(defun supertag-db--idle-save-step ()
+  "Write the next pieces of the idle save, and finish it after the last."
+  (setq supertag-db--idle-save-timer nil)
+  (let ((save supertag-db--idle-save))
+    (when save
+      (condition-case err
+          (if (not (equal (supertag-db--idle-save-token save)
+                          (supertag-db--store-token)))
+              (supertag-db--idle-save-again)
+            (let ((deadline (+ (float-time) (or supertag-db-save-slice-seconds 0)))
+                  (writer (supertag-db--idle-save-writer save))
+                  (count 0)
+                  (more t))
+              (with-temp-buffer
+                (set-buffer-multibyte t)
+                (while (and more
+                            (or (= count 0) (< (float-time) deadline))
+                            (not (input-pending-p)))
+                  (erase-buffer)
+                  (if (supertag--persistence--native-writer-next writer)
+                      (supertag-db--idle-save-append save (current-buffer))
+                    (setq more nil))
+                  (setq count (1+ count))))
+              (cond
+               (more (supertag-db--idle-save-arm))
+               ((supertag-db--idle-save-finish save)
+                (setq supertag-db--idle-save-restarts 0))
+               (t (supertag-db--idle-save-again)))))
+        (error
+         ;; Whatever stopped this save, the save that writes and verifies
+         ;; the whole file gets the last word.
+         (supertag-db--idle-save-drop)
+         (message "Supertag: saving the database in idle moments failed (%s); writing it in one go."
+                  (error-message-string err))
+         (supertag-save-store))))))
+
+(defvar supertag-save-defer-functions)
+
+(defun supertag-db--idle-save-again ()
+  "Drop the idle save the Store has moved on from and save what it is now.
+After `supertag-db--idle-save-max-restarts' such saves in a row the Store is
+written in one go, so a Store that keeps changing is still saved.  Nothing
+is saved while `supertag-save-defer-functions' asks to wait: whoever keeps
+changing the Store then asks for the save itself once it is done."
+  (supertag-db--idle-save-drop)
+  (setq supertag-db--idle-save-restarts (1+ supertag-db--idle-save-restarts))
+  (when (supertag-dirty-p)
+    (cond
+     ((run-hook-with-args-until-success 'supertag-save-defer-functions))
+     ((<= supertag-db--idle-save-restarts supertag-db--idle-save-max-restarts)
+      (supertag-save-store-when-idle))
+     (t
+      (setq supertag-db--idle-save-restarts 0)
+      (supertag-save-store))))
+  ;; A save a guard refused is not one the Store kept undoing.
+  (unless supertag-db--idle-save
+    (setq supertag-db--idle-save-restarts 0)))
+
+(defun supertag-save-store-when-idle ()
+  "Save the Store to `supertag-db-file' without holding Emacs for long.
+The same guards and revision checks as `supertag-save-store' apply, and
+the file written is the same.  With `supertag-db-save-slice-seconds' nil
+this is `supertag-save-store'."
+  (cond
+   ((null supertag-db-save-slice-seconds)
+    (supertag-save-store))
+   (supertag-db--idle-save
+    (supertag-db--idle-save-arm))
+   (t
+    (supertag--presence-write)
+    (let* ((file supertag-db-file)
+           (revision (supertag--save-store-revision file nil nil)))
+      (when revision
+        (setq supertag-db--idle-save
+              (supertag-db--idle-save--make
+               :file file
+               :temp (make-temp-file (concat file ".tmp"))
+               :size 0
+               :revision revision
+               :writer (supertag--persistence--native-writer
+                        supertag--store
+                        (list :revision revision
+                              :revision-writer (supertag--revision-writer)))
+               :token (supertag-db--store-token)))
+        (supertag-db--idle-save-step))))))
 
 (defun supertag-save-store-force ()
   "Save the Store, intentionally overwriting a newer on-disk revision."
@@ -2146,6 +2494,8 @@ normally invoke that path through `supertag-save-store-force'."
   "Load data into `supertag--store' from FILE or `supertag-db-file'.
 Loading records the root `:revision' (legacy databases without one are
 revision zero), rebuilds indexes, and keeps presence advisory."
+  ;; A save still being written describes the Store this load replaces.
+  (supertag-db--idle-save-drop)
   (let* ((candidates (supertag--persistence--db-file-candidates file))
          (file-to-load nil)
          (load-status nil)
@@ -2287,7 +2637,7 @@ asked for, and the save when Emacs exits, do not ask.")
 (defun supertag-db--save-after-change ()
   "Save the Store unless `supertag-save-defer-functions' asks to wait."
   (unless (run-hook-with-args-until-success 'supertag-save-defer-functions)
-    (supertag-save-store)))
+    (supertag-save-store-when-idle)))
 
 (defun supertag-schedule-save ()
   "Schedule a delayed save.
@@ -2304,7 +2654,7 @@ Waits for 2 seconds of idle time before saving to avoid frequent saves."
     (setq supertag-db--auto-save-timer
           (run-with-timer supertag-db-auto-save-interval
                          supertag-db-auto-save-interval
-                         #'supertag-save-store))))
+                         #'supertag-save-store-when-idle))))
 
 (defun supertag-setup-daily-backup ()
   "Set up daily backup timer."
@@ -2326,6 +2676,7 @@ Waits for 2 seconds of idle time before saving to avoid frequent saves."
 
 (defun supertag-cleanup-auto-save ()
   "Clean up auto-save timer."
+  (supertag-db--idle-save-drop)
   (when supertag-db--auto-save-timer
     (cancel-timer supertag-db--auto-save-timer)
     (setq supertag-db--auto-save-timer nil)))

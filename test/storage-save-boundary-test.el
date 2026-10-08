@@ -51,6 +51,163 @@
                                         supertag-db-file)))))))
 
 
+(defmacro supertag-storage-test--with-idle-save (&rest body)
+  "Run BODY in a vault whose Store is dirty and is saved two entities a piece.
+BODY drives the save with `supertag-storage-test--idle-save-run'."
+  (declare (indent 0) (debug t))
+  `(supertag-document-test-with-vault
+     (let ((supertag-db--idle-save nil)
+           (supertag-db--idle-save-timer nil)
+           (supertag-db--idle-save-restarts 0)
+           (supertag-db-save-slice-seconds 0)
+           (supertag--persistence-piece-entities 2)
+           (supertag-persistence-after-save-hook nil))
+       (cl-letf (((symbol-function 'supertag-db--idle-save-arm) #'ignore)
+                 ((symbol-function 'supertag-check-daily-backup) #'ignore)
+                 ((symbol-function 'input-pending-p) #'ignore))
+         (dotimes (n 9)
+           (supertag-store-put-entity
+            :nodes (format "idle-%d" n)
+            (list :id (format "idle-%d" n) :type :node :title "Sliced ✓")))
+         (supertag--record-store-origin :ok)
+         (supertag-mark-dirty)
+         (should (supertag-save-store))
+         (supertag-mark-dirty)
+         (unwind-protect
+             (progn ,@body)
+           (supertag-db--idle-save-drop))))))
+
+(defun supertag-storage-test--idle-save-run ()
+  "Step the idle save to its end and return the number of steps it took."
+  (let ((steps 0))
+    (while supertag-db--idle-save
+      (supertag-db--idle-save-step)
+      (setq steps (1+ steps))
+      (when (> steps 500) (error "Idle save does not end")))
+    steps))
+
+(defun supertag-storage-test--temp-files ()
+  "Return the temporary files left beside the database file."
+  (directory-files (file-name-directory supertag-db-file) nil "\\.tmp"))
+
+(ert-deftest supertag-storage-idle-save-writes-the-file-a-save-writes ()
+  "A save made a piece at a time leaves the bytes a save in one go writes."
+  (supertag-storage-test--with-idle-save
+    (let ((revision supertag--store-revision))
+      (supertag-save-store-when-idle)
+      (should supertag-db--idle-save)
+      ;; The database is the previous one until the last piece is in.
+      (should (= revision (car (supertag--disk-revision-info))))
+      (should (> (supertag-storage-test--idle-save-run) 3))
+      (should-not (supertag-dirty-p))
+      (should (= (1+ revision) supertag--store-revision))
+      (should (= (1+ revision) (car (supertag--disk-revision-info))))
+      (should-not (supertag-storage-test--temp-files))
+      (should (equal (with-temp-buffer
+                       (supertag--persistence--write-native-store
+                        supertag--store (current-buffer))
+                       (buffer-string))
+                     (supertag-document-test-disk supertag-db-file))))))
+
+(ert-deftest supertag-storage-idle-save-starts-again-when-the-store-changes ()
+  "A change made while a save is being written is in the file that replaces the database."
+  (supertag-storage-test--with-idle-save
+    (let ((before (supertag-document-test-disk supertag-db-file)))
+      (supertag-save-store-when-idle)
+      ;; Every piece is in the temporary file; only the replacing is left.
+      (while (not (eq 'done (supertag--native-writer-stage
+                             (supertag-db--idle-save-writer supertag-db--idle-save))))
+        (supertag-db--idle-save-step))
+      (supertag-store-put-entity :nodes "late" '(:id "late" :type :node))
+      (supertag-db--idle-save-step)
+      ;; What was written so far is dropped; the database is untouched.
+      (should (equal before (supertag-document-test-disk supertag-db-file)))
+      (should (supertag-dirty-p))
+      (should supertag-db--idle-save)
+      (supertag-storage-test--idle-save-run)
+      (should-not (supertag-dirty-p))
+      (should-not (supertag-storage-test--temp-files))
+      (should (gethash "late"
+                       (gethash :nodes (supertag--persistence--try-read-store
+                                        supertag-db-file)))))))
+
+(ert-deftest supertag-storage-idle-save-keeps-changing-store-saved ()
+  "A Store that changes during every idle save is written in one go."
+  (supertag-storage-test--with-idle-save
+    (supertag-save-store-when-idle)
+    (dotimes (n (+ 2 supertag-db--idle-save-max-restarts))
+      (when supertag-db--idle-save
+        (supertag-store-put-entity :nodes "busy" (list :id "busy" :type :node :n n))
+        (supertag-mark-dirty)
+        (supertag-db--idle-save-step)))
+    (should-not supertag-db--idle-save)
+    (should-not (supertag-dirty-p))
+    (should-not (supertag-storage-test--temp-files))
+    (should (gethash "busy"
+                     (gethash :nodes (supertag--persistence--try-read-store
+                                      supertag-db-file))))))
+
+(ert-deftest supertag-storage-idle-save-waits-when-asked-to ()
+  "An idle save a change undid is not started again while a save should wait."
+  (supertag-storage-test--with-idle-save
+    (let ((before (supertag-document-test-disk supertag-db-file))
+          (supertag-save-defer-functions (list (lambda () t)))
+          (saves 0))
+      (supertag-save-store-when-idle)
+      (supertag-store-put-entity :nodes "late" '(:id "late" :type :node))
+      (cl-letf (((symbol-function 'supertag-save-store)
+                 (lambda (&rest _) (setq saves (1+ saves)))))
+        (dotimes (_ (+ 2 supertag-db--idle-save-max-restarts))
+          (supertag-db--idle-save-step)))
+      (should-not supertag-db--idle-save)
+      (should (= saves 0))
+      (should (= supertag-db--idle-save-restarts 0))
+      (should (supertag-dirty-p))
+      (should-not (supertag-storage-test--temp-files))
+      (should (equal before (supertag-document-test-disk supertag-db-file))))))
+
+(ert-deftest supertag-storage-save-replaces-an-idle-save ()
+  "An explicit save, as on exit, writes everything and leaves no partial file."
+  (supertag-storage-test--with-idle-save
+    (supertag-save-store-when-idle)
+    (supertag-db--idle-save-step)
+    (should (supertag-storage-test--temp-files))
+    (should (supertag-save-store))
+    (should-not supertag-db--idle-save)
+    (should-not (supertag-dirty-p))
+    (should-not (supertag-storage-test--temp-files))
+    (should (gethash "idle-8"
+                     (gethash :nodes (supertag--persistence--try-read-store
+                                      supertag-db-file))))))
+
+(ert-deftest supertag-storage-idle-save-yields-to-a-newer-database ()
+  "An idle save does not replace a database another Emacs saved meanwhile."
+  (supertag-storage-test--with-idle-save
+    (let ((before (supertag-document-test-disk supertag-db-file))
+          (revision supertag--store-revision))
+      (supertag-save-store-when-idle)
+      (supertag-db--idle-save-step)
+      (cl-letf (((symbol-function 'supertag--disk-revision-info)
+                 (lambda (&rest _) (list (+ 5 revision) "another@host:1"))))
+        (supertag-storage-test--idle-save-run))
+      (should (equal before (supertag-document-test-disk supertag-db-file)))
+      (should (supertag-dirty-p))
+      (should (= revision supertag--store-revision))
+      (should-not (supertag-storage-test--temp-files)))))
+
+(ert-deftest supertag-storage-idle-save-that-fails-is-written-in-one-go ()
+  "A piece that cannot be written or does not read back hands over to a full save."
+  (supertag-storage-test--with-idle-save
+    (cl-letf (((symbol-function 'supertag-db--idle-save-append)
+               (lambda (&rest _) (error "Disk refused"))))
+      (supertag-save-store-when-idle))
+    (should-not supertag-db--idle-save)
+    (should-not (supertag-dirty-p))
+    (should-not (supertag-storage-test--temp-files))
+    (should (gethash "idle-8"
+                     (gethash :nodes (supertag--persistence--try-read-store
+                                      supertag-db-file))))))
+
 (ert-deftest supertag-storage-cleanup-remains-callable-after-ui-load ()
   "Interactive cleanup confirms once after UI loading."
   (if (equal (getenv "SUPERTAG_SYA_STAGE") "before")

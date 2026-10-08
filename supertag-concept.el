@@ -905,8 +905,6 @@ Whole affected files, including existing drafts, are saved at each stage."
                                (<= marker begin)
                                (< begin (+ marker (length (plist-get selected :text)))))
                       (user-error "Promote cannot move its containing heading or link to itself"))))
-                (unless (yes-or-no-p "Promote saves whole affected files, including existing drafts. Continue? ")
-                  (user-error "Promote cancelled"))
                 (when (and region
                            (not (equal description (buffer-substring-no-properties begin end))))
                   (user-error "Source selection changed during preview"))

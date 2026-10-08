@@ -1,5 +1,8 @@
 * Changelog
 * [Unreleased]
+** Promote no longer asks before saving
+- =supertag-promote= no longer asks whether it may save the affected files
+  after the preview.  Choosing in the preview is the confirmation.
 ** Removed headings leave the index at once
 - A heading removed from a saved file is deleted from the database right
   away.  The nodes of a file that disappeared are deleted as soon as the

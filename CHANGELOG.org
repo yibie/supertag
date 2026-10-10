@@ -1,5 +1,9 @@
 * Changelog
 * [Unreleased]
+** Corfu is a required dependency
+- =Package-Requires= now lists Corfu 1.0.  =#= tag completion shows a nested
+  tag as its =emacs › package › elpa= path through the completion table's
+  =affixation-function=, which Corfu displays and Company does not.
 * [0.3.0] - 2026-10-08
 ** Promote no longer asks before saving
 - =supertag-promote= no longer asks whether it may save the affected files

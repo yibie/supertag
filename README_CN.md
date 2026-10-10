@@ -74,16 +74,40 @@ promote 的定制是核心理念，配置只有两层：模板数据，以及把
 ;; 在 require 之前设置：Supertag 加载时会给它装上 config guard。
 (setq supertag-sync-directories '("~/Documents/notes/"))   ; 你放 Org 文件的目录
 (require 'supertag)
+(global-corfu-mode 1)   ; #标签 的补全界面；已经启用就不用写
 ```
 
-要求 Emacs 29.1、Org 9.6 和 [TextUI](https://github.com/yibie/textui) 0.8.0 或更高。
-TextUI 是正式依赖，也是 Discovery 的默认渲染后端。使用 `package-vc` 时，
-请先从 TextUI 仓库安装它，再安装或更新 Supertag；声明依赖并不会自动向包源添加 VC 安装配方。
+要求 Emacs 29.1。Supertag 需要的全部依赖列在[依赖](#依赖)一节。
 
 1. 在 init 里设置同步目录（在 `(require 'supertag)` 之前；文件级 ID 来源可选，随时可改），然后 `M-x supertag-sync-full-rescan` 一次；模板见 [doc/setup_cn.md](doc/setup_cn.md)。
 2. `M-x supertag-menu`：按记录、整理、查找、维护分组的菜单，想不起命令名时从这儿找。
 
 不需要 API key，也不用跑数据库服务器，你现有的 Org 文件直接用。
+
+### 依赖
+
+必需依赖，也就是 Supertag 的 `Package-Requires` 里声明的包：
+
+| 依赖 | 版本 | 来源 | 用途 |
+| --- | --- | --- | --- |
+| Emacs | 29.1 或更高 | | |
+| Org | 9.6 或更高 | Emacs 29.1 自带 | 你的笔记 |
+| [ht](https://github.com/Wilfred/ht.el) | 2.4 或更高 | MELPA | 数据库里的哈希表 |
+| [TextUI](https://github.com/yibie/textui) | 0.8.0 或更高 | 只在 GitHub | 渲染 Discovery 和 Tag Cards |
+| [Corfu](https://github.com/minad/corfu) | 1.0 或更高 | GNU ELPA | `#` 标签的补全界面 |
+
+- **ht 和 Corfu** 在包源里，能读取 `Package-Requires` 的包管理器会随 Supertag 一起装上。ht 需要你的包源里有 MELPA。
+- **TextUI** 不在任何包源里，要把它的仓库地址告诉包管理器，像上面的 straight 配方那样。使用 `package-vc` 时，先从 TextUI 仓库安装它，再安装或更新 Supertag。
+- **Corfu** 要用 `(global-corfu-mode 1)` 启用。它会把嵌套标签显示成 `emacs › package › elpa` 这样的路径。Company 也能补全标签，但显示不了这些路径。
+
+可选依赖，只有用到对应功能时才需要：
+
+| 功能 | 需要 |
+| --- | --- |
+| Git 备份与同步 | `git` 程序 |
+| 相似笔记 | `curl`，以及兼容 Ollama 的嵌入服务 |
+| 光标处操作 | [Embark](https://github.com/oantolin/embark)；Embark 加载后 Supertag 会自动注册动作 |
+| AI 命令 | superchat 包，在运行这些命令之前加载 |
 
 ## 高级功能
 

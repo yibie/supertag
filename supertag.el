@@ -5,6 +5,7 @@
 ;; Author: Yibie
 ;; Keywords: org-mode, tags, metadata, workflow, automation
 ;; Version: 0.3.0
+;; Package-Requires: ((emacs "29.1") (org "9.6") (ht "2.4") (textui "0.8.0") (corfu "1.0"))
 ;; URL: https://github.com/yibie/supertag
 
 ;; This file is NOT part of GNU Emacs.
@@ -26,9 +27,6 @@
 
 ;; Supertag is a semantic knowledge system for Org mode that extends the
 ;; traditional tagging capabilities with advanced features
-
-;; Package-Requires: ((emacs "29.1") (org "9.6") (ht "2.4") (textui "0.8.0"))
-
 
 ;; Commands: supertag-init; startup/exit/Org hooks assemble existing owner entrypoints.
 ;; Dependencies: cl-lib, org, org-id, subr-x, supertag-vault, ht, supertag-core-store,

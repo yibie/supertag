@@ -116,12 +116,10 @@ When to review is up to you; Supertag does not schedule revision.
 ;; Set before require: Supertag installs its config guard when it loads.
 (setq supertag-sync-directories '("~/Documents/notes/"))   ; where your Org files live
 (require 'supertag)
+(global-corfu-mode 1)   ; the completion UI for #tags; skip if it is already on
 ```
 
-Requires Emacs 29.1, Org 9.6 and [TextUI](https://github.com/yibie/textui) 0.8.0 or newer.
-TextUI is a required dependency and the default Discovery renderer. When using
-`package-vc`, install TextUI from its repository before installing/updating Supertag;
-a dependency declaration alone does not add a VC recipe to your package archives.
+Requires Emacs 29.1. Everything Supertag needs is listed under [Dependencies](#dependencies).
 
 1. Set the sync directory in init (before `(require 'supertag)`; the file-level ID source is
    optional and can change any time), then run `M-x supertag-sync-full-rescan` once; template in
@@ -130,6 +128,35 @@ a dependency declaration alone does not add a VC recipe to your package archives
    you cannot recall a command name.
 
 No API key, no database server to run; your existing Org files work as they are.
+
+### Dependencies
+
+Required. These are the packages in Supertag's `Package-Requires`:
+
+| Dependency | Version | Source | Used for |
+| --- | --- | --- | --- |
+| Emacs | 29.1 or newer | | |
+| Org | 9.6 or newer | Built into Emacs 29.1 | Your notes |
+| [ht](https://github.com/Wilfred/ht.el) | 2.4 or newer | MELPA | Hash tables in the database |
+| [TextUI](https://github.com/yibie/textui) | 0.8.0 or newer | GitHub only | Rendering Discovery and Tag Cards |
+| [Corfu](https://github.com/minad/corfu) | 1.0 or newer | GNU ELPA | The completion UI for `#` tags |
+
+- **ht and Corfu** come from package archives, so a package manager that reads
+  `Package-Requires` installs them with Supertag. ht needs MELPA among your archives.
+- **TextUI** is in no package archive. Give your package manager its repository, as the
+  straight recipe above does. With `package-vc`, install TextUI from its repository before
+  you install or update Supertag.
+- **Corfu** has to be turned on with `(global-corfu-mode 1)`. It shows a nested tag as its
+  `emacs › package › elpa` path. Company completes tags too, but cannot display these paths.
+
+Optional. Each is needed only for the feature beside it:
+
+| Feature | Needs |
+| --- | --- |
+| Git backup and sync | The `git` program |
+| Similar notes | `curl` and an Ollama-compatible embedding service |
+| At-point actions | [Embark](https://github.com/oantolin/embark); Supertag registers its actions when Embark loads |
+| AI commands | The superchat package, loaded before you run them |
 
 ## Advanced features
 

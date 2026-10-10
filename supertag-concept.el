@@ -446,6 +446,8 @@ Reuse the accepted Move location authority; this does not search ID-less files."
     (dolist (property properties)
       (unless (org-entry-get nil (upcase (car property)) nil)
         (org-entry-put nil (upcase (car property)) (cdr property))))
+    (when tags
+      (supertag-node-created-ensure-at-point))
     (buffer-substring-no-properties (point-min) (point-max))))
 
 (defun supertag-service-org-promote-target (candidate template)
@@ -516,6 +518,8 @@ properties survive; only missing properties and additive tags are applied."
                 (dolist (property (plist-get content :properties))
                   (unless (org-entry-get nil (upcase (car property)) nil)
                     (org-entry-put nil (upcase (car property)) (cdr property))))
+                (when tags
+                  (supertag-node-created-ensure-at-point))
                 (org-end-of-subtree t t))
             (goto-char (point-max))
             (unless (bolp) (insert "\n"))

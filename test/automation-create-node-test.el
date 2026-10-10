@@ -86,7 +86,7 @@
         (should (> (point-max) before-max))))
     (let ((text (supertag-automation-create-test--disk-string file)))
       (should (string-prefix-p "#+title: Target\nDraft before heading\n* Existing\nBody\n" text))
-      (should (string-match-p "\n\\* Created #alpha #beta\n:PROPERTIES:\n:ID:[ \t]+created-id\n:END:\n\\'" text)))
+      (should (string-match-p "\n\\* Created #alpha #beta\n:PROPERTIES:\n:ID:[ \t]+created-id\n:CREATED:[ \t]+[^\n]+\n:END:\n\\'" text)))
     (let ((node (supertag-node-get "created-id")))
       (should (equal (file-truename file)
                      (file-truename (plist-get node :file))))

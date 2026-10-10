@@ -215,6 +215,50 @@ that value and reject a conflicting existing ID."
             (org-entry-put nil "ID" node-id)
             node-id)))))
 
+(defcustom supertag-created-time-format "%Y-%m-%d %H:%M"
+  "Format of the CREATED property a heading receives when it gets a Tag.
+
+Adding a Tag to a heading that has no CREATED property writes the current
+time in this `format-time-string' format.  An existing CREATED property is
+never changed.  Set to nil to write no creation time."
+  :type '(choice (string :tag "Time format")
+                 (const :tag "Do not write a creation time" nil))
+  :group 'supertag)
+
+(defun supertag-node-created-ensure-at-point ()
+  "Write the containing heading's CREATED property when it has none.
+
+The time uses `supertag-created-time-format' and goes on the line right below
+the ID property.  The caller decides when to save and project the buffer.
+Return the written value, or nil when nothing was written."
+  (when (and (stringp supertag-created-time-format)
+             (not (string-empty-p supertag-created-time-format)))
+    (save-excursion
+      (when (and (or (org-at-heading-p)
+                     (ignore-errors (org-back-to-heading t) t))
+                 (not (org-entry-get nil "CREATED")))
+        (let ((created (format-time-string supertag-created-time-format)))
+          ;; `org-entry-put' owns drawer creation and indentation, and appends
+          ;; the new line last; lift that line to right below the ID line.
+          (org-entry-put nil "CREATED" created)
+          (when-let* ((range (org-get-property-block))
+                      (last-line (save-excursion
+                                   (goto-char (cdr range))
+                                   (forward-line -1)
+                                   (point)))
+                      (below-id (save-excursion
+                                  (goto-char (car range))
+                                  (let ((case-fold-search t))
+                                    (when (re-search-forward
+                                           "^[ \t]*:ID:" last-line t)
+                                      (forward-line 1)
+                                      (point))))))
+            (unless (= last-line below-id)
+              (let ((line (delete-and-extract-region last-line (cdr range))))
+                (goto-char below-id)
+                (insert line))))
+          created)))))
+
 (defun supertag-node-location--id-property-position (node-id)
   "Return NODE-ID's property position in the widened current buffer.
 
@@ -1204,15 +1248,20 @@ until `save-buffer' succeeds."
     (list :properties properties :body body
           :create-file (and (plist-get content :create-file) t))))
 
-(defun supertag-service-org--insert-create-content (headline node-id content)
+(defun supertag-service-org--insert-create-content
+    (headline node-id content &optional tagged)
   "Insert HEADLINE with NODE-ID and validated CONTENT at point.
-Return a marker at the new root heading."
+When TAGGED is non-nil, HEADLINE carries Tags and the node also receives its
+creation time.  Return a marker at the new root heading."
   (let ((heading-marker (copy-marker (point))))
     (insert headline)
     (goto-char heading-marker)
     (supertag-node-identity-ensure-at-point node-id)
     (dolist (entry (plist-get content :properties))
       (org-entry-put nil (upcase (car entry)) (cdr entry)))
+    ;; After the template's own properties, so a template CREATED is kept.
+    (when tagged
+      (supertag-node-created-ensure-at-point))
     (let ((body (plist-get content :body)))
       (unless (string-empty-p body)
         (org-end-of-meta-data t)
@@ -1296,7 +1345,7 @@ new node ID."
                 (insert "\n"))
               (let ((heading-marker
                      (supertag-service-org--insert-create-content
-                      headline node-id normalized-content)))
+                      headline node-id normalized-content tags)))
                 (unwind-protect
                     (progn
                       (goto-char heading-marker)

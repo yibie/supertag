@@ -1,5 +1,16 @@
 * Changelog
 * [Unreleased]
+** A heading gets its creation time when it gets a tag
+- Adding a tag to a heading that has no =CREATED= property now writes one,
+  on the line right below =:ID:=, as in =:CREATED: 2026-10-09 17:47=.
+  This holds for =supertag-add-tag=, for a tag chosen from =#= completion,
+  for a known tag typed by hand, and for tags added by automation or capture.
+  A node created with tags (Add Link, Find Node, an automation) and a heading
+  that Promote gives tags get it the same way.
+  An existing =CREATED= is never changed, and a file-level tag in
+  =#+FILETAGS= writes none.
+- New option =supertag-created-time-format= sets the time format
+  (=format-time-string=); set it to nil to turn the property off.
 ** Corfu is a required dependency
 - =Package-Requires= now lists Corfu 1.0.  =#= tag completion shows a nested
   tag as its =emacs › package › elpa= path through the completion table's

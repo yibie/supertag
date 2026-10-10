@@ -81,6 +81,7 @@
 (autoload 'supertag-service-org--update-buffer-and-resync "supertag-service-org")
 (autoload 'supertag-service-org-save-and-record-tags-at-point "supertag-service-org")
 (autoload 'supertag-service-org-save-and-project-current-node "supertag-service-org")
+(autoload 'supertag-node-created-ensure-at-point "supertag-service-org")
 (declare-function supertag-service-org--node-tags "supertag-service-org" (node-id))
 (declare-function supertag-service-org--update-buffer-and-resync "supertag-service-org"
                   (node-id buffer-update-func &optional repair-projection tags-only-p))
@@ -89,6 +90,7 @@
 (declare-function supertag-service-org-save-and-project-current-node "supertag-service-org"
                   (node-id))
 (declare-function supertag-node-location-find "supertag-service-org" (node-id))
+(declare-function supertag-node-created-ensure-at-point "supertag-service-org" ())
 ;; FILETAGS callbacks run after the shared Org updater loads its Sync provider.
 (declare-function supertag-sync--parse-file-header "supertag-services-sync" ())
 (declare-function supertag-node-tag-occurrences-at-point "supertag-services-sync" ())
@@ -2355,6 +2357,9 @@ POSITION may be `beginning', `end', or a marker in the node buffer."
              (unless (member token tags)
                (supertag-service-org--set-filetags (append tags (list token)))))
          (unless (member token (supertag-node-tag-occurrences-at-point))
+           ;; Point is still at the node's own heading here; POSITION may
+           ;; move it into a child heading's text.
+           (supertag-node-created-ensure-at-point)
            (pcase position
              ('beginning
               (org-back-to-heading t)
@@ -2938,6 +2943,7 @@ Display aliases are replaced with their canonical Org token before writing."
               (insert occurrence-token))
             (setq normalized-token-p t)
             (insert " ")
+            (supertag-node-created-ensure-at-point)
             ;; A newly assigned Org ID has no stored node yet, so it needs
             ;; its initial structural projection.  Existing nodes record
             ;; only their changed Tag membership.
@@ -3123,6 +3129,7 @@ CAPF `[New]' candidate."
                     (let ((node-tags
                            (supertag-completion--get-node-tags node-id)))
                       (unless (member tag-id node-tags)
+                        (supertag-node-created-ensure-at-point)
                         ;; See the completion post-action: only an
                         ;; unprojected, newly identified heading requires a
                         ;; full first projection.

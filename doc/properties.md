@@ -113,6 +113,19 @@ A link that goes on to a place inside the same target, such as
 Notes already in the vault are read again when they are next saved. After changing
 `supertag-property-link-types`, run `M-x supertag-reindex-org` to pick up the rest.
 
+## The creation time
+
+A heading's `CREATED` property is its creation time. Supertag writes the property when a
+heading first gets a tag (`supertag-created-time-format`), and the Stream, the `created`
+query conditions and the cards order nodes by it.
+
+- The value may be plain (`2026-10-12 18:11`) or an Org timestamp (`[2026-10-12 Mon 18:11]`).
+  A date without a time of day counts as midnight.
+- Editing the property moves the node; the change is picked up when the file is saved.
+- A heading without the property keeps the time Supertag first scanned it.
+- Notes scanned by an older version take their date the next time their file is saved.
+  `M-x supertag-reindex-org` applies it to every file at once.
+
 ## When a key means different things under different tags
 
 A drawer holds one `STATUS`, and `STATUS_ALL` applies to a file or a subtree, not to a tag.

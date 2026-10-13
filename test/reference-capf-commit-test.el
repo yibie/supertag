@@ -33,6 +33,13 @@
         (should (= scans 0))
         (should (= parses 0))))))
 
+(ert-deftest supertag-reference-capf-keeps-its-own-candidate-order ()
+  "A sorting completion UI must not lift the create row above existing targets."
+  (let ((metadata (funcall (supertag-reference--completion-table "" nil)
+                           "" nil 'metadata)))
+    (should (eq (cdr (assq 'display-sort-function (cdr metadata)))
+                'identity))))
+
 (ert-deftest supertag-reference-capf-prefix-is-text-only ()
   (with-temp-buffer
     (org-mode)

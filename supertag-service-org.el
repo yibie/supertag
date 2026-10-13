@@ -1481,18 +1481,28 @@ save succeeds, Projection failure is reported without undoing durable text."
    (lambda ()
      (org-entry-delete (point) "ID"))))
 
+(defun supertag-service-org--capture-draft-p ()
+  "Return non-nil in the draft buffer of an Org capture into a file.
+The draft is not saved while it is being written: finalizing the capture
+saves the file, and that save projects the heading."
+  (and (bound-and-true-p org-capture-mode)
+       (buffer-base-buffer)
+       (buffer-file-name (buffer-base-buffer))))
+
 (defun supertag-service-org-save-and-project-current-node (node-id)
-  "Save the current Org buffer, then rebuild NODE-ID's projection once."
-  (unless (buffer-file-name)
-    (user-error "NODE-ID must belong to a file-backed Org buffer"))
-  (let ((file (buffer-file-name)))
-    (supertag-service-org--save-current-buffer)
-    (condition-case cause
-        (supertag-service-org--project-current-node node-id)
-      (error
-       (supertag-service-org--signal-projection-error
-        node-id file 'supertag-service-org-retry-node-projection
-        (list node-id file) cause)))))
+  "Save the current Org buffer, then rebuild NODE-ID's projection once.
+In a capture draft do nothing; see `supertag-service-org--capture-draft-p'."
+  (unless (supertag-service-org--capture-draft-p)
+    (unless (buffer-file-name)
+      (user-error "NODE-ID must belong to a file-backed Org buffer"))
+    (let ((file (buffer-file-name)))
+      (supertag-service-org--save-current-buffer)
+      (condition-case cause
+          (supertag-service-org--project-current-node node-id)
+        (error
+         (supertag-service-org--signal-projection-error
+          node-id file 'supertag-service-org-retry-node-projection
+          (list node-id file) cause))))))
 
 (defun supertag-service-org-save-and-record-tags-at-point (node-id)
   "Save the current Org buffer and refresh only NODE-ID's Tag membership.
@@ -1500,59 +1510,61 @@ save succeeds, Projection failure is reported without undoing durable text."
 When point is not in NODE-ID's heading, locate that heading without projecting
 the file.  This path deliberately preserves the stored node's structure,
 position, outline path, parent, and content; a later file synchronization
-remains responsible for refreshing those fields."
-  (unless (buffer-file-name)
-    (user-error "NODE-ID must belong to a file-backed Org buffer"))
-  (let ((file (buffer-file-name)) heading)
-    ;; A save hook may move point.  Retain the target heading's marker before
-    ;; saving.  Capture paths may call us after their inner edit restored the
-    ;; buffer's previous point, so find NODE-ID only when point is not already
-    ;; at its heading.
-    (save-excursion
-      (save-restriction
-        (widen)
-        (unless
-            (or (and (condition-case nil
-                         (progn (org-back-to-heading t) t)
-                       (error nil))
-                     (equal node-id (org-entry-get nil "ID")))
-                (supertag-node-location-goto-current-buffer node-id))
-          (user-error "Node '%s' was not found in %s" node-id file))
-        (setq heading (copy-marker (point)))))
-    (unwind-protect
-        (progn
-          (supertag-service-org--save-current-buffer)
-          (condition-case cause
-              (save-excursion
-                (save-restriction
-                  (widen)
-                  (goto-char heading)
-                  (unless (and (org-at-heading-p)
-                               (equal node-id (org-entry-get nil "ID")))
-                    (user-error "Point does not identify node '%s'" node-id))
-                  (let* ((membership
-                          (supertag-sync--resolve-node-tag-occurrences
-                           (list :tag-occurrences
-                                 (or (supertag-node-tag-occurrences-at-point) '()))))
-                         (updated
-                          (supertag-with-transaction
-                            (supertag-node-update
-                             node-id
-                             (lambda (node)
-                               (let ((copy (copy-sequence node)))
-                                 (dolist (key '(:tag-occurrences :tags :unresolved-tags))
-                                   (setq copy
-                                         (plist-put copy key
-                                                    (plist-get membership key))))
-                                 copy))))))
-                    (unless updated
-                      (user-error "Node '%s' has no stored projection" node-id))
-                    updated)))
-            (error
-             (supertag-service-org--signal-projection-error
-              node-id file 'supertag-service-org-retry-node-projection
-              (list node-id file) cause))))
-      (set-marker heading nil))))
+remains responsible for refreshing those fields.
+In a capture draft do nothing; see `supertag-service-org--capture-draft-p'."
+  (unless (supertag-service-org--capture-draft-p)
+    (unless (buffer-file-name)
+      (user-error "NODE-ID must belong to a file-backed Org buffer"))
+    (let ((file (buffer-file-name)) heading)
+      ;; A save hook may move point.  Retain the target heading's marker before
+      ;; saving.  Capture paths may call us after their inner edit restored the
+      ;; buffer's previous point, so find NODE-ID only when point is not already
+      ;; at its heading.
+      (save-excursion
+        (save-restriction
+          (widen)
+          (unless
+              (or (and (condition-case nil
+                           (progn (org-back-to-heading t) t)
+                         (error nil))
+                       (equal node-id (org-entry-get nil "ID")))
+                  (supertag-node-location-goto-current-buffer node-id))
+            (user-error "Node '%s' was not found in %s" node-id file))
+          (setq heading (copy-marker (point)))))
+      (unwind-protect
+          (progn
+            (supertag-service-org--save-current-buffer)
+            (condition-case cause
+                (save-excursion
+                  (save-restriction
+                    (widen)
+                    (goto-char heading)
+                    (unless (and (org-at-heading-p)
+                                 (equal node-id (org-entry-get nil "ID")))
+                      (user-error "Point does not identify node '%s'" node-id))
+                    (let* ((membership
+                            (supertag-sync--resolve-node-tag-occurrences
+                             (list :tag-occurrences
+                                   (or (supertag-node-tag-occurrences-at-point) '()))))
+                           (updated
+                            (supertag-with-transaction
+                             (supertag-node-update
+                              node-id
+                              (lambda (node)
+                                (let ((copy (copy-sequence node)))
+                                  (dolist (key '(:tag-occurrences :tags :unresolved-tags))
+                                    (setq copy
+                                          (plist-put copy key
+                                                     (plist-get membership key))))
+                                  copy))))))
+                      (unless updated
+                        (user-error "Node '%s' has no stored projection" node-id))
+                      updated)))
+              (error
+               (supertag-service-org--signal-projection-error
+                node-id file 'supertag-service-org-retry-node-projection
+                (list node-id file) cause))))
+        (set-marker heading nil)))))
 
 (defun supertag-service-org-set-todo-state (node-id state)
   "Set the TODO STATE for NODE-ID in the buffer and trigger a resync."

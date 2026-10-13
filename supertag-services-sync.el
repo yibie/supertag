@@ -1346,13 +1346,35 @@ their occurrences resolved to a Semantic Tag."
         parsed
       (supertag-node-hash props))))
 
+(defconst supertag-sync--created-property-regexp
+  "\\([0-9]\\{4\\}\\)-\\([0-9]\\{1,2\\}\\)-\\([0-9]\\{1,2\\}\\)\\(?:[^0-9]+\\([0-9]\\{1,2\\}\\):\\([0-9]\\{2\\}\\)\\)?"
+  "Match the date, and the time of day when present, in a CREATED property.")
+
+(defun supertag-sync--created-property-time (props)
+  "Return the time the CREATED property of node PROPS names, or nil.
+The value may be plain, as `supertag-created-time-format' writes it, or an
+Org timestamp."
+  (let ((value (plist-get (plist-get props :properties) :CREATED)))
+    (when (and (stringp value)
+               (string-match supertag-sync--created-property-regexp value))
+      (let ((year (string-to-number (match-string 1 value)))
+            (month (string-to-number (match-string 2 value)))
+            (day (string-to-number (match-string 3 value)))
+            (hour (string-to-number (or (match-string 4 value) "0")))
+            (minute (string-to-number (or (match-string 5 value) "0"))))
+        (when (and (<= 1 month 12) (<= 1 day 31) (< hour 24) (< minute 60))
+          (time-convert (encode-time (list 0 minute hour day month year nil -1 nil))
+                        'list))))))
+
 (defun supertag-db-add-with-hash (id props &optional counters)
   "Add node with ID and PROPS to database, including hash value.
-Existing creation time is preserved while file-backed properties are updated.
+The creation time is the one the node's CREATED property names; a node
+without that property keeps the creation time it already has.
 This function also handles tag resolution and reference relations.
 COUNTERS is an optional plist for tracking statistics."
   (let ((existing (supertag-node-get id)))
-    (when-let* ((created-at (plist-get existing :created-at)))
+    (when-let* ((created-at (or (supertag-sync--created-property-time props)
+                                (plist-get existing :created-at))))
       (setq props (plist-put (copy-sequence props) :created-at created-at)))
     (setq props (supertag-sync--resolve-node-tag-occurrences props))
     (let ((node-hash (supertag-sync--projected-hash props)))

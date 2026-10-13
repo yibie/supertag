@@ -57,6 +57,40 @@
       (should-not (plist-get node :ref-to)))
     (should-not (supertag-query-node-ids '(links-to "chai:book-a")))))
 
+;;; The creation time a node gets from its CREATED property.
+
+(defun supertag-property-link-test--created (id)
+  "Return the creation time of node ID as text."
+  (format-time-string "%Y-%m-%d %H:%M" (plist-get (supertag-node-get id) :created-at)))
+
+(ert-deftest supertag-property-link-created-property-dates-the-node ()
+  (supertag-add-link-test--isolated
+    (let ((file (expand-file-name "note.org" tmp)))
+      (supertag-property-link-test--write
+       file "plain" "Plain" ":CREATED: 2026-10-05 21:10\n")
+      (should (equal "2026-10-05 21:10"
+                     (supertag-property-link-test--created "plain")))
+      ;; Editing the property moves the node.
+      (supertag-property-link-test--write
+       file "plain" "Plain" ":CREATED: [2026-10-07 Wed 08:30]\n")
+      (should (equal "2026-10-07 08:30"
+                     (supertag-property-link-test--created "plain")))
+      (supertag-property-link-test--write
+       file "plain" "Plain" ":CREATED: 2026-10-08\n")
+      (should (equal "2026-10-08 00:00"
+                     (supertag-property-link-test--created "plain"))))))
+
+(ert-deftest supertag-property-link-node-without-created-keeps-its-time ()
+  (supertag-add-link-test--isolated
+    (let ((file (expand-file-name "note.org" tmp)))
+      (supertag-property-link-test--write file "bare" "Bare" "")
+      (let ((first (plist-get (supertag-node-get "bare") :created-at)))
+        (should first)
+        (supertag-property-link-test--write
+         file "bare" "Bare" ":CREATED: someday\n" "Body.")
+        (should (equal first
+                       (plist-get (supertag-node-get "bare") :created-at)))))))
+
 (ert-deftest supertag-property-link-query-rejects-a-bare-word ()
   (should-error (supertag-query--parse-sexp '(links-to "book")))
   (should-error (supertag-query--parse-sexp '(links-to))))

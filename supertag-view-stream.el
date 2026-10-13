@@ -369,13 +369,15 @@ INPUT is a Runtime input or a state; both carry `:tag' and `:query'."
           (if (> total shown)
               (format " %s   newest %d of %d nodes "
                       (supertag-view-stream--label state) shown total)
-            (format " %s   %d nodes "
-                    (supertag-view-stream--label state) shown))))
+            (format " %s   %d %s "
+                    (supertag-view-stream--label state) shown
+                    (if (= shown 1) "node" "nodes")))))
   (font-lock-flush))
 
 (defun supertag-view-stream--buffer-name (input)
   "Return a Stream buffer name for INPUT."
-  (let ((tag (plist-get input :tag))
+  (let ((tag (and (plist-get input :tag)
+                  (supertag-view-stream--tag-label (plist-get input :tag))))
         (query (plist-get input :query)))
     (cond
      ((and tag query) (format "*Supertag Stream: %s %S*" tag query))

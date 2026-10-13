@@ -1455,15 +1455,22 @@ Nodes missing the sort key are always placed last, regardless of ORDER."
       (when (eq order 'desc) (setq with-key (nreverse with-key)))
       (append (mapcar #'car with-key) without-key))))
 
+(defun supertag-query-block--tags-cell (node)
+  "Return the names of NODE's tags, comma separated, for a table cell.
+A tag the Store does not know is shown as it is stored."
+  (let ((tags (plist-get node :tags)))
+    (if (and tags (listp tags))
+        (mapconcat (lambda (tag)
+                     (or (plist-get (supertag-tag-get tag) :name) tag))
+                   tags ", ")
+      "")))
+
 (defun supertag-query-block--row (node columns)
   "Build one Org table row (list of cell strings) for NODE and COLUMNS."
   (let* ((id (plist-get node :id))
-         (title (or (plist-get node :title) "Untitled"))
-         (tags (plist-get node :tags)))
+         (title (or (plist-get node :title) "Untitled")))
     (append (list (supertag-node-format-link id title)
-                  (if (and tags (listp tags))
-                      (mapconcat #'identity tags ", ")
-                    ""))
+                  (supertag-query-block--tags-cell node))
             (mapcar (lambda (key)
                       (let ((val (supertag-query-property-value id key)))
                         (if val (format "%s" val) "")))
@@ -1657,10 +1664,9 @@ reimplement parsing or execution."
             (dolist (node nodes)
               (let* ((id (plist-get node :id))
                      (title (or (plist-get node :title) "Untitled"))
-                     (tags (plist-get node :tags))
                      (row (append
                            (list (supertag-node-format-link id title)
-                                 (if (and tags (listp tags)) (mapconcat #'identity tags ", ") ""))
+                                 (supertag-query-block--tags-cell node))
                            (mapcar (lambda (key)
                                      (let ((val (supertag-query-property-value id key)))
                                        (if val (format "%s" val) "")))
@@ -1712,11 +1718,18 @@ reimplement parsing or execution."
   "Return property names present in node projections."
   (supertag-property-names))
 
+(defun supertag-query-block--tag-query-name (tag-id)
+  "Return how a query should name TAG-ID: its name, or TAG-ID when it has none.
+Tag names are unique, so the name means the same tag."
+  (let ((name (plist-get (supertag-tag-get tag-id) :name)))
+    (if (and (stringp name) (not (string-empty-p name))) name tag-id)))
+
 (defun supertag-query-block--read-tag-name ()
   "Read a tag name, completing against live tags when available."
   (let ((tags (supertag-query-block--live-tag-names)))
     (if tags
-        (supertag-ui-read-tag "Tag: " tags t nil)
+        (supertag-query-block--tag-query-name
+         (supertag-ui-read-tag "Tag: " tags t nil))
       (read-string "Tag: "))))
 
 (defun supertag-query-block--read-property-name ()

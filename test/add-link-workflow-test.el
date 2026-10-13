@@ -1132,6 +1132,32 @@
                                 #'supertag-relation-document-link-p
                                 (supertag-relation-find-between "source" "x" :reference))))))))))
 
+;;; Tag completion inside a capture draft
+
+(ert-deftest supertag-add-link-capture-draft-leaves-saving-to-finalization ()
+  "A capture draft is not saved or projected while it is being written."
+  (supertag-add-link-test--isolated
+    (let ((file (expand-file-name "inbox.org" tmp)))
+      (with-temp-file file
+        (insert "* Draft\n:PROPERTIES:\n:ID: draft\n:END:\n"))
+      (with-current-buffer (find-file-noselect file)
+        (org-mode)
+        (let ((draft (make-indirect-buffer (current-buffer) "CAPTURE-inbox.org" t)))
+          (unwind-protect
+              (with-current-buffer draft
+                (setq-local org-capture-mode t)
+                (goto-char (point-max))
+                (insert "Body.\n")
+                (goto-char (point-min))
+                (should-not
+                 (supertag-service-org-save-and-project-current-node "draft"))
+                (should-not
+                 (supertag-service-org-save-and-record-tags-at-point "draft"))
+                (should (buffer-modified-p (buffer-base-buffer)))
+                (should-not (supertag-node-get "draft")))
+            (kill-buffer draft)
+            (set-buffer-modified-p nil)))))))
+
 (provide 'add-link-workflow-test)
 ;;; add-link-workflow-test.el ends here
 

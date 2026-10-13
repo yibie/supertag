@@ -1,5 +1,28 @@
 * Changelog
 * [Unreleased]
+** Query result tables name tags
+- The =Tags= column of a query block, a =supertag-query= dynamic block and
+  the query results buffer shows each tag's name.  It showed the stored tag
+  ID, which for a tag created by typing =#name= is an opaque =tag-…= string.
+- =M-x supertag-query-build= writes the tag's name into the query, and so
+  does narrowing a Stream with =f=.  It wrote the stored ID.
+
+** Smaller fixes
+- Completing a =#tag= in an =org-capture= buffer no longer signals an error;
+  the draft is saved when the capture is finalized.
+- Link completion after =[[= lists existing notes before the offer to
+  create a new node.
+- A Stream buffer is named after its tag, and a stream of one says =1 node=.
+
+** A node's creation time comes from its CREATED property
+- A heading with a =CREATED= property is dated by it: the Stream, the
+  =created= query conditions and the cards order it by that time instead of
+  by when Supertag first scanned the file.  The value may be plain, as
+  =supertag-created-time-format= writes it, or an Org timestamp; a date
+  without a time of day counts as midnight.
+- A heading without the property keeps the time it was first scanned.
+- Notes scanned before this change take their date when their file is next
+  saved; =M-x supertag-reindex-org= applies it to every file at once.
 ** Streams of any query, and substreams
 - =M-x supertag-view-stream-all= opens the stream of every node, and
   =M-x supertag-view-stream-find= the stream of any query condition.

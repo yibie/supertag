@@ -1588,6 +1588,9 @@ row (Corfu checks `test-completion' that way)."
        ((eq action 'metadata)
         '(metadata
           (category . supertag-reference)
+          ;; Existing targets come before the create row; a completion UI
+          ;; that sorts by length would otherwise lift the create row first.
+          (display-sort-function . identity)
           (cycle-sort-function . identity)
           (company-kind
            . (lambda (candidate)

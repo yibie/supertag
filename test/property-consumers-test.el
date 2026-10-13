@@ -15,6 +15,22 @@
                    (supertag-query-node-ids '(field "k" "7"))))
     (should (= 14 (supertag-formula-evaluate "k * 2" (supertag-node-get "document-node"))))))
 
+(ert-deftest supertag-property-consumers-query-table-names-tags ()
+  "A query result table shows a tag's name, not its stored ID."
+  (supertag-document-test-with-vault
+    (supertag-tag-create (list :id "tag-0001" :name "reading"))
+    (should (equal "reading, loose"
+                   (supertag-query-block--tags-cell
+                    '(:id "n" :tags ("tag-0001" "loose")))))
+    (should (equal "" (supertag-query-block--tags-cell '(:id "n"))))))
+
+(ert-deftest supertag-property-consumers-query-builder-names-tags ()
+  "The query builder writes a tag's name, not its stored ID."
+  (supertag-document-test-with-vault
+    (supertag-tag-create (list :id "tag-0001" :name "reading"))
+    (should (equal "reading" (supertag-query-block--tag-query-name "tag-0001")))
+    (should (equal "loose" (supertag-query-block--tag-query-name "loose")))))
+
 (ert-deftest supertag-property-consumers-single-event-channel ()
   (supertag-document-test-with-vault
     (let ((supertag-automation--enabled t)

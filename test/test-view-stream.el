@@ -431,7 +431,7 @@
                   (should (string-match-p "Package archives  #emacs #diary"
                                           (buffer-string)))
                   (should-not (string-match-p stable (buffer-string)))
-                  (should (equal header-line-format " #emacs   1 nodes "))))))
+                  (should (equal header-line-format " #emacs   1 node "))))))
           ;; An ID with no Tag record falls back to the ID string.
           (supertag-view-stream-test--put-node
            "node-2" "Orphan" '("tag-ffffffffffffffffffffffffffffffff") "body" '(0 20 0 0))
@@ -443,7 +443,7 @@
                          "Orphan  #tag-ffffffffffffffffffffffffffffffff"
                          (buffer-string)))
                 (should (equal header-line-format
-                               " #tag-ffffffffffffffffffffffffffffffff   1 nodes ")))))
+                               " #tag-ffffffffffffffffffffffffffffffff   1 node ")))))
           ;; The empty-stream text names the Tag too, not the raw token.
           (cl-letf (((symbol-function 'display-buffer) #'ignore))
             (let ((buffer (supertag-view-open 'stream (list :tag "unknown-token"))))
@@ -627,7 +627,7 @@
               (should-not (eq sub main))
               (with-current-buffer sub
                 (should (equal header-line-format
-                               " #diary  (property \"STATUS\" \"todo\")   1 nodes "))
+                               " #diary  (property \"STATUS\" \"todo\")   1 node "))
                 (should (string-match-p "Second" (buffer-string)))
                 (should-not (string-match-p "First" (buffer-string)))
                 (should (eq (supertag-view-stream-up) main))))

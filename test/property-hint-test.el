@@ -126,7 +126,8 @@
       (pcase-let ((`(,beg ,end ,table . ,plist)
                    (supertag-property-key-completion-at-point)))
         (should (equal (buffer-substring beg end) "ST"))
-        (should (equal (all-completions "" table) '("STATUS" "RATING" "COUNTRY")))
+        (should (equal (all-completions "" table)
+                       '("STATUS" "RATING" "COUNTRY" "SUPERTAG_ALIASES")))
         (should (equal (funcall (plist-get plist :annotation-function) "STATUS")
                        "  closed · 3"))
         (should (equal (funcall (plist-get plist :annotation-function) "COUNTRY")
@@ -139,6 +140,54 @@
     (dolist (line '(1 3 6))
       (supertag-property-hint-test--at text line
         (should-not (supertag-property-key-completion-at-point))))))
+
+(ert-deftest supertag-property-hint-hand-written-supertag-keys-are-user-keys ()
+  "SUPERTAG_ALIASES is offered before any node uses it; program keys stay out."
+  (should (supertag-property--user-key-p "SUPERTAG_ALIASES"))
+  (should-not (supertag-property--user-key-p "SUPERTAG_IGNORE_MENTIONS"))
+  (let ((text "* A book #book\n:PROPERTIES:\n:SU\n:END:\n"))
+    (supertag-property-hint-test--at text 3
+      (pcase-let ((`(,_beg ,_end ,table . ,plist)
+                   (supertag-property-key-completion-at-point)))
+        (should (equal (all-completions "SU" table) '("SUPERTAG_ALIASES")))
+        (should (equal (funcall (plist-get plist :annotation-function)
+                                "SUPERTAG_ALIASES")
+                       "  open · 0")))))
+  (let ((text "* A book #book\n:PROPERTIES:\n:SUPERTAG_ALIASES: Ann\n:SU\n:END:\n"))
+    (supertag-property-hint-test--at text 4
+      (should-not (all-completions
+                   "SU" (nth 2 (supertag-property-key-completion-at-point)))))))
+
+(ert-deftest supertag-property-hint-hand-written-keys-match-their-readers ()
+  "The alias key offered here is the one concept mentions and links read."
+  (require 'supertag-concept)
+  (should (member (substring (symbol-name supertag-concept--aliases-property) 1)
+                  supertag-property-hand-written-keys)))
+
+(ert-deftest supertag-property-hint-global-mode-offers-keys-to-org ()
+  "Org's own key completion offers SUPERTAG_ALIASES while the global mode is on.
+Turning it off takes out only what it added."
+  (let ((org-default-properties (remove "SUPERTAG_ALIASES" org-default-properties))
+        (supertag-property--org-keys-added nil)
+        (global-supertag-property-mode nil))
+    (with-temp-buffer
+      (delay-mode-hooks (org-mode))
+      (should-not (member "SUPERTAG_ALIASES" (org-buffer-property-keys nil t t)))
+      (unwind-protect
+          (progn
+            (global-supertag-property-mode 1)
+            (should (member "SUPERTAG_ALIASES" (org-buffer-property-keys nil t t)))
+            (global-supertag-property-mode 1)
+            (should (= 1 (cl-count "SUPERTAG_ALIASES" org-default-properties
+                                   :test #'equal))))
+        (global-supertag-property-mode -1))
+      (should-not (member "SUPERTAG_ALIASES" (org-buffer-property-keys nil t t))))
+    ;; A key the user had already added survives turning the mode off.
+    (setq org-default-properties (append org-default-properties '("SUPERTAG_ALIASES")))
+    (unwind-protect
+        (global-supertag-property-mode 1)
+      (global-supertag-property-mode -1))
+    (should (member "SUPERTAG_ALIASES" org-default-properties))))
 
 (ert-deftest supertag-property-hint-popup-only-for-empty-enumerable-values ()
   "Only an empty value whose key has more than one option asks for candidates."

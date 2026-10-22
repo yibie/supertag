@@ -51,7 +51,8 @@ options:
 - An open key lists the values used more than once in the vault, most used first, at most
   `supertag-property-hint-max-values`. A key whose values never repeat shows its type only.
 - Keys that programs maintain (`ID`, `CREATED`, `SUPERTAG_*` and the rest of
-  `supertag-property-system-key-regexp`) get no hint.
+  `supertag-property-system-key-regexp`) get no hint. `SUPERTAG_ALIASES`, the node aliases
+  you write yourself, is not one of them.
 
 The hint is an ElDoc source, so Supertag enables ElDoc in Org buffers. Away from a
 property line the echo area is left alone.
@@ -67,8 +68,12 @@ it.
 **Keys.** On a new drawer line, `:` and the first letters complete from the keys in use.
 Keys used by nodes that share a tag with this heading come first. Each candidate shows its
 type and how many nodes use it, as in `STATUS  closed · 15`. Keys already in the drawer and
-keys that programs maintain are left out. Accepting a key inserts `: ` and goes on to its
-values.
+keys that programs maintain are left out. `SUPERTAG_ALIASES` is offered even before any node
+uses it, after the keys in use. Accepting a key inserts `: ` and goes on to its values.
+
+Org's own `C-c C-x p` (`org-set-property`) offers `SUPERTAG_ALIASES` too, in every file,
+while Supertag runs; without that Org would offer it only in a file that already has it.
+This holds even with `supertag-property-hints` set to nil.
 
 **Empty values.** An empty value offers its candidates at once after an edit: typing the
 space after `:KEY:`, deleting a value, or accepting a key. Moving point over an empty value

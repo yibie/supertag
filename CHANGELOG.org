@@ -93,6 +93,10 @@
   completes from the keys in use, each shown with its type and the number
   of nodes using it; accepting one continues with its values.  An empty
   value offers its candidates right after an edit.
+- =SUPERTAG_ALIASES=, which holds a node's aliases, is offered as a key
+  even before any node uses it.  Org's own =C-c C-x p= offers it in every
+  file while Supertag runs; Org offered it only in a file that already had
+  it.
 - This turns on ElDoc in Org buffers.  New options:
   =supertag-property-hints= (nil turns all of it off),
   =supertag-property-hint-max-values=, =supertag-property-popup-commands=,

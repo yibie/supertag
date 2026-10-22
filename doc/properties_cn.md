@@ -46,7 +46,8 @@ Supertag 自己不保存任何声明。一个键是否闭合只由 Org 的 `KEY_
 - 开放键列出库里用过不止一次的值，用得多的在前，最多
   `supertag-property-hint-max-values` 个。值从不重复的键只显示类型。
 - 由程序维护的键（`ID`、`CREATED`、`SUPERTAG_*`，以及
-  `supertag-property-system-key-regexp` 匹配的其余键）不提示。
+  `supertag-property-system-key-regexp` 匹配的其余键）不提示。你自己写的节点别名
+  `SUPERTAG_ALIASES` 不算在内。
 
 提示是一个 ElDoc 来源，所以 Supertag 会在 Org buffer 里打开 ElDoc。光标不在属性行上时，
 回显区不受影响。
@@ -60,8 +61,12 @@ Supertag 自己不保存任何声明。一个键是否闭合只由 Org 的 `KEY_
 
 **键。** 在抽屉里新起一行，打 `:` 和开头几个字母，从用过的键里补全。与当前标题有相同
 标签的节点用过的键排在前面。每个候选旁显示类型和使用它的节点数，如
-`STATUS  closed · 15`。抽屉里已有的键和由程序维护的键不出现。选中一个键后会补上 `: `，
-并接着给出它的值。
+`STATUS  closed · 15`。抽屉里已有的键和由程序维护的键不出现。`SUPERTAG_ALIASES` 即使
+还没有节点用过也会给出，排在用过的键后面。选中一个键后会补上 `: `，并接着给出它的值。
+
+Supertag 运行时，Org 自己的 `C-c C-x p`（`org-set-property`）在每个文件里都会给出
+`SUPERTAG_ALIASES`；否则 Org 只在已经写过它的文件里才给出。把
+`supertag-property-hints` 设为 nil 也不影响这一条。
 
 **空值。** 一次编辑之后，空值会立刻给出候选：打完 `:KEY:` 后的空格、把值删掉、或选中
 一个键。光标只是经过空值时什么都不显示。这只针对闭合键和有重复值的开放键；网址这类自由

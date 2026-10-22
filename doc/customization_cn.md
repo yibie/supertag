@@ -138,7 +138,7 @@
 | `supertag-property-hints` | `t` | 光标在属性行上时提示键的类型和选项，并在抽屉里补全键和值；同时会在 Org buffer 里打开 ElDoc |
 | `supertag-property-hint-max-values` | `6` | 提示里开放键最多列出多少个用过的值 |
 | `supertag-property-popup-commands` | 输入、删除和 Corfu 插入类命令 | 这些命令之后，空的属性值会弹出候选；自己的编辑命令可以加进来 |
-| `supertag-property-system-key-regexp` | `ID`、`CUSTOM_ID`、`CATEGORY`、`CREATED`、`REF_ID`、`SOURCE_FILE_PATH`、`ARCHIVE_*`、`EXPORT_*`、`SUPERTAG_*` | 由程序维护的键：不提示，也不进候选 |
+| `supertag-property-system-key-regexp` | `ID`、`CUSTOM_ID`、`CATEGORY`、`CREATED`、`REF_ID`、`SOURCE_FILE_PATH`、`ARCHIVE_*`、`EXPORT_*`、`SUPERTAG_*` | 由程序维护的键：不提示，也不进候选；`SUPERTAG_ALIASES` 始终算用户键 |
 
 源码：[`../supertag-property.el`](../supertag-property.el)。行为说明：[properties_cn.md](properties_cn.md)。
 

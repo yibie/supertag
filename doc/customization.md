@@ -166,7 +166,7 @@ Source: [`../supertag-tag.el`](../supertag-tag.el)
 | `supertag-property-hints` | `t` | show the type and options of the property key at point and complete keys and values in drawers; this also enables ElDoc in Org buffers |
 | `supertag-property-hint-max-values` | `6` | how many used values the hint lists for an open key |
 | `supertag-property-popup-commands` | self-insert, delete and Corfu insert commands | commands after which an empty property value offers its candidates; add your own editing commands here |
-| `supertag-property-system-key-regexp` | `ID`, `CUSTOM_ID`, `CATEGORY`, `CREATED`, `REF_ID`, `SOURCE_FILE_PATH`, `ARCHIVE_*`, `EXPORT_*`, `SUPERTAG_*` | keys that programs maintain: no hint, never a candidate |
+| `supertag-property-system-key-regexp` | `ID`, `CUSTOM_ID`, `CATEGORY`, `CREATED`, `REF_ID`, `SOURCE_FILE_PATH`, `ARCHIVE_*`, `EXPORT_*`, `SUPERTAG_*` | keys that programs maintain: no hint, never a candidate; `SUPERTAG_ALIASES` stays a user key either way |
 
 Source: [`../supertag-property.el`](../supertag-property.el). Behaviour: [properties.md](properties.md).
 

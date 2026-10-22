@@ -45,8 +45,14 @@ When non-nil, `global-supertag-property-mode' turns on
 (defcustom supertag-property-system-key-regexp
   "\\`\\(ID\\|CUSTOM_ID\\|CATEGORY\\|CREATED\\|REF_ID\\|SOURCE_FILE_PATH\\|\\(ARCHIVE\\|EXPORT\\|SUPERTAG\\)_.*\\)\\'"
   "Regexp matching property keys that programs maintain.
-Such keys get no hint and never appear as candidates."
+Such keys get no hint and never appear as candidates.  The keys in
+`supertag-property-hand-written-keys' are user keys even when this matches."
   :type 'regexp :group 'supertag-property)
+
+(defconst supertag-property-hand-written-keys '("SUPERTAG_ALIASES")
+  "Property keys Supertag reads that the user writes by hand.
+Completion offers them before any node uses them, in Supertag's own drawer
+completion and, while `global-supertag-property-mode' is on, in Org's.")
 
 (defcustom supertag-property-hint-max-values 6
   "How many used values the hint lists for an open key."
@@ -73,7 +79,8 @@ Only edits count: moving point over an empty value shows nothing."
 (defun supertag-property--user-key-p (name)
   "Return non-nil when the user, not a program, maintains the key NAME."
   (let ((case-fold-search nil))
-    (not (string-match-p supertag-property-system-key-regexp name))))
+    (or (member name supertag-property-hand-written-keys)
+        (not (string-match-p supertag-property-system-key-regexp name)))))
 
 (defun supertag-property--by-count (table)
   "Return the keys of TABLE, a name to count hash table, most used first."
@@ -87,9 +94,9 @@ Only edits count: moving point over an empty value shows nothing."
 :values    hash table, key name to a hash table of value to count
 :tag-keys  hash table, key name to the number of nodes using it among the
            nodes that carry one of TAGS
-Key names are upper-case strings.  Keys matching
-`supertag-property-system-key-regexp' are left out, values are trimmed and
-blank values are not counted."
+Key names are upper-case strings.  Keys programs maintain, see
+`supertag-property-system-key-regexp', are left out, values are trimmed
+and blank values are not counted."
   (let ((keys (make-hash-table :test 'equal))
         (values (make-hash-table :test 'equal))
         (tag-keys (make-hash-table :test 'equal)))
@@ -265,8 +272,9 @@ A closed key offers its declared options, an open key the values in use."
 (defun supertag-property-key-completion-at-point ()
   "Complete a property key being typed on a new drawer line.
 Keys used by nodes sharing a tag with this heading come first, then every
-other key in use.  Each candidate shows its type and how many nodes use
-it.  Accepting one inserts the colon and a space after it."
+other key in use, then the hand-written Supertag keys no node uses yet.
+Each candidate shows its type and how many nodes use it.  Accepting one
+inserts the colon and a space after it."
   (when-let* ((beg (let ((pos (point)))
                      (save-excursion
                        (forward-line 0)
@@ -281,7 +289,8 @@ it.  Accepting one inserts the colon and a space after it."
                   (lambda (name) (member name have))
                   (delete-dups
                    (append (supertag-property--by-count tag-keys)
-                           (supertag-property--by-count (plist-get usage :keys))))))
+                           (supertag-property--by-count (plist-get usage :keys))
+                           supertag-property-hand-written-keys))))
            (buffer (current-buffer))
            (pos (point)))
       (list beg (point)
@@ -352,11 +361,33 @@ drawer line and values after a key."
   (when (and supertag-property-hints (derived-mode-p 'org-mode))
     (supertag-property-mode 1)))
 
+(defvar supertag-property--org-keys-added nil
+  "The keys `supertag-property--offer-to-org' added to `org-default-properties'.")
+
+(defun supertag-property--offer-to-org (on)
+  "Offer the hand-written Supertag keys to Org's key completion when ON.
+`org-set-property' completes `org-default-properties' and the keys already
+in the buffer, so without this a key is offered only in a file that has
+it.  Turning off removes only the keys this added, never one the user had."
+  (if on
+      (dolist (key supertag-property-hand-written-keys)
+        (unless (member key org-default-properties)
+          (push key supertag-property--org-keys-added)
+          (setq org-default-properties
+                (append org-default-properties (list key)))))
+    (setq org-default-properties
+          (seq-remove (lambda (key) (member key supertag-property--org-keys-added))
+                      org-default-properties)
+          supertag-property--org-keys-added nil)))
+
 ;;;###autoload
 (define-globalized-minor-mode global-supertag-property-mode
   supertag-property-mode
   supertag-property-enable
-  :group 'supertag-property)
+  :group 'supertag-property
+  ;; Not gated on `supertag-property-hints': this is Org's own completion,
+  ;; not a Supertag hint.
+  (supertag-property--offer-to-org global-supertag-property-mode))
 
 (provide 'supertag-property)
 ;;; supertag-property.el ends here

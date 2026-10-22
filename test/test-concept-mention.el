@@ -578,6 +578,51 @@
         (should (= 3 (concept-test--count "[[id:pi][Pi]]" disk)))
         (should-not (string-match-p "处 Pi" disk))))))
 
+(defun concept-test--link-all (target-id)
+  "Press the first [Link all] button rendered for TARGET-ID."
+  (let ((supertag-view-helper-width-override 120))
+    (with-temp-buffer
+      (supertag-view-unlinked-mention-insert-section target-id)
+      (goto-char (point-min))
+      (search-forward "[Link all]")
+      (button-activate (button-at (1- (point)))))))
+
+(ert-deftest mention-link-all-survives-save-hooks-that-edit-the-source ()
+  "Each link saves the source; edits a save hook makes do not stale the rest."
+  (concept-test--with-env
+    (concept-test--mention-target tmp)
+    (let ((file (concept-test--mention-node
+                 tmp "a-many.org" "many-src" "Many Src"
+                 "Intro with trailing spaces   \nFirst Pi here.\nSecond Pi here.\nThird Pi here.")))
+      (with-current-buffer (find-file-noselect file)
+        (add-hook 'before-save-hook #'delete-trailing-whitespace nil t))
+      (supertag-mention-service-clear-cache)
+      (concept-test--link-all "pi")
+      (let ((disk (with-temp-buffer
+                    (insert-file-contents file)
+                    (buffer-string))))
+        (should (= 3 (concept-test--count "[[id:pi][Pi]]" disk)))
+        (dolist (line '("First [[id:pi][Pi]] here."
+                        "Second [[id:pi][Pi]] here."
+                        "Third [[id:pi][Pi]] here."))
+          (should (string-match-p (regexp-quote line) disk)))))))
+
+(ert-deftest mention-link-all-keeps-adjacent-matches-apart ()
+  "Two back-to-back occurrences each become their own link."
+  (concept-test--with-env
+    (concept-test--mention-node tmp "target.org" "yuan" "圆周率" "Target body")
+    (let ((file (concept-test--mention-node
+                 tmp "a-many.org" "many-src" "Many Src"
+                 "圆周率圆周率之后")))
+      (supertag-mention-service-clear-cache)
+      (concept-test--link-all "yuan")
+      (let ((disk (with-temp-buffer
+                    (insert-file-contents file)
+                    (buffer-string))))
+        (should (string-match-p
+                 (regexp-quote "[[id:yuan][圆周率]][[id:yuan][圆周率]]之后")
+                 disk))))))
+
 (ert-deftest mention-section-actions-fit-120-and-80-column-renders ()
   "Unlinked Mention action rows stay within the required view widths."
   (concept-test--with-env

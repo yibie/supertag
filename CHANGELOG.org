@@ -13,6 +13,10 @@
 - Link completion after =[[= lists existing notes before the offer to
   create a new node.
 - A Stream buffer is named after its tag, and a stream of one says =1 node=.
+- =Link all= in a Node View's unlinked mentions links each occurrence where
+  it is.  A save hook that edits the source, such as
+  =delete-trailing-whitespace=, made the later links land on the wrong
+  text, and two back-to-back occurrences could become one link.
 
 ** A node's creation time comes from its CREATED property
 - A heading with a =CREATED= property is dated by it: the Stream, the

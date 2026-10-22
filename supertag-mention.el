@@ -523,24 +523,25 @@ change when a target title or alias is edited after the Node View was rendered."
           (= (plist-get candidate :end) (plist-get match :end))))
    matches))
 
-(defun supertag-mention--link-at-match (bounds match target-id &optional title)
-  "Replace MATCH inside BOUNDS with a canonical Org link.
-Use MATCH's exact source term as the visible description unless TITLE is
-provided explicitly.  This preserves aliases and sentence wording."
-  (let* ((start (+ (car bounds) (plist-get match :start)))
-         (end (+ (car bounds) (plist-get match :end)))
-         (description
-          (or title
-              (buffer-substring-no-properties start end)
-              (plist-get match :term)
-              target-id))
-         (beg-marker (copy-marker start))
-         (end-marker (copy-marker end t)))
-    (unwind-protect
-        (supertag-reference-materialize
-         beg-marker end-marker target-id description)
-      (set-marker beg-marker nil)
-      (set-marker end-marker nil))))
+(defun supertag-mention--match-markers (bounds match)
+  "Return (BEG . END) markers for MATCH inside BOUNDS.
+Neither marker advances over text inserted at it, so linking a later
+adjacent match first leaves this match's region unchanged."
+  (cons (copy-marker (+ (car bounds) (plist-get match :start)))
+        (copy-marker (+ (car bounds) (plist-get match :end)))))
+
+(defun supertag-mention--release-markers (markers)
+  "Detach the (BEG . END) MARKERS pair."
+  (set-marker (car markers) nil)
+  (set-marker (cdr markers) nil))
+
+(defun supertag-mention--link-markers (markers target-id)
+  "Replace the text between MARKERS with a canonical Org link to TARGET-ID.
+Use the exact source text as the visible description.  This preserves aliases
+and sentence wording."
+  (supertag-reference-materialize
+   (car markers) (cdr markers) target-id
+   (buffer-substring-no-properties (car markers) (cdr markers))))
 
 (defun supertag-mention--finish-source-edit (source-id)
   "Save and reproject SOURCE-ID after a source-owned edit."
@@ -561,8 +562,11 @@ a standalone interactive command."
     (with-current-buffer (plist-get live :buffer)
       (org-with-wide-buffer
         (goto-char (plist-get live :position))
-        (supertag-mention--link-at-match
-         (plist-get live :bounds) match target-id)))
+        (let ((markers (supertag-mention--match-markers
+                        (plist-get live :bounds) match)))
+          (unwind-protect
+              (supertag-mention--link-markers markers target-id)
+            (supertag-mention--release-markers markers)))))
     (message "Linked mention to %s" title)))
 
 (defun supertag-mention-link-all-in-node (candidate)
@@ -578,10 +582,18 @@ a standalone interactive command."
     (with-current-buffer (plist-get live :buffer)
       (org-with-wide-buffer
         (goto-char (plist-get live :position))
-        ;; Back-to-front replacement preserves every earlier offset.
-        (dolist (match (reverse (copy-sequence matches)))
-          (supertag-mention--link-at-match
-           (plist-get live :bounds) match target-id))))
+        ;; Every link saves and reprojects the source, and save hooks may
+        ;; edit the buffer, so the scanned offsets only hold before the first
+        ;; link.  Pin every match with markers up front; going back to front
+        ;; keeps adjacent matches from absorbing each other's links.
+        (let ((pairs (mapcar (lambda (match)
+                               (supertag-mention--match-markers
+                                (plist-get live :bounds) match))
+                             matches)))
+          (unwind-protect
+              (dolist (markers (reverse pairs))
+                (supertag-mention--link-markers markers target-id))
+            (mapc #'supertag-mention--release-markers pairs)))))
     (message "Linked %d mention(s) to %s" (length matches) title)))
 
 (defun supertag-mention--ignore-value (ids)

@@ -1,5 +1,6 @@
 * Changelog
 * [Unreleased]
+* [0.3.1] - 2026-10-22
 ** Query result tables name tags
 - The =Tags= column of a query block, a =supertag-query= dynamic block and
   the query results buffer shows each tag's name.  It showed the stored tag

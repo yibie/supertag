@@ -4,7 +4,7 @@
 
 ;; Author: Yibie
 ;; Keywords: org-mode, tags, metadata, workflow, automation
-;; Version: 0.3.0
+;; Version: 0.3.1
 ;; Package-Requires: ((emacs "29.1") (org "9.6") (ht "2.4") (textui "0.8.0") (corfu "1.0"))
 ;; URL: https://github.com/yibie/supertag
 

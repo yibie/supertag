@@ -274,6 +274,27 @@ file.  Panels are kept under the vault."
                 panel (format "(lambda (data width) (delete-file %S) (list))" victim))))
       (should (file-exists-p victim)))))
 
+(ert-deftest supertag-summary-names-a-missing-paren ()
+  "Code that is not one whole expression is refused with what is missing."
+  (supertag-summary-test-with-vault
+    (let ((panel (supertag-summary-test--panel)))
+      (should (string-match-p
+               "少了 2 个右括号.*第 2 行"
+               (supertag-summary-test--refused
+                panel "(lambda (data width)\n  (list (list :type :text :value \"a\")")))
+      (should (string-match-p
+               "多了 1 个右括号.*第 2 行"
+               (supertag-summary-test--refused
+                panel "(lambda (data width)\n  (list)))")))
+      (should (string-match-p
+               "字符串.*第 1 行"
+               (supertag-summary-test--refused
+                panel "(lambda (data width) (list \"open)")))
+      ;; A paren inside a string or written as a character is not counted.
+      (should (equal (supertag-summary--check
+                      panel "(lambda (data width) (list (list :type :text :value (format \"(%c\" ?\\())))")
+                     '(:ok))))))
+
 (ert-deftest supertag-summary-stops-code-that-never-finishes ()
   "Layout code that outruns its time is stopped and reported."
   (supertag-summary-test-with-vault

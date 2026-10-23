@@ -897,9 +897,54 @@ Return (STATUS . OUTPUT).  STATUS is nil when the child had to be stopped."
           (cons (process-exit-status process)
                 (string-trim (buffer-string))))))))
 
+(defun supertag-summary--unbalanced (code)
+  "Return why CODE is not one whole expression, or nil when it is.
+The child Emacs would only say it reached the end of the file, which gives
+the model nothing to correct."
+  (with-temp-buffer
+    (with-syntax-table emacs-lisp-mode-syntax-table
+      (insert code)
+      (let* ((state (syntax-ppss (point-max)))
+             (depth (car state))
+             (line (lambda (pos) (line-number-at-pos pos))))
+        (cond
+         ((nth 3 state)
+          (format "字符串没有闭合：从第 %d 行开始的字符串一直到代码末尾都没有结束的引号"
+                  (funcall line (nth 8 state))))
+         ((> depth 0)
+          (format "括号不配对：代码结尾处少了 %d 个右括号。最内层没有闭合的左括号在第 %d 行"
+                  depth (funcall line (nth 1 state))))
+         ((< depth 0)
+          (goto-char (point-min))
+          (let ((level 0) (where nil))
+            (while (and (not where) (< (point) (point-max)))
+              (let ((s (syntax-ppss)))
+                (unless (or (nth 3 s) (nth 4 s))
+                  (pcase (char-after)
+                    (?\( (cl-incf level))
+                    (?\) (cl-decf level)
+                         (when (< level 0) (setq where (point)))))))
+              (forward-char 1))
+            (format "括号不配对：多了 %d 个右括号，第一个多出的在第 %d 行"
+                    (- depth) (funcall line (or where (point-max))))))
+         (t
+          (let ((end (condition-case nil
+                         (cdr (read-from-string code))
+                       (error nil))))
+            (when (and end (string-match-p "[^ \t\n]" (substring code end)))
+              (format "第一个表达式在第 %d 行就结束了，后面还有别的内容；只输出一个完整的表达式"
+                      (funcall line (1+ end)))))))))))
+
 (defun supertag-summary--field (panel code width)
   "Run CODE for PANEL at WIDTH in a child Emacs and check what it returns.
 Return (:ok ELEMENTS UNRESOLVED) or (:failed TEXT)."
+  (if-let* ((problem (supertag-summary--unbalanced code)))
+      (list :failed problem)
+    (supertag-summary--run-field panel code width)))
+
+(defun supertag-summary--run-field (panel code width)
+  "Run CODE, one whole expression, for PANEL at WIDTH.
+See `supertag-summary--field'."
   (let ((code-file (make-temp-file "supertag-summary-" nil ".el"))
         (out-file (make-temp-file "supertag-summary-" nil ".out"))
         (components-file (make-temp-file "supertag-summary-" nil ".components"))

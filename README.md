@@ -163,6 +163,7 @@ Optional. Each is needed only for the feature beside it:
 | Similar notes | `curl` and an Ollama-compatible embedding service |
 | At-point actions | [Embark](https://github.com/oantolin/embark); Supertag registers its actions when Embark loads |
 | AI commands | The superchat package, loaded before you run them |
+| Summary panels and Stream agents | Superchat or [gptel](https://github.com/karthink/gptel); see `supertag-summary-provider` |
 
 ## Advanced features
 

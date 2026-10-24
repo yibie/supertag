@@ -159,7 +159,8 @@ The limits, stated plainly:
   file permissions; it only cannot reach the running session.
 - The whitelist checks names, so it also refuses a variable that shares a
   name with a function. Today the error text steers the model to rename it.
-- The reading layer sends node bodies to the model configured in Superchat.
+- The reading layer sends node bodies to the model chosen by
+  `supertag-summary-provider` (Superchat, gptel, or a function).
   The shipped feature must make explicit which tags may be sent and to whom.
   **(Not built.)**
 

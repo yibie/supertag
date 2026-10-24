@@ -861,5 +861,51 @@ file.  Panels are kept under the vault."
                       (supertag-summary-design "prj" "board" "again")
                       :type 'user-error)))))))
 
+(defmacro supertag-summary-test-with-gptel (request &rest body)
+  "Run BODY with gptel taken as loaded and `gptel-request' as REQUEST."
+  (declare (indent 1))
+  `(let ((had (featurep 'gptel))
+         (supertag-summary-provider 'gptel))
+     (provide 'gptel)
+     (unwind-protect
+         (cl-letf (((symbol-function 'gptel-request) ,request)
+                   ((symbol-function 'gptel-get-preset) #'ignore)
+                   ((symbol-function 'gptel-abort) #'ignore))
+           ,@body)
+       (unless had (setq features (delq 'gptel features))))))
+
+(ert-deftest supertag-summary-asks-through-gptel ()
+  "gptel gets the prompt and system with no tools; its reply comes back."
+  (let (seen result)
+    (supertag-summary-test-with-gptel
+        (lambda (prompt &rest args)
+          (setq seen (list prompt (plist-get args :system) gptel-use-tools))
+          (funcall (plist-get args :callback) "(lambda (data width) nil)" nil))
+      (supertag-summary--ask "the prompt" "the system"
+                             (lambda (text status) (setq result (list text status)))))
+    (should (equal seen '("the prompt" "the system" nil)))
+    (should (equal result '("(lambda (data width) nil)" completed)))))
+
+(ert-deftest supertag-summary-gptel-failure-and-timeout ()
+  "A failed gptel request, or none in time, reaches the caller once."
+  (let (result)
+    (supertag-summary-test-with-gptel
+        (lambda (_prompt &rest args)
+          (funcall (plist-get args :callback) nil '(:status "HTTP 401")))
+      (supertag-summary--ask "p" "s" (lambda (text status) (push (list text status) result))))
+    (should (equal result '(("HTTP 401" failed)))))
+  (let (result (supertag-summary-timeout 0.05))
+    (supertag-summary-test-with-gptel #'ignore
+      (supertag-summary--ask "p" "s" (lambda (text status) (push status result)))
+      (sleep-for 0.2))
+    (should (equal result '(timeout)))))
+
+(ert-deftest supertag-summary-own-provider ()
+  "A function as provider is called in place of any package."
+  (let (result (supertag-summary-provider
+                (lambda (prompt _system callback) (funcall callback (upcase prompt) 'completed))))
+    (supertag-summary--ask "hi" "s" (lambda (text status) (setq result (list text status))))
+    (should (equal result '("HI" completed)))))
+
 (provide 'summary-test)
 ;;; summary-test.el ends here

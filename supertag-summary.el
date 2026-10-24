@@ -6,7 +6,7 @@
 ;; Dependencies: cl-lib, subr-x, seq, textui, supertag-vault, supertag-node,
 ;; supertag-query, supertag-tag, supertag-services-sync, supertag-service-org,
 ;; supertag-ai, supertag-view-framework, supertag-view-tag-cards,
-;; supertag-summary-runner.
+;; supertag-summary-runner; superchat or gptel, optional, to write code.
 ;;
 ;; A summary is the information panel of one tag.  The user says in one
 ;; sentence what the panel should show; a model writes the layout as
@@ -50,6 +50,11 @@
 (require 'supertag-summary-runner)
 
 (declare-function superchat-sink-create "superchat-sink" (&rest plist))
+(declare-function gptel-request "gptel-request" (&optional prompt &rest args))
+(declare-function gptel-abort "gptel-request" (buf))
+(declare-function gptel-get-preset "gptel" (name))
+(defvar gptel-use-tools)
+(defvar gptel-include-reasoning)
 (declare-function supertag-git-sync-file-written "supertag-git" (file))
 (defvar org-todo-keywords-1)
 
@@ -79,6 +84,25 @@ Nil leaves nothing out."
 (defcustom supertag-summary-timeout 180
   "Seconds a model may take to write a panel or a component."
   :type 'integer
+  :group 'supertag-summary)
+
+(defcustom supertag-summary-provider 'auto
+  "What sends the request when a model writes a panel or a Stream agent.
+`auto' uses Superchat when it can be loaded and gptel otherwise.
+`superchat' or `gptel' uses that package.  With gptel, a preset named
+`supertag' chooses the model when there is one; otherwise gptel's own
+defaults do.  gptel quietly replaces a model its backend does not
+list in `:models', so the preset's model must be listed there.  A
+model that thinks before answering can run past
+`supertag-summary-timeout'; turn its thinking off in the backend, for
+LM Studio with `:request-params' (:reasoning_effort \"none\").
+A function is called with PROMPT, SYSTEM and CALLBACK, and
+must call CALLBACK once with the reply text and `completed', or with an
+error message and another status."
+  :type '(choice (const :tag "Superchat, else gptel" auto)
+                 (const :tag "Superchat" superchat)
+                 (const :tag "gptel" gptel)
+                 (function :tag "Own function"))
   :group 'supertag-summary)
 
 (defcustom supertag-summary-run-timeout 20
@@ -1506,11 +1530,70 @@ data 是一个属性列表：
       (setq text (substring text 0 (match-beginning 0))))
     text))
 
+(defun supertag-summary--provider ()
+  "Return what sends the model request: `superchat', `gptel' or a function."
+  (pcase supertag-summary-provider
+    ('auto
+     ;; lazy-require: both packages are optional and only writing code needs one.
+     (cond ((progn (require 'superchat nil t) (fboundp 'superchat-runtime-submit))
+            'superchat)
+           ((require 'gptel nil t) 'gptel)
+           (t (user-error "Writing a panel or an agent needs superchat or gptel loaded"))))
+    ('gptel
+     (unless (require 'gptel nil t)
+       (user-error "`supertag-summary-provider' is gptel, but gptel cannot be loaded"))
+     'gptel)
+    (provider provider)))
+
 (defun supertag-summary--ask (prompt system callback)
   "Send PROMPT with SYSTEM to the model.
 Call CALLBACK with the reply text and the status, `completed' on success."
-  ;; lazy-require: Superchat is optional and only writing a layout needs it.
-  (require 'superchat nil t)
+  (pcase (supertag-summary--provider)
+    ('superchat (supertag-summary--ask-superchat prompt system callback))
+    ('gptel (supertag-summary--ask-gptel prompt system callback))
+    (provider (funcall provider prompt system callback))))
+
+(defun supertag-summary--ask-gptel (prompt system callback)
+  "Send PROMPT with SYSTEM through gptel; call CALLBACK as `--ask' does.
+The gptel preset named `supertag', when there is one, chooses the model;
+otherwise the user's gptel defaults do.  No tools are offered."
+  (let* ((buffer (generate-new-buffer " *supertag-model*"))
+         (done nil)
+         timer
+         (finish (lambda (text status)
+                   (unless done
+                     (setq done t)
+                     (when timer (cancel-timer timer))
+                     (when (buffer-live-p buffer) (kill-buffer buffer))
+                     (funcall callback text status))))
+         (send
+          (lambda ()
+            (let ((gptel-use-tools nil)
+                  (gptel-include-reasoning nil))
+              (gptel-request prompt
+                :buffer buffer :system system :stream nil
+                :callback
+                (lambda (response info)
+                  (cond ((stringp response) (funcall finish response 'completed))
+                        ((null response)
+                         (funcall finish (format "%s" (plist-get info :status))
+                                  'failed))
+                        ;; abort is ours (timeout); reasoning is not the reply.
+                        (t nil))))))))
+    (setq timer
+          (run-at-time supertag-summary-timeout nil
+                       (lambda ()
+                         (when (buffer-live-p buffer) (ignore-errors (gptel-abort buffer)))
+                         (funcall finish (format "No reply within %d seconds"
+                                                 supertag-summary-timeout)
+                                  'timeout))))
+    (if (and (fboundp 'gptel-get-preset) (gptel-get-preset 'supertag))
+        ;; gptel-with-preset is a macro of an optional package; expand it here.
+        (eval `(gptel-with-preset 'supertag (funcall ,send)) t)
+      (funcall send))))
+
+(defun supertag-summary--ask-superchat (prompt system callback)
+  "Send PROMPT with SYSTEM through Superchat; call CALLBACK as `--ask' does."
   (supertag-ai--ensure-runtime)
   (supertag-ai--submit
    (list :type :llm-query :input "supertag summary"

@@ -110,6 +110,7 @@ promote 的定制是核心理念，配置只有两层：模板数据，以及把
 | 相似笔记 | `curl`，以及兼容 Ollama 的嵌入服务 |
 | 光标处操作 | [Embark](https://github.com/oantolin/embark)；Embark 加载后 Supertag 会自动注册动作 |
 | AI 命令 | superchat 包，在运行这些命令之前加载 |
+| 汇总面板与 Stream 代理 | Superchat 或 [gptel](https://github.com/karthink/gptel)，见 `supertag-summary-provider` |
 
 ## 高级功能
 

@@ -206,9 +206,9 @@ a hosted one:
 `supertag-semantic-endpoint` takes the root address; Supertag adds `/api/embed` or
 `/v1/embeddings`. A model that wants a task prefix gets it through
 `supertag-semantic-input-format`, for EmbeddingGemma
-`"task: sentence similarity | query: %s"`. The similarity floor (`supertag-semantic-min-similarity`) was tuned on
-`bge-m3`; a different model, especially an English-only one on Chinese notes, may need its own
-floor. Changing the model rebuilds the index.
+`"task: sentence similarity | query: %s"`. The similarity floor (`supertag-semantic-min-similarity`, 0.55) was tuned on
+`bge-m3`; models score on different scales, so another model needs its own floor (EmbeddingGemma 2
+puts unrelated notes near 0.74, so about 0.82). Changing the model rebuilds the index.
 
 Then `M-x supertag-semantic-rebuild`. It first asks whether to enable similar notes for future
 sessions; after you agree it probes the service and model, and only a successful probe writes

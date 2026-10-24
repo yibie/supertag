@@ -78,8 +78,13 @@ part of each note's content hash, so changing this re-embeds every note."
 (defcustom supertag-semantic-max-results 5
   "Maximum similar-note candidates shown."
   :type 'natnum :group 'supertag-semantic)
-(defcustom supertag-semantic-min-similarity 0.4
-  "Minimum similarity, calibrated only on synthetic notes so far."
+(defcustom supertag-semantic-min-similarity 0.55
+  "Minimum similarity for a note to be shown as similar.
+Tuned for `bge-m3' on a real vault of 677 notes: two unrelated notes
+scored 0.44 at the median and 0.52 at the 90th percentile, so the old
+floor of 0.4 let almost every pair through.  Models differ in scale;
+EmbeddingGemma 2 put unrelated notes near 0.74, so another model needs
+its own floor."
   :type 'number :group 'supertag-semantic)
 (defcustom supertag-semantic-preview-lines 3
   "Maximum lines of a candidate's own-body preview."

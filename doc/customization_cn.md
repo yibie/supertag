@@ -193,7 +193,7 @@
 | `supertag-semantic-input-format` | `"%s"` | 嵌入前包裹每条笔记文本的格式，供需要任务前缀的模型使用；改了会重新嵌入全部笔记 |
 | `supertag-semantic-max-chars` | `1500` | 参与嵌入的正文最大字符数 |
 | `supertag-semantic-max-results` | `5` | 最多显示几个相似候选 |
-| `supertag-semantic-min-similarity` | `0.4` | 相似度下限；目前只用合成笔记校准过 |
+| `supertag-semantic-min-similarity` | `0.55` | 相似度下限，按 `bge-m3` 在真实笔记库上调的（无关笔记的相似度中位数 0.44，九成在 0.52 以下）；换模型要另调 |
 | `supertag-semantic-model` | `"bge-m3"` | 嵌入模型名（默认 `bge-m3`；换模型会重建索引） |
 | `supertag-semantic-preview-lines` | `3` | 候选正文预览的行数 |
 | `supertag-semantic-request-chars` | `6000` | 单次请求的近似字符预算，长节点可能超出 |

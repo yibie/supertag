@@ -223,7 +223,7 @@ Source: [`../supertag-service-org.el`](../supertag-service-org.el),
 | `supertag-semantic-input-format` | `"%s"` | wraps each note's text before embedding, for models that want a task prefix; changing it re-embeds every note |
 | `supertag-semantic-max-chars` | `1500` | maximum body characters sent for embedding |
 | `supertag-semantic-max-results` | `5` | maximum similar candidates shown |
-| `supertag-semantic-min-similarity` | `0.4` | similarity floor; so far calibrated only on synthetic notes |
+| `supertag-semantic-min-similarity` | `0.55` | similarity floor, tuned for `bge-m3` on a real vault (unrelated notes scored 0.44 at the median, 0.52 at the 90th percentile); other models need their own |
 | `supertag-semantic-model` | `"bge-m3"` | embedding model name (`bge-m3` by default; changing it rebuilds the index) |
 | `supertag-semantic-preview-lines` | `3` | preview lines of a candidate's body |
 | `supertag-semantic-request-chars` | `6000` | approximate character budget per request; a long node may exceed it |

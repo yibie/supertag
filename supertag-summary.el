@@ -249,6 +249,87 @@ its title, the day it was created.  A day is YYYY-MM-DD or YYYY-MM."
         ((and value (listp value))
          (ignore-errors (format-time-string "%Y-%m-%d" value)))))
 
+;;; Properties, shared with the Stream agents
+
+(defconst supertag-summary--timestamp-regexp
+  "\\`[[<]?\\([0-9]\\{4\\}-[0-9]\\{2\\}-[0-9]\\{2\\}\\)\\(?: [^]>]*\\)?[]>]?\\'"
+  "Match a property value that is a date and nothing else, Org timestamp or plain.")
+
+(defun supertag-summary--props (node)
+  "Return the properties of NODE as ((NAME . VALUE) ...).
+A value that is a date, such as [2026-10-23 Fri], is given as YYYY-MM-DD;
+any other value is its text."
+  (let ((props (plist-get node :properties))
+        alist)
+    (while props
+      (let ((key (car props))
+            (text (format "%s" (cadr props))))
+        (push (cons (if (keywordp key) (substring (symbol-name key) 1) (format "%s" key))
+                    (if (string-match supertag-summary--timestamp-regexp text)
+                        (match-string 1 text)
+                      text))
+              alist))
+      (setq props (cddr props)))
+    (nreverse alist)))
+
+(defun supertag-summary--ymd-p (value)
+  "Return non-nil when VALUE is a YYYY-MM-DD string."
+  (and (stringp value)
+       (string-match-p "\\`[0-9]\\{4\\}-[0-9]\\{2\\}-[0-9]\\{2\\}\\'" value)))
+
+(defun supertag-summary-property-lines (records)
+  "Return a line per property of RECORDS, most used first, or nil.
+A line gives the name, how many records have it, whether it holds dates, and
+the values more than one record shares.  A value only one record has, such as
+a phone number or an address, is personal data and is left out; a value many
+records share is a category the layout may need to group by or write back."
+  (let ((table (make-hash-table :test 'equal))
+        names)
+    (dolist (entry records)
+      (pcase-dolist (`(,name . ,value) (plist-get entry :props))
+        (unless (gethash name table) (push name names))
+        (push value (gethash name table))))
+    (when names
+      (mapconcat
+       (lambda (name)
+         (let* ((values (gethash name table))
+                (datep (cl-every #'supertag-summary--ymd-p values))
+                (counts (make-hash-table :test 'equal))
+                shared)
+           (unless datep
+             (dolist (value values) (cl-incf (gethash value counts 0)))
+             (maphash (lambda (value n) (when (> n 1) (push (cons value n) shared)))
+                      counts))
+           (format "- %s：%d 条%s%s" name (length values)
+                   (if datep "，日期" "")
+                   (if shared
+                       (concat "，常见值 "
+                               (mapconcat (lambda (pair) (truncate-string-to-width (car pair) 30))
+                                          (seq-take (cl-sort shared #'> :key #'cdr) 8)
+                                          "、"))
+                     ""))))
+       (cl-sort names #'> :key (lambda (name) (length (gethash name table))))
+       "\n"))))
+
+(defun supertag-summary-property-mask (entry)
+  "Return ENTRY with every property value that is not a date shown as …."
+  (let ((copy (copy-sequence entry)))
+    (plist-put copy :props
+               (mapcar (lambda (pair)
+                         (cons (car pair)
+                               (if (supertag-summary--ymd-p (cdr pair)) (cdr pair) "…")))
+                       (plist-get entry :props)))))
+
+(defconst supertag-summary-property-guide
+  "* 属性
+每条记录的 :props 是 ((\"属性名\" . 值) …)，取一个属性：(cdr (assoc \"名字\" (plist-get entry :props)))。
+- 属性是用户为自己的需要随手建的，没有预先定好的结构。很多记录没有某个属性，没有时是 nil，要为它准备好显示。
+- 值都是字符串。日期类的值已经换成 \"YYYY-MM-DD\"；数字比较前先用 string-to-number。
+- 下面列出了这批记录已有的属性：名字、几条有、是不是日期、几条记录共用的值。\
+用户的话提到的东西，先在里面找意思相同的名字和值，不要用一个不存在的名字。
+- ID、CREATED、CATEGORY 这类是 Org 和 Supertag 自己用的，不是用户的数据。"
+  "What a model is told about node properties, by summary and by Stream agents.")
+
 (defun supertag-summary--live-p (node)
   "Return non-nil when NODE is a heading outside the skipped files."
   (not (or (eql (plist-get node :level) 0)
@@ -320,6 +401,7 @@ the next as long as no note is added or removed before it."
                  :day (and day (= (length day) 10) day)
                  :scheduled (supertag-summary--date (plist-get node :scheduled))
                  :deadline (supertag-summary--date (plist-get node :deadline))
+                 :props (supertag-summary--props node)
                  :file (file-name-nondirectory (or (plist-get node :file) "")))))
        items)
       :states (mapcar #'car (cl-sort states #'> :key #'cdr))))))
@@ -354,11 +436,12 @@ signature of the records."
                  (lambda (key)
                    (cl-some (lambda (entry) (plist-get entry key)) records))
                  '(:priority :day :scheduled :deadline)))
+         (properties (supertag-summary-property-lines records))
          (print-length nil)
          (print-level 4))
     (format "这批记录来自 %s，共 %d 条：%d 条本身带这个标签，%d 条挂在它们下面，\
 %d 条两者都不是。出现过的 TODO 状态（从多到少）：%s；有 %d 条没有状态。%s\n\n\
-前 6 条记录的样子：\n%s"
+%s\n\n前 6 条记录的样子（日期以外的属性值写成 …）：\n%s"
             (plist-get data :title) (length records) roots owned
             (- (length records) roots owned)
             (or (plist-get data :states) "没有")
@@ -367,7 +450,12 @@ signature of the records."
                 (format "\n这批记录里 %s 全部是 nil，不要围绕它们排版。"
                         (mapconcat #'symbol-name empty "、"))
               "")
-            (mapconcat #'prin1-to-string (seq-take records 6) "\n"))))
+            (if properties
+                (concat "这批记录已有的属性：\n" properties)
+              "这批记录还没有属性。")
+            (mapconcat (lambda (entry)
+                         (prin1-to-string (supertag-summary-property-mask entry)))
+                       (seq-take records 6) "\n"))))
 
 ;;; Checking what layout code returned
 
@@ -1285,6 +1373,7 @@ data 是一个属性列表：
   :root 为 t 表示这条记录本身带着这个标签（比如项目本身），nil 表示它是别的记录
   :owner 这条记录按大纲位置所属的那条 :root 记录的 :ref；自己是 :root，或者上面没有 :root 记录时是 nil
   :day 记录的日期，:scheduled 计划日期，:deadline 截止日期，都是 \"YYYY-MM-DD\" 或 nil
+  :props 这条记录的属性，((\"属性名\" . 值) …)，见下面的「属性」
   :file 所在的文件名
 任何字段都可能是 nil。数先用 (or x 0)，字符串先用 (or x \"\") 处理。
 "
@@ -1403,8 +1492,10 @@ data 是一个属性列表：
 只输出这个表达式，不要解释，不要代码块标记。
 
 这块面板不只是用来看的，用户可以在上面动手。凡是他可能点开的条目，都给它一个能点开的链接；\
-凡是他要处理的条目（任务这类有状态的记录），再给它一个状态按钮，并且按「接下来该处理哪条」来排，而不是按记录的先后。"
-   supertag-summary--example))
+凡是他要处理的条目（任务这类有状态的记录），再给它一个状态按钮，并且按「接下来该处理哪条」来排，而不是按记录的先后。
+
+面板只读属性，不写属性。用户的话要的属性还没有时，在页面上说出来，不要假装有。\n\n"
+   (concat supertag-summary-property-guide "\n\n" supertag-summary--example)))
 
 (defun supertag-summary--strip-fence (response)
   "Return the code in RESPONSE without any code fence around it."

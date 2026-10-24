@@ -139,11 +139,11 @@ file.  Panels are kept under the vault."
        (supertag-tag-create (list :id "task" :name "task" :extends '("prj")))
        (with-temp-file projects
          (insert "#+TODO: TODO NEXT DOING | DONE\n"
-                 "* Alpha launch #prj\n:PROPERTIES:\n:ID:       ws-alpha\n:END:\n"
+                 "* Alpha launch #prj\n:PROPERTIES:\n:ID:       ws-alpha\n:STAGE:    active\n:PHONE:    555-0101\n:REVIEWED: [2026-03-05 Thu]\n:END:\n"
                  "** TODO Write the announcement #task\n:PROPERTIES:\n:ID:       ws-a1\n:CREATED:  [2026-03-02 Mon]\n:END:\nBody secret alpha.\n"
                  "** DONE Book the venue #task\n:PROPERTIES:\n:ID:       ws-a2\n:CREATED:  [2026-03-04 Wed]\n:END:\n"
                  "** NEXT Call the printer #task\n:PROPERTIES:\n:ID:       ws-a3\n:CREATED:  [2026-03-11 Wed]\n:END:\n"
-                 "* Beta cleanup #prj\n:PROPERTIES:\n:ID:       ws-beta\n:END:\n"
+                 "* Beta cleanup #prj\n:PROPERTIES:\n:ID:       ws-beta\n:STAGE:    active\n:PHONE:    555-0199\n:END:\n"
                  "** TODO Archive old notes #task\n:PROPERTIES:\n:ID:       ws-b1\n:CREATED:  [2026-03-12 Thu]\n:END:\n"
                  "* TODO Stray errand #task\n:PROPERTIES:\n:ID:       ws-s1\n:END:\n"))
        (should (eq 'complete (plist-get (supertag-reindex-org) :status)))
@@ -230,6 +230,33 @@ file.  Panels are kept under the vault."
       (should-not (string-match-p "Stray errand" (car sent)))
       (dolist (text sent)
         (should-not (string-match-p "Body secret" text))))))
+
+(ert-deftest supertag-summary-records-carry-properties ()
+  "A record gives its properties, a date property as YYYY-MM-DD."
+  (supertag-summary-test-with-vault
+    (pcase-let* ((`(,_index . ,data) (supertag-summary--collect "prj"))
+                 (alpha (seq-find (lambda (entry)
+                                    (equal (plist-get entry :title) "Alpha launch"))
+                                  (plist-get data :records)))
+                 (props (plist-get alpha :props)))
+      (should (equal (cdr (assoc "STAGE" props)) "active"))
+      (should (equal (cdr (assoc "PHONE" props)) "555-0101"))
+      (should (equal (cdr (assoc "REVIEWED" props)) "2026-03-05")))))
+
+(ert-deftest supertag-summary-design-names-properties-and-hides-their-values ()
+  "Designing a panel names the properties and shared values, never a value one note has."
+  (supertag-summary-test-with-vault
+    (let (sent)
+      (cl-letf (((symbol-function 'supertag-summary--ask)
+                 (lambda (prompt system _callback) (setq sent (list prompt system)))))
+        (supertag-summary-design "prj" "board" "show my tasks"))
+      (should (string-match-p "STAGE：2 条，常见值 active" (car sent)))
+      (should (string-match-p "REVIEWED：1 条，日期" (car sent)))
+      (should (string-match-p "PHONE：2 条" (car sent)))
+      (should (string-match-p "(\"REVIEWED\" \\. \"2026-03-05\")" (car sent)))
+      (dolist (text sent)
+        (should-not (string-match-p "555-01" text)))
+      (should (string-match-p "\\* 属性" (cadr sent))))))
 
 ;;; Acceptance and drawing
 

@@ -4,7 +4,7 @@
 (defconst supertag-renovation-default
   '("contract" "compat" "identity" "vault" "view-framework" "node-view-extra" "automation-actions" "extractor" "persistence-restore" "multi-instance" "mention-extra" "saved-projection" "property-automation"
     "move" "promote" "stream" "find-node" "add-link" "discovery"
-    "query-links" "query-tag-completion" "legacy-query-compat" "migrate" "storage-format" "property-consumers" "property-hint" "property-link" "tag-change" "named-link-query" "tag-path" "tag-merge-plan" "tag-manager" "embark" "ai" "summary" "semantic" "git" "compiler"))
+    "query-links" "query-tag-completion" "legacy-query-compat" "migrate" "storage-format" "property-consumers" "property-hint" "property-link" "tag-change" "named-link-query" "tag-path" "tag-merge-plan" "tag-manager" "embark" "ai" "summary" "stream-agent" "semantic" "git" "compiler"))
 (defconst supertag-renovation-suites
   '(("compiler" ("test/compiler-regression-test.el" . "^supertag-compiler-"))
     ("multi-instance" ("test/multi-instance-test.el" . t))
@@ -20,6 +20,7 @@
     ("semantic" ("test/semantic-test.el" . t))
     ("ai" ("test/ai-test.el" . t))
     ("summary" ("test/summary-test.el" . t))
+    ("stream-agent" ("test/stream-agent-test.el" . t))
     ("enrich" ("test/enrich-test.el" . t))
     ("embark" ("test/embark-test.el" . t))
     ("tag-merge-plan" ("test/tag-merge-plan-test.el" . t))

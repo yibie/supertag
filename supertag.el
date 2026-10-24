@@ -178,6 +178,21 @@ Files without the selected persistent identity remain ordinary Org files."
   "Point every kept panel made for one Tag ID at another.")
 (add-hook 'supertag-tag-rekey-functions #'supertag-summary-rekey-tag)
 
+;; --- Stream agents ---
+;; A kept agent arranges every Stream it matches; with none kept a Stream is
+;; drawn as it always was.  Loaded on the first Stream that is drawn.
+(autoload 'supertag-stream-agent-arrange "supertag-stream-agent"
+  "Return a Stream's state arranged by the agent that matches it.")
+(autoload 'supertag-stream-agent-design "supertag-stream-agent"
+  "Have the model write a Stream agent for a tag from one sentence." t)
+(autoload 'supertag-stream-agent-revise "supertag-stream-agent"
+  "Have the model change a Stream agent as one sentence asks." t)
+(autoload 'supertag-stream-agent-show "supertag-stream-agent"
+  "Show what a Stream agent was made from and its code." t)
+(with-eval-after-load 'supertag-view-stream
+  (unless supertag-view-stream-arrange-function
+    (setq supertag-view-stream-arrange-function #'supertag-stream-agent-arrange)))
+
 ;; --- Initialization ---
 (defun supertag-init ()
  "Initialize the Supertag system.

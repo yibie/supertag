@@ -52,6 +52,20 @@ nil means no limit."
   :type '(choice (const :tag "No limit" nil) (integer :tag "Nodes"))
   :group 'supertag-view-stream)
 
+(defvar supertag-view-stream-arrange-function nil
+  "Function that may arrange a Stream in place of the date groups, or nil.
+It is called with the INPUT and the STATE a Stream was built from, and
+returns STATE, either unchanged or with an `:arrangement':
+
+  (:header WIDGETS :groups ((LABEL (NODE . LINE) ...) ...) :keymap MAP)
+
+WIDGETS are drawn above the groups.  Each group is drawn under LABEL; each
+node with its title, LINE after the title when LINE is a string, and its
+body, as Stream draws it.  MAP, when non-nil, is the buffer's keymap; it
+should have `supertag-view-stream-mode-map' as its parent.  The `:nodes' of
+the returned state must be the nodes of the groups in their order, so
+moving through the Stream follows what is drawn.")
+
 (defcustom supertag-view-stream-order 'newest-first
   "Order of the nodes in a Stream, by creation time.
 `newest-first' puts the latest node at the top, `oldest-first' at the
@@ -201,13 +215,17 @@ with neither selects every node."
            (limit (if (plist-member input :limit)
                       (plist-get input :limit)
                     supertag-view-stream-max-nodes)))
-      (list :tag tag
-            :query (plist-get input :query)
-            :total total
-            :nodes (cond
-                    ((not (and (integerp limit) (> total limit))) nodes)
-                    (newest-first (cl-subseq nodes 0 (max limit 0)))
-                    (t (last nodes (max limit 0))))))))
+      (let ((state
+             (list :tag tag
+                   :query (plist-get input :query)
+                   :total total
+                   :nodes (cond
+                           ((not (and (integerp limit) (> total limit))) nodes)
+                           (newest-first (cl-subseq nodes 0 (max limit 0)))
+                           (t (last nodes (max limit 0)))))))
+        (if supertag-view-stream-arrange-function
+            (funcall supertag-view-stream-arrange-function input state)
+          state)))))
 
 (defun supertag-view-stream--node-title (node)
   "Return the display title for NODE."
@@ -276,15 +294,25 @@ Return nil when there is no body; a truncated body ends with `…'."
                       (list "…")))))
     lines))
 
-(defun supertag-view-stream--node-widget (node)
+(defface supertag-view-stream-line-face
+  '((t :inherit supertag-view-excerpt :slant normal))
+  "Face of the line an arrangement adds after a node's title."
+  :group 'supertag-view-stream)
+
+(defun supertag-view-stream--node-widget (node &optional line)
   "Return the Widget tree for NODE: its title line and its body lines.
-The whole block carries one Widget key, so the entity ID, the selection
-overlay and every row command cover the title and the body together."
+LINE, when a string, follows the title and tags.  The whole block carries
+one Widget key, so the entity ID, the selection overlay and every row
+command cover the title and the body together."
   (let* ((tags (supertag-view-stream--node-tags node))
          (title (concat (propertize (supertag-view-stream--node-title node)
                                     'font-lock-face
                                     'supertag-view-stream-title-face)
-                        (if (string-empty-p tags) "" (concat "  " tags))))
+                        (if (string-empty-p tags) "" (concat "  " tags))
+                        (if (stringp line)
+                            (concat "  " (propertize line 'font-lock-face
+                                                     'supertag-view-stream-line-face))
+                          "")))
          (body (mapcar (lambda (line)
                          (if (string-empty-p line)
                              ""
@@ -331,17 +359,43 @@ INPUT is a Runtime input or a state; both carry `:tag' and `:query'."
                               'supertag-view-stream-date-face))
               (mapcar #'supertag-view-stream--node-widget (cdr group)))))
 
+(defun supertag-view-stream--arranged-widgets (arrangement)
+  "Return the Widget tree of ARRANGEMENT.
+See `supertag-view-stream-arrange-function'."
+  (list (list :type :stack :spacing 1
+              :children
+              (append
+               (plist-get arrangement :header)
+               (mapcar
+                (lambda (group)
+                  (list :type :stack :spacing 0
+                        :children
+                        (cons (list :type :text
+                                    :content (propertize
+                                              (concat " " (car group) " ")
+                                              'font-lock-face
+                                              'supertag-view-stream-date-face))
+                              (mapcar (lambda (row)
+                                        (supertag-view-stream--node-widget
+                                         (car row) (cdr row)))
+                                      (cdr group)))))
+                (plist-get arrangement :groups))))))
+
 (defun supertag-view-stream--widgets (state)
   "Return the Stream Widget tree for STATE."
-  (let ((nodes (plist-get state :nodes)))
-    (if nodes
+  (let ((nodes (plist-get state :nodes))
+        (arrangement (plist-get state :arrangement)))
+    (cond
+     (arrangement (supertag-view-stream--arranged-widgets arrangement))
+     (nodes
         (list (list :type :stack :spacing 1
                     :children
                     (mapcar #'supertag-view-stream--date-group-widget
-                            (supertag-view-stream--group-nodes-by-date nodes))))
+                            (supertag-view-stream--group-nodes-by-date nodes)))))
+     (t
       (list (list :type :text
                   :content (format "No nodes for %s."
-                                   (supertag-view-stream--label state)))))))
+                                   (supertag-view-stream--label state))))))))
 
 (defun supertag-view-stream--add-entity-properties ()
   "Copy stable Widget keys to the shared entity ID property."
@@ -363,6 +417,10 @@ INPUT is a Runtime input or a state; both carry `:tag' and `:query'."
   (supertag-view-widget--render-tree
    (supertag-view-stream--widgets state) state)
   (supertag-view-stream--add-entity-properties)
+  ;; From STATE, not the instance: the framework stores STATE on the
+  ;; instance only after rendering.
+  (use-local-map (or (plist-get (plist-get state :arrangement) :keymap)
+                     supertag-view-stream-mode-map))
   (setq header-line-format
         (let ((shown (length (plist-get state :nodes)))
               (total (or (plist-get state :total) 0)))

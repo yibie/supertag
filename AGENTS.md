@@ -16,6 +16,12 @@ layers, which form rules are enforced by code and which are only prompted,
 actions, and the safety boundary. A rule it marks Enforced or Accepted has
 a test in `test/summary-test.el`; keep it that way.
 
+Before you work on Stream agents (a tag's Stream grouped, annotated and
+given keys by an agent a model writes from the user's sentence), read
+`stream-agent.md`. It is the contract `supertag-stream-agent.el`
+implements; a rule it marks Enforced has a test in
+`test/stream-agent-test.el`.
+
 ## `doc/` is for user documentation only
 
 `doc/` holds the documents a Supertag user reads: setup, query, sync,

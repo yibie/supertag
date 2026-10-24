@@ -45,7 +45,7 @@ cat > "$root/check.el" <<'ELISP'
         (cl-incf skipped))
        (result (cl-incf compiled))
        (t (error "Compilation failed: %s" file)))))
-  (unless (and (= compiled 32) (= skipped (- (length files) 32)))
+  (unless (and (= compiled 33) (= skipped (- (length files) 33)))
     (error "Unexpected compiled/skipped module counts"))
   (princ (format "%s: %d compiled, %d experimental/development files skipped\n"
                  (if native "Native" "Byte") compiled skipped)))

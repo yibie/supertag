@@ -141,7 +141,7 @@ promote 的定制是核心理念，配置只有两层：模板数据，以及把
       (lambda () (auth-source-pick-first-password :host "api.example.com")))
 ```
 
-`supertag-semantic-endpoint` 填根地址，Supertag 会自己加上 `/api/embed` 或 `/v1/embeddings`。相似度下限（`supertag-semantic-min-similarity`）是按 `bge-m3` 调的；换别的模型，尤其是只懂英文的模型配中文笔记，可能需要另调。换模型会重建索引。
+`supertag-semantic-endpoint` 填根地址，Supertag 会自己加上 `/api/embed` 或 `/v1/embeddings`。需要任务前缀的模型用 `supertag-semantic-input-format` 设置，EmbeddingGemma 是 `"task: sentence similarity | query: %s"`。相似度下限（`supertag-semantic-min-similarity`）是按 `bge-m3` 调的；换别的模型，尤其是只懂英文的模型配中文笔记，可能需要另调。换模型会重建索引。
 
 然后 `M-x supertag-semantic-rebuild`。它会先问你是否为以后的会话启用；同意后先探测服务和模型是否可用，探测成功才把这个选择写进配置——服务不通不会留下「已启用」。随后它在后台给节点建索引，Node View 里出现「相似」候选。`M-x supertag-semantic-status` 看进度，`M-x supertag-semantic-stop` 暂停，`M-x supertag-semantic-resume` 继续；换模型需要重建索引。
 

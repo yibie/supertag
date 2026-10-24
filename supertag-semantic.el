@@ -57,6 +57,12 @@ temporary file, so it never appears on a command line."
 (defcustom supertag-semantic-model "bge-m3"
   "Embedding model available at the endpoint.  Changing it rebuilds the index."
   :type 'string :group 'supertag-semantic)
+(defcustom supertag-semantic-input-format "%s"
+  "Format wrapping each note's text before it is embedded; %s is the text.
+Some models want a task prefix, such as EmbeddingGemma's
+\"task: sentence similarity | query: %s\".  The wrapped text is
+part of each note's content hash, so changing this re-embeds every note."
+  :type 'string :group 'supertag-semantic)
 (defcustom supertag-semantic-curl-program "curl"
   "Program used for asynchronous embedding HTTP requests."
   :type 'string :group 'supertag-semantic)
@@ -111,12 +117,14 @@ Nil preserves pending reconciliation across disabled or paused observations.")
   (gethash id (supertag-store-get-collection :nodes)))
 
 (defun supertag-semantic--text (node)
-  "Return NODE's title, outline path and bounded own-body input."
+  "Return NODE's title, outline path and bounded own-body input.
+The text is wrapped in `supertag-semantic-input-format'."
   (let ((body (or (plist-get node :content) ""))
         (path (plist-get node :olp)))
-    (concat (or (plist-get node :title) "") "\n"
-            (if (listp path) (mapconcat #'identity path " / ") (or path "")) "\n"
-            (substring body 0 (min (length body) supertag-semantic-max-chars)))))
+    (format supertag-semantic-input-format
+            (concat (or (plist-get node :title) "") "\n"
+                    (if (listp path) (mapconcat #'identity path " / ") (or path "")) "\n"
+                    (substring body 0 (min (length body) supertag-semantic-max-chars))))))
 
 (defun supertag-semantic--hash (node)
   (secure-hash 'sha256 (supertag-semantic--text node)))
@@ -272,9 +280,24 @@ The file is the caller's to delete."
           (and headers (list "-H" (concat "@" headers)))
           (list "--data-binary" (concat "@" input) (supertag-semantic--url))))
 
-(defun supertag-semantic--parse (text api)
-  "Return the vectors in response TEXT of format API, in input order."
-  (let ((json (json-parse-string text :object-type 'alist)))
+(defun supertag-semantic--same-model-p (asked answered)
+  "Non-nil when ANSWERED names the model ASKED for.
+Loose on purpose: case is ignored and either may contain the other, so
+bge-m3 and bge-m3:latest agree."
+  (let ((a (downcase asked)) (b (downcase answered)))
+    (or (string-search a b) (string-search b a))))
+
+(defun supertag-semantic--parse (text api &optional model)
+  "Return the vectors in response TEXT of format API, in input order.
+When the reply names a model other than MODEL, signal an error: some
+servers, LM Studio among them, answer with whatever embedding model is
+loaded when the one asked for is not, and its vectors may even have the
+same dimension."
+  (let* ((json (json-parse-string text :object-type 'alist))
+         (answered (alist-get 'model json)))
+    (when (and model (stringp answered) (not (string-empty-p answered))
+               (not (supertag-semantic--same-model-p model answered)))
+      (error "Asked for model %s but %s answered" model answered))
     (if (eq api 'openai)
         (when-let* ((data (append (alist-get 'data json) nil)))
           (vconcat (mapcar (lambda (item) (alist-get 'embedding item))
@@ -290,6 +313,7 @@ Return the curl process.  Request data and process buffers are always temporary.
         (errors (generate-new-buffer " *supertag-semantic-errors*"))
         (timeout (number-to-string supertag-semantic-request-timeout))
         (api supertag-semantic-api)
+        (model supertag-semantic-model)
         headers)
     (condition-case err
         (progn
@@ -311,7 +335,7 @@ Return the curl process.  Request data and process buffers are always temporary.
                          (cond
                           ((zerop (process-exit-status process))
                            (setq vectors (with-current-buffer output
-                                           (supertag-semantic--parse (buffer-string) api))))
+                                           (supertag-semantic--parse (buffer-string) api model))))
                           ((= (process-exit-status process) 28)
                            (setq failure (format "Request timed out after %s s" timeout)))
                           (t (setq failure (with-current-buffer errors (string-trim (buffer-string))))))
@@ -348,7 +372,8 @@ at ten seconds, even when normal embedding requests are allowed more time."
           (unless (and (integerp status) (zerop status))
             (error "curl exited with status %s" status))
           (let ((embeddings (with-current-buffer output
-                              (supertag-semantic--parse (buffer-string) supertag-semantic-api))))
+                              (supertag-semantic--parse (buffer-string) supertag-semantic-api
+                                                        supertag-semantic-model))))
             (unless (and (sequencep embeddings) (= (length embeddings) 1)
                          (sequencep (elt embeddings 0)) (> (length (elt embeddings 0)) 0))
               (error "Invalid embedding probe response"))

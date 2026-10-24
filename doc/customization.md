@@ -220,6 +220,7 @@ Source: [`../supertag-service-org.el`](../supertag-service-org.el),
 | `supertag-semantic-curl-program` | `"curl"` | external program used for embedding requests |
 | `supertag-semantic-enabled` | `nil` | master switch for similar notes; off by default, needs a working embedding service |
 | `supertag-semantic-endpoint` | `"http://localhost:11434"` | embedding service root address (local Ollama by default); the format adds the path |
+| `supertag-semantic-input-format` | `"%s"` | wraps each note's text before embedding, for models that want a task prefix; changing it re-embeds every note |
 | `supertag-semantic-max-chars` | `1500` | maximum body characters sent for embedding |
 | `supertag-semantic-max-results` | `5` | maximum similar candidates shown |
 | `supertag-semantic-min-similarity` | `0.4` | similarity floor; so far calibrated only on synthetic notes |

@@ -1047,3 +1047,29 @@ In BODY, `args' is a function returning the recorded arguments, and
     (let ((supertag-semantic-api 'openai) (supertag-semantic-api-key nil))
       (should-error (supertag-semantic--probe))
       (should (equal '(nil . nil) (supertag-semantic-test--embed '("a")))))))
+
+(ert-deftest supertag-semantic-input-format-wraps-text-and-changes-hash ()
+  (let ((node '(:title "标题" :olp ("父") :content "正文")))
+    (should (equal "标题\n父\n正文" (supertag-semantic--text node)))
+    (let ((plain (supertag-semantic--hash node))
+          (supertag-semantic-input-format "task: sentence similarity | query: %s"))
+      (should (equal "task: sentence similarity | query: 标题\n父\n正文"
+                     (supertag-semantic--text node)))
+      (should-not (equal plain (supertag-semantic--hash node))))))
+
+(ert-deftest supertag-semantic-refuses-vectors-from-another-model ()
+  (let ((reply "{\"model\":\"text-embedding-nomic-embed-text-v1.5\",\"data\":[{\"index\":0,\"embedding\":[0.5,0.5]}]}"))
+    (supertag-semantic-test-with-fake-curl reply
+      (let ((supertag-semantic-api 'openai) (supertag-semantic-api-key nil)
+            (supertag-semantic-model "embeddinggemma-2"))
+        (should (string-match-p "nomic"
+                                (cadr (should-error (supertag-semantic--probe)))))
+        (should (string-match-p "embeddinggemma-2.*nomic"
+                                (cdr (supertag-semantic-test--embed '("a")))))))
+    (supertag-semantic-test-with-fake-curl reply
+      (let ((supertag-semantic-api 'openai) (supertag-semantic-api-key nil)
+            (supertag-semantic-model "nomic-embed-text-v1.5"))
+        (should (supertag-semantic--probe)))))
+  (supertag-semantic-test-with-fake-curl "{\"model\":\"bge-m3:latest\",\"embeddings\":[[0.5,0.5]]}"
+    (let ((supertag-semantic-api 'ollama) (supertag-semantic-model "bge-m3"))
+      (should (supertag-semantic--probe)))))

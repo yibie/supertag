@@ -958,3 +958,92 @@ This exercises the context seam with real Store events, not vault activation."
               (should (equal "candidate" (org-entry-get nil "ID"))))
           (when (buffer-live-p (supertag-view-node--buffer))
             (kill-buffer (supertag-view-node--buffer)))))))))
+
+(defmacro supertag-semantic-test-with-fake-curl (response &rest body)
+  "Run BODY with a curl that prints RESPONSE and records what it was given.
+In BODY, `args' is a function returning the recorded arguments, and
+`headers' one returning the header file's contents."
+  (declare (indent 1))
+  `(let* ((dir (make-temp-file "supertag-semantic-curl-" t))
+          (script (expand-file-name "curl" dir))
+          (body-file (expand-file-name "response" dir))
+          (args-file (expand-file-name "args" dir))
+          (headers-file (expand-file-name "headers" dir))
+          (supertag-semantic-curl-program script))
+     (unwind-protect
+         (progn
+           (with-temp-file body-file (insert ,response))
+           (with-temp-file script
+             (insert "#!/bin/sh\n"
+                     "printf '%s\\n' \"$@\" > " (shell-quote-argument args-file) "\n"
+                     "prev=\nfor a in \"$@\"; do\n"
+                     "  case \"$prev:$a\" in -H:@*) cat \"${a#@}\" > "
+                     (shell-quote-argument headers-file) ";; esac\n  prev=$a\ndone\n"
+                     "cat " (shell-quote-argument body-file) "\n"))
+           (set-file-modes script #o755)
+           (cl-flet ((args () (with-temp-buffer
+                                (insert-file-contents args-file)
+                                (split-string (buffer-string) "\n" t)))
+                     (headers () (and (file-exists-p headers-file)
+                                      (with-temp-buffer
+                                        (insert-file-contents headers-file)
+                                        (buffer-string)))))
+             ,@body))
+       (delete-directory dir t))))
+
+(defun supertag-semantic-test--embed (texts)
+  "Embed TEXTS through the real request path and return (VECTORS . ERROR)."
+  (let (result)
+    (supertag-semantic--request texts (lambda (vectors failure)
+                                        (setq result (cons vectors failure))))
+    (with-timeout (10 (error "Embedding request did not finish"))
+      (while (not result) (accept-process-output nil 0.05)))
+    result))
+
+(ert-deftest supertag-semantic-ollama-format-is-unchanged ()
+  (supertag-semantic-test-with-fake-curl "{\"embeddings\":[[1.0,0.0],[0.0,1.0]]}"
+    (let ((supertag-semantic-endpoint "http://localhost:11434/")
+          (supertag-semantic-api 'ollama)
+          (supertag-semantic-api-key nil))
+      (should (equal '([[1.0 0.0] [0.0 1.0]] . nil)
+                     (supertag-semantic-test--embed '("a" "b"))))
+      (should (equal "http://localhost:11434/api/embed" (car (last (args)))))
+      (should-not (headers)))))
+
+(ert-deftest supertag-semantic-openai-format-orders-vectors-by-index ()
+  (supertag-semantic-test-with-fake-curl
+      "{\"object\":\"list\",\"data\":[{\"index\":1,\"embedding\":[0.0,1.0]},{\"index\":0,\"embedding\":[1.0,0.0]}]}"
+    (let ((supertag-semantic-api 'openai) (supertag-semantic-api-key nil))
+      (dolist (endpoint '("http://localhost:1234" "http://localhost:1234/v1/"))
+        (let ((supertag-semantic-endpoint endpoint))
+          (should (equal '([[1.0 0.0] [0.0 1.0]] . nil)
+                         (supertag-semantic-test--embed '("a" "b"))))
+          (should (equal "http://localhost:1234/v1/embeddings" (car (last (args))))))))))
+
+(ert-deftest supertag-semantic-key-reaches-curl-only-through-a-file ()
+  (supertag-semantic-test-with-fake-curl "{\"data\":[{\"index\":0,\"embedding\":[1.0,0.0]}]}"
+    (let ((supertag-semantic-api 'openai)
+          (supertag-semantic-endpoint "https://example.invalid/v1")
+          (before (directory-files temporary-file-directory nil "supertag-semantic-headers-")))
+      (dolist (key (list "sk-secret" (lambda () "sk-secret")))
+        (let ((supertag-semantic-api-key key))
+          (should (equal '([[1.0 0.0]] . nil) (supertag-semantic-test--embed '("a"))))
+          (should (equal "Authorization: Bearer sk-secret\n" (headers)))
+          (should-not (cl-some (lambda (arg) (string-match-p "sk-secret" arg)) (args)))))
+      ;; The probe sends the key the same way.
+      (let ((supertag-semantic-api-key "sk-secret"))
+        (should (supertag-semantic--probe))
+        (should-not (cl-some (lambda (arg) (string-match-p "sk-secret" arg)) (args))))
+      (should (equal before (directory-files temporary-file-directory nil
+                                             "supertag-semantic-headers-"))))))
+
+(ert-deftest supertag-semantic-openai-probe-and-empty-reply ()
+  (supertag-semantic-test-with-fake-curl "{\"data\":[{\"index\":0,\"embedding\":[0.5,0.5]}]}"
+    (let ((supertag-semantic-api 'openai) (supertag-semantic-api-key nil)
+          (supertag-semantic-endpoint "http://localhost:8000"))
+      (should (supertag-semantic--probe))
+      (should (equal "http://localhost:8000/v1/embeddings" (car (last (args)))))))
+  (supertag-semantic-test-with-fake-curl "{\"data\":[]}"
+    (let ((supertag-semantic-api 'openai) (supertag-semantic-api-key nil))
+      (should-error (supertag-semantic--probe))
+      (should (equal '(nil . nil) (supertag-semantic-test--embed '("a")))))))

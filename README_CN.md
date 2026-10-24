@@ -107,7 +107,7 @@ promote 的定制是核心理念，配置只有两层：模板数据，以及把
 | 功能 | 需要 |
 | --- | --- |
 | Git 备份与同步 | `git` 程序 |
-| 相似笔记 | `curl`，以及兼容 Ollama 的嵌入服务 |
+| 相似笔记 | `curl`，以及一个嵌入服务：Ollama，或任何 OpenAI 兼容的服务（LM Studio、vLLM、llama.cpp） |
 | 光标处操作 | [Embark](https://github.com/oantolin/embark)；Embark 加载后 Supertag 会自动注册动作 |
 | AI 命令 | superchat 包，在运行这些命令之前加载 |
 | 汇总面板与 Stream 代理 | Superchat 或 [gptel](https://github.com/karthink/gptel)，见 `supertag-summary-provider` |
@@ -123,14 +123,25 @@ promote 的定制是核心理念，配置只有两层：模板数据，以及把
 
 ### 相似笔记
 
-可选功能，默认关闭。它需要本机有 curl、一个本地 Ollama 或兼容的嵌入服务，以及服务上已准备好嵌入模型（默认 `bge-m3`）。
+可选功能，默认关闭。它需要本机有 curl、一个嵌入服务，以及服务上已准备好嵌入模型（默认 `bge-m3`）。支持两种请求格式。Ollama（默认）：
 
 ```emacs-lisp
 (setq supertag-semantic-endpoint "http://localhost:11434")
 (setq supertag-semantic-model "bge-m3")
 ```
 
-服务需兼容 `/api/embed`；`supertag-semantic-endpoint` 填根地址，不附加 `/api/embed`。
+任何 OpenAI 兼容的 `/v1/embeddings` 服务，如 LM Studio、vLLM、llama.cpp server，或云端服务：
+
+```emacs-lisp
+(setq supertag-semantic-api 'openai)
+(setq supertag-semantic-endpoint "http://localhost:1234/v1")  ; 带不带 /v1 都可以
+(setq supertag-semantic-model "text-embedding-nomic-embed-text-v1.5")
+;; 只有需要 key 的服务才设；写成函数，key 就不必出现在配置里：
+(setq supertag-semantic-api-key
+      (lambda () (auth-source-pick-first-password :host "api.example.com")))
+```
+
+`supertag-semantic-endpoint` 填根地址，Supertag 会自己加上 `/api/embed` 或 `/v1/embeddings`。相似度下限（`supertag-semantic-min-similarity`）是按 `bge-m3` 调的；换别的模型，尤其是只懂英文的模型配中文笔记，可能需要另调。换模型会重建索引。
 
 然后 `M-x supertag-semantic-rebuild`。它会先问你是否为以后的会话启用；同意后先探测服务和模型是否可用，探测成功才把这个选择写进配置——服务不通不会留下「已启用」。随后它在后台给节点建索引，Node View 里出现「相似」候选。`M-x supertag-semantic-status` 看进度，`M-x supertag-semantic-stop` 暂停，`M-x supertag-semantic-resume` 继续；换模型需要重建索引。
 

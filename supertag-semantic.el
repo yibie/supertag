@@ -36,8 +36,24 @@
 endpoint."
   :type 'boolean :group 'supertag-semantic)
 (defcustom supertag-semantic-endpoint "http://localhost:11434"
-  "Base URL of an Ollama-compatible /api/embed endpoint."
+  "Base URL of the embedding service; `supertag-semantic-api' adds the path."
   :type 'string :group 'supertag-semantic)
+(defcustom supertag-semantic-api 'ollama
+  "Request format the embedding service speaks.
+`ollama' posts to ENDPOINT/api/embed.  `openai' posts to
+ENDPOINT/v1/embeddings, the format of LM Studio, vLLM, the llama.cpp
+server and most hosted services; an ENDPOINT already ending in /v1 is
+not given a second one."
+  :type '(choice (const :tag "Ollama /api/embed" ollama)
+                 (const :tag "OpenAI-compatible /v1/embeddings" openai))
+  :group 'supertag-semantic)
+(defcustom supertag-semantic-api-key nil
+  "Key sent as a bearer token, or nil to send none.
+A string, or a function returning one, so the key can come from
+`auth-source' rather than the configuration.  curl reads it from a
+temporary file, so it never appears on a command line."
+  :type '(choice (const :tag "None" nil) string function)
+  :group 'supertag-semantic)
 (defcustom supertag-semantic-model "bge-m3"
   "Embedding model available at the endpoint.  Changing it rebuilds the index."
   :type 'string :group 'supertag-semantic)
@@ -231,25 +247,61 @@ Nil preserves pending reconciliation across disabled or paused observations.")
     (supertag-semantic--scan)
     (setq supertag-semantic--last-enabled t)))
 
+(defun supertag-semantic--url ()
+  "Return the embedding URL for `supertag-semantic-api'."
+  (let ((base (string-remove-suffix "/" supertag-semantic-endpoint)))
+    (if (eq supertag-semantic-api 'openai)
+        (concat base (unless (string-suffix-p "/v1" base) "/v1") "/embeddings")
+      (concat base "/api/embed"))))
+
+(defun supertag-semantic--headers ()
+  "Write the authorization header to a temporary file and return it, or nil.
+The file is the caller's to delete."
+  (let ((key (if (functionp supertag-semantic-api-key)
+                 (funcall supertag-semantic-api-key)
+               supertag-semantic-api-key)))
+    (when (and (stringp key) (not (string-empty-p key)))
+      (let ((file (make-temp-file "supertag-semantic-headers-")))
+        (with-temp-file file (insert "Authorization: Bearer " key "\n"))
+        file))))
+
+(defun supertag-semantic--curl-args (input headers timeout)
+  "Return curl arguments that post INPUT with HEADERS within TIMEOUT seconds."
+  (append (list "--silent" "--show-error" "--fail" "--noproxy" "*"
+                "--max-time" timeout "-H" "Content-Type: application/json")
+          (and headers (list "-H" (concat "@" headers)))
+          (list "--data-binary" (concat "@" input) (supertag-semantic--url))))
+
+(defun supertag-semantic--parse (text api)
+  "Return the vectors in response TEXT of format API, in input order."
+  (let ((json (json-parse-string text :object-type 'alist)))
+    (if (eq api 'openai)
+        (when-let* ((data (append (alist-get 'data json) nil)))
+          (vconcat (mapcar (lambda (item) (alist-get 'embedding item))
+                           (sort data (lambda (a b) (< (alist-get 'index a 0)
+                                                       (alist-get 'index b 0)))))))
+      (alist-get 'embeddings json))))
+
 (defun supertag-semantic--request (texts callback)
   "Asynchronously embed TEXTS; call CALLBACK with (VECTORS ERROR-MESSAGE).
 Return the curl process.  Request data and process buffers are always temporary."
   (let ((input (make-temp-file "supertag-semantic-request-"))
         (output (generate-new-buffer " *supertag-semantic-response*"))
         (errors (generate-new-buffer " *supertag-semantic-errors*"))
-        (timeout (number-to-string supertag-semantic-request-timeout)))
+        (timeout (number-to-string supertag-semantic-request-timeout))
+        (api supertag-semantic-api)
+        headers)
     (condition-case err
         (progn
           (let ((coding-system-for-write 'utf-8-unix))
             (with-temp-file input
               (insert (json-serialize (list :model supertag-semantic-model :input (vconcat texts))))))
+          (setq headers (supertag-semantic--headers))
           (make-process
            :name "supertag-semantic" :buffer output :stderr errors :noquery t
            :connection-type 'pipe :coding 'utf-8-unix
-           :command (list supertag-semantic-curl-program "--silent" "--show-error" "--fail"
-                          "--noproxy" "*" "--max-time" timeout "-H" "Content-Type: application/json"
-                          "--data-binary" (concat "@" input)
-                          (concat (string-remove-suffix "/" supertag-semantic-endpoint) "/api/embed"))
+           :command (cons supertag-semantic-curl-program
+                          (supertag-semantic--curl-args input headers timeout))
            :sentinel
            (lambda (process _event)
              (when (memq (process-status process) '(exit signal))
@@ -258,19 +310,20 @@ Return the curl process.  Request data and process buffers are always temporary.
                      (condition-case parse-error
                          (cond
                           ((zerop (process-exit-status process))
-                             (setq vectors (with-current-buffer output
-                                             (alist-get 'embeddings
-                                                        (json-parse-string (buffer-string)
-                                                                           :object-type 'alist)))))
+                           (setq vectors (with-current-buffer output
+                                           (supertag-semantic--parse (buffer-string) api))))
                           ((= (process-exit-status process) 28)
                            (setq failure (format "Request timed out after %s s" timeout)))
                           (t (setq failure (with-current-buffer errors (string-trim (buffer-string))))))
                        (error (setq failure (error-message-string parse-error))))
                      (funcall callback vectors (and failure (if (string-empty-p failure) "Embedding request failed" failure))))
-                 (when (file-exists-p input) (delete-file input))
+                 (dolist (file (list input headers))
+                   (when (and file (file-exists-p file)) (delete-file file)))
                  (kill-buffer output) (kill-buffer errors))))))
       (error
-       (delete-file input) (kill-buffer output) (kill-buffer errors)
+       (dolist (file (list input headers))
+         (when (and file (file-exists-p file)) (delete-file file)))
+       (kill-buffer output) (kill-buffer errors)
        (signal (car err) (cdr err))))))
 
 (defun supertag-semantic--probe ()
@@ -281,31 +334,27 @@ at ten seconds, even when normal embedding requests are allowed more time."
   (let ((input (make-temp-file "supertag-semantic-probe-"))
         (output (generate-new-buffer " *supertag-semantic-probe*"))
         (timeout (number-to-string (min 10 supertag-semantic-request-timeout)))
-        status)
+        headers status)
     (unwind-protect
         (progn
           (let ((coding-system-for-write 'utf-8-unix))
             (with-temp-file input
               (insert (json-serialize
                        (list :model supertag-semantic-model :input ["supertag probe"])))))
+          (setq headers (supertag-semantic--headers))
           (setq status
-                (call-process
-                 supertag-semantic-curl-program input output nil
-                 "--silent" "--show-error" "--fail" "--noproxy" "*"
-                 "--max-time" timeout "-H" "Content-Type: application/json"
-                 "--data-binary" (concat "@" input)
-                 (concat (string-remove-suffix "/" supertag-semantic-endpoint) "/api/embed")))
+                (apply #'call-process supertag-semantic-curl-program input output nil
+                       (supertag-semantic--curl-args input headers timeout)))
           (unless (and (integerp status) (zerop status))
             (error "curl exited with status %s" status))
-          (let ((embeddings
-                 (alist-get 'embeddings
-                            (with-current-buffer output
-                              (json-parse-string (buffer-string) :object-type 'alist)))))
+          (let ((embeddings (with-current-buffer output
+                              (supertag-semantic--parse (buffer-string) supertag-semantic-api))))
             (unless (and (sequencep embeddings) (= (length embeddings) 1)
                          (sequencep (elt embeddings 0)) (> (length (elt embeddings 0)) 0))
               (error "Invalid embedding probe response"))
             t))
-      (when (file-exists-p input) (delete-file input))
+      (dolist (file (list input headers))
+        (when (and file (file-exists-p file)) (delete-file file)))
       (kill-buffer output))))
 
 (defun supertag-semantic--refresh (&optional node-id)

@@ -185,9 +185,11 @@
 
 | 配置项 | 默认值 | 作用 |
 |---|---|---|
+| `supertag-semantic-api` | `ollama` | 请求格式：`ollama`（`/api/embed`）或 `openai`（`/v1/embeddings`：LM Studio、vLLM、llama.cpp、云端服务） |
+| `supertag-semantic-api-key` | `nil` | Bearer key，字符串或返回字符串的函数；curl 从临时文件读取，不出现在命令行 |
 | `supertag-semantic-curl-program` | `"curl"` | 发嵌入请求用的外部程序 |
 | `supertag-semantic-enabled` | `nil` | 相似笔记总开关；默认关闭，需要可用的嵌入服务 |
-| `supertag-semantic-endpoint` | `"http://localhost:11434"` | 嵌入服务地址（默认本机 Ollama） |
+| `supertag-semantic-endpoint` | `"http://localhost:11434"` | 嵌入服务根地址（默认本机 Ollama）；路径由请求格式决定 |
 | `supertag-semantic-max-chars` | `1500` | 参与嵌入的正文最大字符数 |
 | `supertag-semantic-max-results` | `5` | 最多显示几个相似候选 |
 | `supertag-semantic-min-similarity` | `0.4` | 相似度下限；目前只用合成笔记校准过 |

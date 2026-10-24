@@ -215,9 +215,11 @@ Source: [`../supertag-service-org.el`](../supertag-service-org.el),
 
 | Option | Default | Effect |
 |---|---|---|
+| `supertag-semantic-api` | `ollama` | request format: `ollama` (`/api/embed`) or `openai` (`/v1/embeddings`: LM Studio, vLLM, llama.cpp, hosted services) |
+| `supertag-semantic-api-key` | `nil` | bearer key, a string or a function returning one; curl reads it from a temporary file, never the command line |
 | `supertag-semantic-curl-program` | `"curl"` | external program used for embedding requests |
 | `supertag-semantic-enabled` | `nil` | master switch for similar notes; off by default, needs a working embedding service |
-| `supertag-semantic-endpoint` | `"http://localhost:11434"` | embedding service address (local Ollama by default) |
+| `supertag-semantic-endpoint` | `"http://localhost:11434"` | embedding service root address (local Ollama by default); the format adds the path |
 | `supertag-semantic-max-chars` | `1500` | maximum body characters sent for embedding |
 | `supertag-semantic-max-results` | `5` | maximum similar candidates shown |
 | `supertag-semantic-min-similarity` | `0.4` | similarity floor; so far calibrated only on synthetic notes |

@@ -160,7 +160,7 @@ Optional. Each is needed only for the feature beside it:
 | Feature | Needs |
 | --- | --- |
 | Git backup and sync | The `git` program |
-| Similar notes | `curl` and an Ollama-compatible embedding service |
+| Similar notes | `curl` and an embedding service: Ollama, or any OpenAI-compatible one (LM Studio, vLLM, llama.cpp) |
 | At-point actions | [Embark](https://github.com/oantolin/embark); Supertag registers its actions when Embark loads |
 | AI commands | The superchat package, loaded before you run them |
 | Summary panels and Stream agents | Superchat or [gptel](https://github.com/karthink/gptel); see `supertag-summary-provider` |
@@ -182,17 +182,31 @@ mechanics and configuration are in [doc/sync.md](doc/sync.md).
 
 ### Similar notes
 
-An optional feature, off by default. It needs `curl` on the machine, a local Ollama or a
-compatible embedding service, and an embedding model ready on that service (`bge-m3` by
-default).
+An optional feature, off by default. It needs `curl` on the machine, an embedding service, and an
+embedding model ready on that service (`bge-m3` by default). Two request formats are
+supported. Ollama (the default):
 
 ```emacs-lisp
 (setq supertag-semantic-endpoint "http://localhost:11434")
 (setq supertag-semantic-model "bge-m3")
 ```
 
-The service must be `/api/embed` compatible; `supertag-semantic-endpoint` takes the root
-address without `/api/embed` appended.
+Any OpenAI-compatible `/v1/embeddings` service — LM Studio, vLLM, the llama.cpp server, or
+a hosted one:
+
+```emacs-lisp
+(setq supertag-semantic-api 'openai)
+(setq supertag-semantic-endpoint "http://localhost:1234/v1")  ; with or without /v1
+(setq supertag-semantic-model "text-embedding-nomic-embed-text-v1.5")
+;; Only for a service that wants a key; a function keeps it out of your config:
+(setq supertag-semantic-api-key
+      (lambda () (auth-source-pick-first-password :host "api.example.com")))
+```
+
+`supertag-semantic-endpoint` takes the root address; Supertag adds `/api/embed` or
+`/v1/embeddings`. The similarity floor (`supertag-semantic-min-similarity`) was tuned on
+`bge-m3`; a different model, especially an English-only one on Chinese notes, may need its own
+floor. Changing the model rebuilds the index.
 
 Then `M-x supertag-semantic-rebuild`. It first asks whether to enable similar notes for future
 sessions; after you agree it probes the service and model, and only a successful probe writes

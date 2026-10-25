@@ -79,7 +79,9 @@ Combine conditions with `and`, `or`, `not`. The full operator set is in
 With `:if-missing t`, `:update-property` reads the property from the live Org source and
 leaves it alone unless the key is absent or holds an empty or whitespace-only value: that is
 how a rule expresses a default rather than a forced state. Without the flag the value is
-always written, which is what a rule that forces a value wants. A skipped write changes
+always written, which is what a rule that forces a value wants. The value `today` (a
+symbol, not the string `"today"`) writes the current date, as `[YYYY-MM-DD Day]` unless
+the property's existing values across the Store are all plain `YYYY-MM-DD` dates. A skipped write changes
 nothing (no buffer edit, no save, no projection refresh) and is reported when
 `supertag-automation-verbose` is on.
 

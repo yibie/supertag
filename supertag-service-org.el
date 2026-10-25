@@ -1103,6 +1103,17 @@ than rebuilding its whole projection."
       (user-error "Org special property %s is read-only" name))
     name))
 
+(defun supertag-service-org-date-text (values &optional time)
+  "Return TIME, default now, as a date written the way VALUES write theirs.
+VALUES are a property's existing texts.  The date is an Org timestamp
+`[YYYY-MM-DD Day]' when VALUES is empty or any of them is one, and a plain
+`YYYY-MM-DD' only when every value is plain."
+  (format-time-string
+   (if (or (null values)
+           (cl-some (lambda (value) (string-prefix-p "[" value)) values))
+       "[%Y-%m-%d %a]" "%Y-%m-%d")
+   time))
+
 (defun supertag-service-org--property-value (value)
   "Return VALUE's deterministic Org text, or nil for deletion."
   (let ((text (cond

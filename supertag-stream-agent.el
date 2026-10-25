@@ -530,10 +530,7 @@ Return STATE unchanged when no agent matches.  This is
   (let* ((field (plist-get action :field))
          (existing (supertag-stream-agent--field-values field ids))
          ;; Follow the field's existing values; a new field gets an Org date.
-         (stamped (or (null existing)
-                      (seq-some (lambda (value) (string-prefix-p "[" value)) existing)))
-         (day (lambda (time)
-                (format-time-string (if stamped "[%Y-%m-%d %a]" "%Y-%m-%d") time))))
+         (day (lambda (time) (supertag-service-org-date-text existing time))))
     (pcase (plist-get action :value)
       ('today (funcall day nil))
       ('created (funcall day (or (supertag-view-stream--created-time node)

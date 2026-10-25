@@ -634,9 +634,21 @@ BRANCH can specify :equals (single value or list), :in (list),
     (when (and (not matched) default-actions)
       (supertag-automation--execute-actions default-actions node-id context))))
 
+(defun supertag-automation--property-values (property)
+  "Return the texts PROPERTY has on the nodes in the Store."
+  (let ((key (intern (concat ":" (supertag-service-org--property-name property))))
+        values)
+    (maphash (lambda (_id node)
+               (when-let* ((value (plist-get (plist-get node :properties) key)))
+                 (push (format "%s" value) values)))
+             (supertag-store-get-collection :nodes))
+    values))
+
 (defun supertag-automation-action-update-property (node-id params)
   "Update NODE-ID's Org property from PARAMS, then refresh its Projection.
-PARAMS carries `:property' and `:value'.  With a non-nil `:if-missing' the
+PARAMS carries `:property' and `:value'.  The value `today' writes the
+current date, formatted as the property's dates already are across the
+Store (`supertag-service-org-date-text').  With a non-nil `:if-missing' the
 value is written only when the live Org property is absent, empty or
 whitespace-only; a property that holds any other value is left exactly as it
 is, and the skipped write edits nothing.  The decision is made from the
@@ -654,7 +666,12 @@ from the Store projection."
         (supertag-automation--log
          "SKIP(update-property): %s already has a value; :if-missing leaves it"
          (supertag-service-org--property-name property))
-      (supertag-service-org-set-property node-id property value))))
+      (supertag-service-org-set-property
+       node-id property
+       (if (eq value 'today)
+           (supertag-service-org-date-text
+            (supertag-automation--property-values property))
+         value)))))
 
 (defun supertag-automation-action-update-todo-state (node-id params)
   "Update the TODO state of a node.

@@ -347,6 +347,27 @@
                      (plist-get (plist-get (supertag-node-get "node-id") :properties)
                                 :STATUS))))))
 
+;;; `today' ---------------------------------------------------------------------
+
+(ert-deftest supertag-automation-property-today-writes-an-org-date-for-a-new-field ()
+  "`today' writes an Org timestamp when no node holds the property yet."
+  (supertag-automation-property-test--with-node nil
+    (supertag-automation-action-update-property
+     "node-id" '(:property :added :value today))
+    (should (equal (format-time-string "[%Y-%m-%d %a]")
+                   (supertag-automation-property-test--disk-property file "ADDED")))))
+
+(ert-deftest supertag-automation-property-today-follows-the-field-s-plain-dates ()
+  "`today' writes a plain date when the property's dates are plain."
+  (supertag-automation-property-test--with-node nil
+    (supertag-store-put-entity
+     :nodes "other" (list :id "other" :title "Other"
+                          :properties '(:ADDED "2026-01-02")))
+    (supertag-automation-action-update-property
+     "node-id" '(:property :added :value today))
+    (should (equal (format-time-string "%Y-%m-%d")
+                   (supertag-automation-property-test--disk-property file "ADDED")))))
+
 ;;; `:if-missing' -----------------------------------------------------------------
 
 (ert-deftest supertag-automation-property-if-missing-fills-an-absent-key ()

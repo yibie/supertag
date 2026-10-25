@@ -74,6 +74,8 @@ S-expression，比如 `(property "STATUS" "ready")`、`(term "emacs")`、
 
 `:if-missing t` 时，`:update-property` 从实时 Org 源读取该属性，只有在键不存在、或值为空或全空白时才写入，
 因此规则可以表达「默认值」而不是「强制值」。不写这个参数时照旧总是写入，适合要强制某种状态的规则。
+值写 `today`（符号，不是字符串 `"today"`）时写入当天日期：格式为 `[YYYY-MM-DD 周几]`，
+只有当 Store 里该属性已有的值全是 `YYYY-MM-DD` 这种纯日期时才写纯日期。
 被跳过的写入什么也不改（不动 buffer、不保存、不刷新投影），打开 `supertag-automation-verbose` 时会记日志。
 
 `:case` 的每个分支用 `:equals`／`:in`／`:match`／`:test` 之一匹配，`:actions`

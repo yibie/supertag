@@ -81,7 +81,9 @@ a user needed them. So an agent declares the fields its actions write.
   `CREATED`, `CATEGORY`, Org's own, `…_ALL`). (`…-refuses-what-the-rules-forbid`)
 - **Enforced.** The declaration is the field's rule for every node in scope,
   whatever file it lives in. Org's `KEY_ALL` works per file or subtree, never
-  per tag. (`…-declaration-holds-in-every-file`)
+  per tag. (`…-declaration-holds-in-every-file`) It binds the agent's own keys
+  only: a hand edit or an automation rule may write any value, which then
+  shows up among the values in use.
 - **Enforced.** The values a key may write come first from Org's `KEY_ALL`
   where the node lives, then from the agent's declaration, then from values
   already in use. (`…-org-declaration-comes-first`)
@@ -157,6 +159,12 @@ a user needed them. So an agent declares the fields its actions write.
   moment the agent works: its groups, lines and keys are the interface for
   that tag. A second, per-note moment adds nothing.
 
+- **Agents that run when a note arrives, to fill a field quietly.** Writing
+  on arrival or on a timer is automation's job ([doc/automation.md](doc/automation.md)):
+  an `:on-tag-added` rule with `:update-property`, `:if-missing t` for a
+  default and `:value today` for a date. Automation does not read agent
+  declarations, so the two stay independent.
+
 ## 10. Still open
 
-- Agents that run when a note arrives, to fill a field quietly.
+- Nothing at present.

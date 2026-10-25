@@ -155,6 +155,28 @@
               (supertag-view-tags-quit))))
       (supertag-tag-manager-test--kill-buffers))))
 
+(ert-deftest supertag-view-tags-names-are-tags-to-contextual-actions ()
+  "A Tag Manager name is that tag to Embark, as it is in every other view."
+  (require 'supertag-embark)
+  (supertag-tag-manager-test--with-store
+    (unwind-protect
+        (save-window-excursion
+          (supertag-tag-create '(:id "book" :name "book"))
+          (let ((buffer (supertag-view-tags)))
+            (with-current-buffer buffer
+              (goto-char (point-min))
+              (should (re-search-forward "^  book" nil t))
+              (let ((start (- (match-end 0) 4)) (end (match-end 0)))
+                (should (equal "book" (get-text-property start 'supertag-tag-id)))
+                (should (equal "book" (get-text-property (1- end) 'supertag-tag-id)))
+                (should-not (get-text-property (1- start) 'supertag-tag-id))
+                (should-not (get-text-property end 'supertag-tag-id))
+                (goto-char (1+ start))
+                (should (equal (supertag-embark-target-finder)
+                               (cl-list* 'supertag-tag "#book" start end))))
+              (supertag-view-tags-quit))))
+      (supertag-tag-manager-test--kill-buffers))))
+
 (ert-deftest supertag-view-tags-create-child-under-tag-at-point ()
   (supertag-tag-manager-test--with-store
     (unwind-protect

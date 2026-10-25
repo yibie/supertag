@@ -494,6 +494,24 @@ file.  Panels are kept under the vault."
             (should (and from (<= from (point)) (<= (point) to)))
             (should (/= from position))))))))
 
+(ert-deftest supertag-summary-entry-titles-are-nodes-to-contextual-actions ()
+  "An entry title is the node it names to Embark, as in Node View."
+  (require 'supertag-embark)
+  (supertag-summary-test-with-vault
+    (supertag-summary--accept (supertag-summary-test--panel)
+                              supertag-summary-test--board)
+    (with-current-buffer "*Supertag Summary: board*"
+      (goto-char (point-min))
+      (should (search-forward "Write the announcement" nil t))
+      (let ((start (match-beginning 0)) (end (match-end 0)))
+        (should (equal "ws-a1" (get-text-property start 'supertag-node-id)))
+        (should (equal "ws-a1" (get-text-property (1- end) 'supertag-node-id)))
+        (should-not (get-text-property end 'supertag-node-id))
+        (goto-char (+ start 4))
+        (should (equal (supertag-embark-target-finder)
+                       (cl-list* 'supertag-node-reference
+                                 "Write the announcement" start end)))))))
+
 (ert-deftest supertag-summary-unchanged-redraw-starts-no-child ()
   "A redraw with unchanged records does not run the layout code again."
   (supertag-summary-test-with-vault

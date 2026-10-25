@@ -135,6 +135,13 @@ carry the card property (OPEN, relation lines, semantic hits)."
             :node-id (bound-and-true-p supertag-view-node--current-node-id)
             :begin (car bounds) :end (cdr bounds)))))
 
+(defun supertag-embark--tag-property-target ()
+  "Return the Tag named by a `supertag-tag-id' property at point, in any view."
+  (when-let* ((id (get-text-property (point) 'supertag-tag-id))
+              (bounds (supertag-embark--property-bounds (point) 'supertag-tag-id)))
+    (list :kind :tag :origin :view-tag-reference :tag-id id :node-id nil
+          :begin (car bounds) :end (cdr bounds))))
+
 (defun supertag-embark--require-saved-node (node-id)
   "Reject remote writes when NODE-ID's other visiting buffer has drafts."
   (let ((file (plist-get (supertag-node-get node-id) :file)))
@@ -166,6 +173,7 @@ carry the card property (OPEN, relation lines, semantic hits)."
   (or (supertag-embark--stream-tag-target)
       (supertag-embark--node-target-at (point))
       (supertag-embark--view-tag-target)
+      (supertag-embark--tag-property-target)
       (supertag-embark--region-target)
       (supertag-embark--org-link-target)
       (supertag-embark--inline-tag-target)

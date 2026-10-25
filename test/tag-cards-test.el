@@ -538,6 +538,58 @@ exactly what the measurement command groups its lines by."
         (when (buffer-live-p buffer)
           (kill-buffer buffer))))))
 
+(ert-deftest supertag-tag-cards-entry-rows-are-nodes-to-contextual-actions ()
+  "A `→ title' row is the node it names, to Embark as to Node View.
+
+The row carries `supertag-node-id' through TextUI materialization, and the
+Embark target finder reads it as a node reference whose bounds are the row
+text, not the padding after it."
+  (require 'supertag-embark)
+  (supertag-tag-cards-test--with-store
+    (let ((name supertag-view-tag-cards--buffer-name)
+          buffer)
+      (when-let* ((old (get-buffer name)))
+        (kill-buffer old))
+      (unwind-protect
+          (progn
+            (setq buffer (supertag-view-tag-cards))
+            (with-current-buffer buffer
+              (goto-char (point-min))
+              (should (search-forward "→ Read the guide" nil t))
+              (let ((start (match-beginning 0)) (end (match-end 0)))
+                (should (equal "n1" (get-text-property start 'supertag-node-id)))
+                (should (equal "n1" (get-text-property (1- end) 'supertag-node-id)))
+                (should-not (get-text-property end 'supertag-node-id))
+                (goto-char (+ start 4))
+                (should (equal (supertag-embark-target-finder)
+                               (cl-list* 'supertag-node-reference "Read the guide"
+                                         start end))))
+              ;; A tag facet row is that tag: marker and label, not the count.
+              (goto-char (point-min))
+              (should (search-forward "+ TAG / READING" nil t))
+              (let ((start (match-beginning 0)) (end (match-end 0)))
+                (should (equal "reading" (get-text-property start 'supertag-tag-id)))
+                (should (equal "reading"
+                               (get-text-property (1- end) 'supertag-tag-id)))
+                (should-not (get-text-property end 'supertag-tag-id))
+                (goto-char (+ start 8))
+                (should (equal (supertag-embark-target-finder)
+                               (cl-list* 'supertag-tag "#reading" start end))))
+              ;; A tag card's title is that tag too, without its fill.
+              (goto-char (point-min))
+              (should (search-forward " TAG / PROJECT " nil t))
+              (let ((start (1+ (match-beginning 0))) (end (1- (match-end 0))))
+                (should (equal "project" (get-text-property start 'supertag-tag-id)))
+                (should (equal "project"
+                               (get-text-property (1- end) 'supertag-tag-id)))
+                (should-not (get-text-property (1- start) 'supertag-tag-id))
+                (should-not (get-text-property end 'supertag-tag-id))
+                (goto-char (+ start 4))
+                (should (equal (supertag-embark-target-finder)
+                               (cl-list* 'supertag-tag "#project" start end))))))
+        (when (buffer-live-p buffer)
+          (kill-buffer buffer))))))
+
 (ert-deftest supertag-tag-cards-measure-reports-column-aligned-batch-tracks ()
   "The live measurement command sees all local card spans in a terminal."
   (supertag-tag-cards-test--with-store

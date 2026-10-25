@@ -107,7 +107,7 @@ repeated Tag so the walk still terminates."
     (concat (propertize (if (member id supertag-view-tags--marked-ids) "* " "  ")
                         'face 'supertag-view-accent)
             (make-string (* 2 (plist-get row :depth)) ?\s)
-            name
+            (propertize name 'supertag-tag-id id)
             (format "  (%d node%s)" count (if (= count 1) "" "s"))
             (if extra (format "  Aliases: %s" (string-join extra ", ")) "")
             (if (plist-get row :orphan) "  [Orphan: missing parent]" ""))))

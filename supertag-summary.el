@@ -813,7 +813,8 @@ from plain text, so no function and no text property can ride along."
         (id (plist-get element :node-id)))
     (list (append (list :type 'supertag-view-tag-cards-link
                         :tag label :value label
-                        :action (lambda (&rest _) (supertag-goto-node id t)))
+                        :action (lambda (&rest _) (supertag-goto-node id t))
+                        :supertag-node-id id)
                   (when-let* ((layout (plist-get element :layout)))
                     (list :layout layout))))))
 

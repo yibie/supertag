@@ -124,7 +124,18 @@ the face properties used by Tag Cards fills."
             (face (get-text-property position 'face value)))
         (when face
           (put-text-property (+ from position) (+ from next) 'face face))
-        (setq position next)))))
+        (setq position next)))
+    ;; An object id must cover the whole span it names, but TextUI leaves the
+    ;; spaces between words without it, so it is put back from its first
+    ;; through its last character in the value.
+    (dolist (property '(supertag-tag-id supertag-node-id))
+      (when-let* ((first (text-property-not-all 0 length property nil value)))
+        (let ((last first))
+          (dotimes (index (- length first))
+            (when (get-text-property (+ first index) property value)
+              (setq last (+ first index))))
+          (put-text-property (+ from first) (+ from last 1) property
+                             (get-text-property first property value)))))))
 
 (define-widget 'supertag-view-tag-cards-item 'item
   "A static TextUI item whose attributed value survives measurement."
@@ -148,7 +159,18 @@ the face properties used by Tag Cards fills."
   (widget-put widget :to (copy-marker to nil))
   (widget-put widget :delete #'widget-leave-text)
   (widget-put widget :textui-attached t)
-  (widget-specify-button widget from to))
+  (widget-specify-button widget from to)
+  ;; TextUI rebuilds the row word by word and leaves the spaces between words
+  ;; without the label's text properties, so a property that must span the
+  ;; whole label is put on here, over `:supertag-id-span' characters (the
+  ;; label without its padding by default) and not the rest of the row.
+  (let ((span (or (widget-get widget :supertag-id-span)
+                  (length (string-trim-right
+                           (supertag-view-tag-cards--link-measure widget))))))
+    (pcase-dolist (`(,key . ,property) '((:supertag-node-id . supertag-node-id)
+                                         (:supertag-tag-id . supertag-tag-id)))
+      (when-let* ((id (widget-get widget key)))
+        (put-text-property from (min to (+ from span)) property id)))))
 
 (define-widget 'supertag-view-tag-cards-link 'link
   "A bracket-free, TextUI-attached link for dense card rows."
@@ -996,23 +1018,36 @@ closes the track's pixel edge itself."
                  (supertag-view-tag-cards--facet-row-label facet)
                  marker (concat " " count)
                  (supertag-view-tag-cards--target-width track))))
-    (supertag-view-tag-cards--link
-     (supertag-view-tag-cards--pad-between (concat marker label) count track)
-     (lambda (&rest _) (supertag-view-tag-cards--add-facet facet scope))
-     (supertag-view-tag-cards--card-identity card)
-     (list 'facet scope facet))))
+    (append
+     (supertag-view-tag-cards--link
+      (supertag-view-tag-cards--pad-between (concat marker label) count track)
+      (lambda (&rest _) (supertag-view-tag-cards--add-facet facet scope))
+      (supertag-view-tag-cards--card-identity card)
+      (list 'facet scope facet))
+     ;; A tag row is that tag to contextual actions (Embark): marker and
+     ;; label, not the count.
+     (when (eq (car facet) 'tag)
+       (list :supertag-tag-id (cdr facet)
+             :supertag-id-span (length (concat marker label)))))))
 
 (defun supertag-view-tag-cards--card-node-element (node-id card)
-  "Return NODE-ID as CARD's clickable entry row element."
+  "Return NODE-ID as CARD's clickable entry row element.
+
+The row carries `supertag-node-id', the same property Node View puts on its
+entry buttons, so the node is the same object to contextual actions (Embark)
+here as it is there.  The link's attach step puts it on the text."
   (let* ((track (plist-get card :budget))
          (title (supertag-view-tag-cards--fit-label-to-target
                  (supertag-view-tag-cards--node-title node-id)
                  "→ " "" (supertag-view-tag-cards--target-width track))))
-    (supertag-view-tag-cards--link
-     (supertag-view-tag-cards--pad-right (concat "→ " title) track)
-     (lambda (&rest _) (supertag-goto-node node-id))
-     (supertag-view-tag-cards--card-identity card)
-     (list 'node (plist-get card :scope) node-id))))
+    (append
+     (supertag-view-tag-cards--link
+      (supertag-view-tag-cards--pad-right (concat "→ " title) track)
+      (lambda (&rest _) (supertag-goto-node node-id))
+      (supertag-view-tag-cards--card-identity card)
+      (list 'node (plist-get card :scope) node-id))
+     (list :supertag-node-id node-id
+           :supertag-id-span (length (concat "→ " title))))))
 
 (defun supertag-view-tag-cards--card-element (card)
   "Return CARD as one TextUI grid child: a column of native card lines.
@@ -1030,7 +1065,13 @@ remaining pixel edge of each track."
            track 'supertag-view-mute identity)
           children)
     (push (supertag-view-tag-cards--filled-title-item
-           (plist-get card :title) (plist-get card :count) track
+           (let ((title (plist-get card :title))
+                 (facet (plist-get card :facet)))
+             ;; A tag card's title is that tag to contextual actions.
+             (if (eq (car-safe facet) 'tag)
+                 (propertize (format "%s" title) 'supertag-tag-id (cdr facet))
+               title))
+           (plist-get card :count) track
            (plist-get card :face) identity)
           children)
     (when-let* ((records (plist-get card :records)))

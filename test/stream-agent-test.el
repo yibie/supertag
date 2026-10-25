@@ -550,6 +550,59 @@ two contact files; work.org declares TIER_ALL itself."
               '((:name "TIER" :shape choice :values ("a")))
               '((:key "x" :label "?" :field "TIER" :value ask)))))))
 
+(defun supertag-stream-agent-test--planning (file heading key)
+  "Return Org's KEY, SCHEDULED or DEADLINE, under HEADING in FILE on disk."
+  (with-temp-buffer
+    (insert-file-contents file)
+    (org-mode)
+    (goto-char (point-min))
+    (and (re-search-forward (concat "^\\* " heading) nil t)
+         (org-entry-get nil key))))
+
+(ert-deftest supertag-stream-agent-puts-a-note-on-a-day ()
+  "SCHEDULED and DEADLINE are written undeclared, as Org dates, and the view sees them."
+  (supertag-stream-agent-test-with-vault
+    (let ((agent (list :name "contact" :scope '(:tag "contact")
+                       :view "(lambda (data width)
+  (list :groups (list (list :label \"有日期\"
+                            :rows (mapcar (lambda (entry)
+                                            (list :ref (plist-get entry :ref)
+                                                  :line (or (plist-get entry :scheduled) \"\")))
+                                          (seq-filter (lambda (entry) (plist-get entry :scheduled))
+                                                      (plist-get data :records))))
+                      (list :label \"其余\"
+                            :rows (mapcar (lambda (entry) (list :ref (plist-get entry :ref) :line \"\"))
+                                          (seq-remove (lambda (entry) (plist-get entry :scheduled))
+                                                      (plist-get data :records)))))))"
+                       :actions '((:key "s" :label "排到某天" :field "SCHEDULED" :value ask)
+                                  (:key "d" :label "今天截止" :field "DEADLINE" :value today)))))
+      (should-not (supertag-stream-agent--refused agent))
+      (supertag-stream-agent-test--keep agent)
+      (let ((buffer (supertag-stream-agent-test--open '(:tag "contact"))))
+        (with-current-buffer buffer
+          (cl-letf (((symbol-function 'org-read-date)
+                     (lambda (&rest _) (encode-time 0 0 0 1 11 2026))))
+            (supertag-view-stream--select-node buffer "c-alice")
+            (call-interactively (key-binding (kbd "s")))
+            (supertag-view-stream--select-node buffer "c-bob")
+            (call-interactively (key-binding (kbd "d")))))
+        (should (equal (car (car (supertag-stream-agent-test--groups buffer))) "有日期"))
+        (should (member "Alice" (car (supertag-stream-agent-test--groups buffer)))))
+      (should (equal (supertag-stream-agent-test--planning friends "Alice" "SCHEDULED")
+                     "<2026-11-01 Sun>"))
+      (should (equal (supertag-stream-agent-test--planning friends "Bob" "DEADLINE")
+                     (format-time-string "<%Y-%m-%d %a>")))
+      ;; Org's own rule, not a property drawer entry.
+      (should-not (supertag-stream-agent-test--prop friends "Alice" "SCHEDULED"))))
+  (supertag-stream-agent-test-with-vault
+    ;; A fixed value or a choice is not a date.
+    (dolist (value '("2026-11-01" choose))
+      (should (supertag-stream-agent-test--refusal
+               nil `((:key "s" :label "?" :field "SCHEDULED" :value ,value)))))
+    ;; Other Org properties stay forbidden.
+    (should (supertag-stream-agent-test--refusal
+             nil '((:key "t" :label "?" :field "TODO" :value "DONE"))))))
+
 ;;; Managing agents
 
 (ert-deftest supertag-stream-agent-stop-start-and-delete ()

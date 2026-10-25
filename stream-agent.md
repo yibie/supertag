@@ -78,7 +78,7 @@ a user needed them. So an agent declares the fields its actions write.
   already in use in scope; otherwise the agent would fail the day that value
   is removed. A revision asks the model to declare any it missed. A field has a shape, `date`, `number`, `text` or `choice`;
   `choice` lists its values. Names are upper case and not reserved (`ID`,
-  `CREATED`, `CATEGORY`, Org's own, `…_ALL`). (`…-refuses-what-the-rules-forbid`)
+  `CREATED`, `CATEGORY`, Org's own except `SCHEDULED` and `DEADLINE`, `…_ALL`). (`…-refuses-what-the-rules-forbid`)
 - **Enforced.** The declaration is the field's rule for every node in scope,
   whatever file it lives in. Org's `KEY_ALL` works per file or subtree, never
   per tag. (`…-declaration-holds-in-every-file`) It binds the agent's own keys
@@ -101,6 +101,15 @@ a user needed them. So an agent declares the fields its actions write.
 - **Enforced.** `ask` follows the field's shape: a date field asks for a
   date, a number field for a number, a text field for one line. A `choice`
   field takes `choose`, never `ask`. (`…-ask-takes-what-the-user-types`)
+- **Enforced.** `SCHEDULED` and `DEADLINE` are the one exception to
+  declaring: Org owns their rule and form, so an action may write them
+  undeclared, with `today`, `created` or `ask` only. They are written as
+  Org's planning line (`SCHEDULED: <2026-11-01 Sun>`), so agenda sees the
+  same date; a view reads them as `:scheduled` and `:deadline`.
+  (`…-puts-a-note-on-a-day`)
+- **Prompted.** Only when the user's words ask to put a note on a day
+  (schedule, remind, due, postpone) does an agent get such a key; otherwise
+  it gets none, and never a side property standing in for the date.
 - **Enforced.** Keys are single characters and never shadow Stream's own
   (`n p e v f u m g q`) or the agent's `R` and `C`.
 - **Enforced.** After a write the Stream redraws and the cursor stays at the

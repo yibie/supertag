@@ -35,7 +35,9 @@
 ;;   at point.  The value is today, the creation day, a fixed value, one the
 ;;   user picks or one the user types; the values come from Org's KEY_ALL
 ;;   where the node lives, then the agent's declaration, then the values
-;;   already in use.
+;;   already in use.  SCHEDULED and DEADLINE are the exception: Org owns
+;;   them, so a key may write them undeclared, as a date, when the user's
+;;   words ask to put a note on a day.
 ;;
 ;; Design and revision hold a new agent to rules that code can check, and
 ;; refuse it, so the model writes it again, when one fails: every record
@@ -85,6 +87,11 @@ panels, or under `supertag-data-directory' when no sync directory is set."
 
 (defconst supertag-stream-agent--shapes '(date number text choice)
   "Shapes a declared field may have.")
+
+(defconst supertag-stream-agent--planning-fields '("SCHEDULED" "DEADLINE")
+  "Org's own dates an action may write without declaring them.
+Org owns their rule and their form, `<2026-10-27 Tue>', and agenda reads
+them, so a date set in a Stream is the same date everywhere.")
 
 (defvar supertag-stream-agent--last nil
   "The outcome of the last design or revision, kept for inspection.")
@@ -139,6 +146,11 @@ panels, or under `supertag-data-directory' when no sync directory is set."
                        "LOGGING" "ARCHIVE" "STYLE" "ORDERED" "NOBLOCKING"))
         (member name org-special-properties)
         (string-suffix-p "_ALL" name))))
+
+(defun supertag-stream-agent--planning-p (field)
+  "Return non-nil when FIELD is SCHEDULED or DEADLINE."
+  (and (stringp field)
+       (member (upcase field) supertag-stream-agent--planning-fields)))
 
 (defun supertag-stream-agent--scope-ids (scope)
   "Return the node IDs SCOPE covers, resolving a tag the way Stream does."
@@ -213,6 +225,9 @@ RESERVED are the keys an action may not take."
       (format "动作的键 %S 必须是一个字符" key))
      ((member key reserved) (format "动作的键 %s 已被 Stream 占用" key))
      ((not (stringp field)) (format "动作的字段 %S 必须是字符串" field))
+     ((supertag-stream-agent--planning-p field)
+      (unless (memq value '(today created ask))
+        (format "%s 是 Org 的日期，动作的值只能是 today、created 或 ask" field)))
      ((supertag-stream-agent--reserved-field-p field)
       (format "字段 %s 归 Org 或 Supertag 管，动作不能写它" field))
      ;; Declared, not merely present: a field already on some note would
@@ -528,9 +543,13 @@ Return STATE unchanged when no agent matches.  This is
 (defun supertag-stream-agent--value (agent action node ids)
   "Return the text ACTION of AGENT writes on NODE; IDS is the agent's scope."
   (let* ((field (plist-get action :field))
-         (existing (supertag-stream-agent--field-values field ids))
+         (planning (supertag-stream-agent--planning-p field))
+         (existing (unless planning (supertag-stream-agent--field-values field ids)))
          ;; Follow the field's existing values; a new field gets an Org date.
-         (day (lambda (time) (supertag-service-org-date-text existing time))))
+         ;; A bare day is what Org schedules from: it writes <2026-10-27 Tue>.
+         (day (if planning
+                  (lambda (time) (format-time-string "%Y-%m-%d" time))
+                (lambda (time) (supertag-service-org-date-text existing time)))))
     (pcase (plist-get action :value)
       ('today (funcall day nil))
       ('created (funcall day (or (supertag-view-stream--created-time node)
@@ -540,7 +559,9 @@ Return STATE unchanged when no agent matches.  This is
                 (supertag-stream-agent--choices agent field ids (plist-get node :id))
                 nil t))
       ('ask (supertag-stream-agent--ask-value
-             field (plist-get (supertag-stream-agent--declared agent field) :shape)
+             field (if planning
+                       'date
+                     (plist-get (supertag-stream-agent--declared agent field) :shape))
              (plist-get action :label) day))
       ((and (pred stringp) value) value))))
 
@@ -672,8 +693,17 @@ choice 还要给出可选值：(:name \"TIER\" :shape choice :values (\"核心\"
 - 这条声明就是这个属性在整个标签下的规则，不管笔记在哪个文件里，都按它来写。
 - 名字用大写字母、数字和下划线，说清是什么（LAST_CONTACT，不要 LC）。\
 已有的属性意思相同就沿用它的名字，但只要动作会写它，也照样要声明。
-- 不能用 TODO、SCHEDULED、DEADLINE、PRIORITY、TAGS 这些 Org 自己的属性，也不能用 _ALL 结尾的名字。
+- 不能用 TODO、PRIORITY、TAGS 这些 Org 自己的属性，也不能用 _ALL 结尾的名字。\
+SCHEDULED、DEADLINE 见下面\"计划日期\"。
 - 日期由 Stream 按 Org 的格式写入（[2026-10-24 Sat]），读的时候 data 里已经是 \"YYYY-MM-DD\"。
+
+* 计划日期
+- 只有用户的话要求给笔记排日期时（安排在某天、提醒、截止、推迟到某天），动作才写 SCHEDULED 或 DEADLINE。\
+用户没提，就不要加这类动作，也不要为日期另造属性。
+- 计划在某天做用 SCHEDULED，必须在某天前完成用 DEADLINE。
+- 这两个不在 :fields 里声明，Org 管它们的写法；动作直接写 :field \"SCHEDULED\" 或 :field \"DEADLINE\"，\
+:value 只能是 today、created 或 ask（弹出选日期，用户可以输入 +1w 这样的相对日期）。
+- 写入后 Org agenda 也会看到这个日期；data 里的 :scheduled、:deadline 就是它们。
 
 * 动作
 每个动作：(:key \"c\" :label \"按钮说明\" :field \"属性名\" :value 值)
@@ -682,6 +712,7 @@ choice 还要给出可选值：(:name \"TIER\" :shape choice :values (\"核心\"
 choose（让用户从可选值里选一个）、ask（让用户自己输入一个值：date 弹出选日期，number 输入数字，\
 text 输入一行文字；choice 不用 ask，用 choose），或者一个字符串（直接写这个值，必须是这个属性的可选值或已有的值）。
 - 一组固定的选择（比如四个层级）可以每个值一个键，也可以一个键加 choose。
+- :field 是 :fields 里声明过的属性，或者 SCHEDULED、DEADLINE（见\"计划日期\"）。
 - 动作只会把这一个属性写到用户当前选中的那条笔记上。不能新建笔记、不能写别的东西、不能定时运行。
 - 动作写完后 Stream 会重画，光标停在原来的行位置。没有需要的动作就写 :actions nil。")
   "System prompt asking for a Stream agent.")
@@ -771,24 +802,31 @@ group, draw a Stream of one note, and still draw after each of its keys."
 
 (defun supertag-stream-agent--probe-value (agent action ids id)
   "Return a value ACTION could write on node ID, or nil when it can't say."
-  (pcase (plist-get action :value)
-    ('today (format-time-string "[%Y-%m-%d %a]"))
-    ('choose (car (supertag-stream-agent--choices agent (plist-get action :field) ids id)))
-    ('ask (pcase (plist-get (supertag-stream-agent--declared agent (plist-get action :field))
-                            :shape)
-            ('date (format-time-string "[%Y-%m-%d %a]"))
-            ('number "3")
-            (_ "示例")))
-    ((and (pred stringp) value) value)))
+  (let ((field (plist-get action :field)))
+    (if (supertag-stream-agent--planning-p field)
+        (and (memq (plist-get action :value) '(today ask))
+             (format-time-string "<%Y-%m-%d %a>"))
+      (pcase (plist-get action :value)
+        ('today (format-time-string "[%Y-%m-%d %a]"))
+        ('choose (car (supertag-stream-agent--choices agent field ids id)))
+        ('ask (pcase (plist-get (supertag-stream-agent--declared agent field) :shape)
+                ('date (format-time-string "[%Y-%m-%d %a]"))
+                ('number "3")
+                (_ "示例")))
+        ((and (pred stringp) value) value)))))
 
 (defun supertag-stream-agent--with-value (nodes id field value)
-  "Return NODES with FIELD of node ID set to VALUE, in memory only."
+  "Return NODES with FIELD of node ID set to VALUE, in memory only.
+SCHEDULED and DEADLINE live on the node itself, not among its properties."
   (mapcar (lambda (node)
-            (if (not (equal (plist-get node :id) id))
-                node
+            (cond
+             ((not (equal (plist-get node :id) id)) node)
+             ((supertag-stream-agent--planning-p field)
+              (plist-put (copy-sequence node) (intern (concat ":" (downcase field))) value))
+             (t
               (plist-put (copy-sequence node) :properties
                          (plist-put (copy-sequence (plist-get node :properties))
-                                    (intern (concat ":" field)) value))))
+                                    (intern (concat ":" field)) value)))))
           nodes))
 
 (defun supertag-stream-agent--report (agent)
@@ -957,7 +995,8 @@ user's words are kept as revisions, never the model's own checks."
          (before (plist-get agent :revisions))
          (undeclared (seq-uniq
                       (seq-remove (lambda (field)
-                                    (supertag-stream-agent--declared agent field))
+                                    (or (supertag-stream-agent--planning-p field)
+                                        (supertag-stream-agent--declared agent field)))
                                   (mapcar (lambda (a) (plist-get a :field))
                                           (plist-get agent :actions)))))
          (print-length nil) (print-level nil))

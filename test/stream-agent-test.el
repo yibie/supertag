@@ -301,6 +301,8 @@ two contact files; work.org declares TIER_ALL itself."
   (supertag-stream-agent-test-with-vault
     (dolist (case
              '((nil ((:key "x" :label "?" :field "MOOD" :value "calm")))
+               ;; In use on a note, but not declared.
+               (nil ((:key "x" :label "?" :field "LAST_CONTACT" :value today)))
                (((:name "TIER" :shape choice :values ("a" "b")))
                 ((:key "x" :label "?" :field "TIER" :value "c")))
                (((:name "CATEGORY" :shape text)) nil)
@@ -421,6 +423,20 @@ two contact files; work.org declares TIER_ALL itself."
                                 :revisions)
                      '("first" "second"))))))
 
+(ert-deftest supertag-stream-agent-revision-asks-to-declare-missing-fields ()
+  "Revising an agent whose action writes an undeclared field asks the model to declare it."
+  (supertag-stream-agent-test-with-vault
+    (supertag-stream-agent-test--keep
+     (plist-put (copy-sequence supertag-stream-agent-test--contact) :fields nil))
+    (let (sent)
+      (cl-letf (((symbol-function 'supertag-summary--ask)
+                 (lambda (prompt _system callback)
+                   (push prompt sent)
+                   (funcall callback "x" 'error))))
+        (supertag-stream-agent-revise "contact" "anything"))
+      (should (string-match-p "字段 LAST_CONTACT、TIER 还没有在 :fields 里声明"
+                              (car (last sent)))))))
+
 (ert-deftest supertag-stream-agent-design-keeps-nothing-when-no-reply-passes ()
   "Three refused replies leave no agent file behind."
   (supertag-stream-agent-test-with-vault
@@ -434,6 +450,144 @@ two contact files; work.org declares TIER_ALL itself."
       (should (= 3 asked))
       (should (eq 'none (plist-get supertag-stream-agent--last :outcome)))
       (should-not (file-exists-p (supertag-stream-agent--file "contact"))))))
+
+;;; Rules a new agent must pass
+
+(defconst supertag-stream-agent-test--partial
+  "(lambda (data width)
+  (list :groups (list (list :label \"一部分\"
+                            :rows (mapcar (lambda (entry) (list :ref (plist-get entry :ref)))
+                                          (cdr (plist-get data :records)))))))"
+  "A view that leaves the first record out.")
+
+(ert-deftest supertag-stream-agent-check-refuses-a-left-out-record ()
+  "An agent whose view leaves a record out of every group is refused."
+  (supertag-stream-agent-test-with-vault
+    (should (string-match-p
+             "1 条记录没有列进任何组"
+             (supertag-stream-agent--check
+              (plist-put (copy-sequence supertag-stream-agent-test--contact) :view
+                         supertag-stream-agent-test--partial))))))
+
+(ert-deftest supertag-stream-agent-check-refuses-a-view-that-breaks-on-one-note ()
+  "An agent whose view fails when the Stream holds one note is refused."
+  (supertag-stream-agent-test-with-vault
+    (should (string-match-p
+             "只剩 1 条笔记"
+             (supertag-stream-agent--check
+              (plist-put (copy-sequence supertag-stream-agent-test--contact) :view
+                         "(lambda (data width)
+  (let ((records (plist-get data :records)))
+    ;; Breaks on one note: the half-way mark divides by zero.
+    (list :header (format \"%d\" (/ 100 (1- (length records))))
+          :groups (list (list :label \"全部\"
+                              :rows (mapcar (lambda (entry) (list :ref (plist-get entry :ref)))
+                                            records))))))"))))))
+
+(ert-deftest supertag-stream-agent-check-refuses-a-key-that-breaks-the-view ()
+  "An agent whose view fails once one of its keys has written is refused."
+  (supertag-stream-agent-test-with-vault
+    (should (string-match-p
+             "按 1 写入 TIER=核心 之后画不出来"
+             (supertag-stream-agent--check
+              (plist-put (copy-sequence supertag-stream-agent-test--contact) :view
+                         "(lambda (data width)
+  (list :groups (list (list :label \"全部\"
+                            :rows (mapcar (lambda (entry)
+                                            (when (assoc \"TIER\" (plist-get entry :props))
+                                              (car 1))
+                                            (list :ref (plist-get entry :ref)))
+                                          (plist-get data :records))))))"))))))
+
+(ert-deftest supertag-stream-agent-design-rewrites-an-agent-that-leaves-records-out ()
+  "A reply that leaves a record out is refused, and the model writes it again."
+  (supertag-stream-agent-test-with-vault
+    (let ((replies (list (supertag-stream-agent-test--reply
+                          (plist-put (copy-sequence supertag-stream-agent-test--contact)
+                                     :view supertag-stream-agent-test--partial))
+                         (supertag-stream-agent-test--reply supertag-stream-agent-test--contact)
+                         "OK"))
+          prompts)
+      (cl-letf (((symbol-function 'supertag-summary--ask)
+                 (lambda (prompt _system callback)
+                   (push prompt prompts)
+                   (funcall callback (pop replies) 'completed))))
+        (supertag-stream-agent-design "contact" "联系完记一笔"))
+      (should (string-match-p "没有列进任何组" (nth 1 prompts)))
+      (should (eq 'kept (plist-get supertag-stream-agent--last :outcome))))))
+
+;;; Asking for a value
+
+(ert-deftest supertag-stream-agent-ask-takes-what-the-user-types ()
+  "An ask action writes a typed date, number or line; ask on a choice field is refused."
+  (supertag-stream-agent-test-with-vault
+    (let ((agent (list :name "contact" :scope '(:tag "contact")
+                       :view supertag-stream-agent-test--view
+                       :fields '((:name "NEXT_CONTACT" :shape date)
+                                 (:name "MET" :shape number)
+                                 (:name "NOTE" :shape text))
+                       :actions '((:key "x" :label "下次联系" :field "NEXT_CONTACT" :value ask)
+                                  (:key "j" :label "见过几次" :field "MET" :value ask)
+                                  (:key "w" :label "写一句" :field "NOTE" :value ask)))))
+      (should-not (supertag-stream-agent--refused agent))
+      (supertag-stream-agent-test--keep agent)
+      (let ((buffer (supertag-stream-agent-test--open '(:tag "contact"))))
+        (with-current-buffer buffer
+          (cl-letf (((symbol-function 'org-read-date)
+                     (lambda (&rest _) (encode-time 0 0 0 1 11 2026)))
+                    ((symbol-function 'read-number) (lambda (&rest _) 3))
+                    ((symbol-function 'read-string) (lambda (&rest _) " 喜欢爬山\n ")))
+            (dolist (key '("x" "j" "w"))
+              (supertag-view-stream--select-node buffer "c-alice")
+              (call-interactively (key-binding (kbd key)))))))
+      (should (equal (supertag-stream-agent-test--prop friends "Alice" "NEXT_CONTACT")
+                     "[2026-11-01 Sun]"))
+      (should (equal (supertag-stream-agent-test--prop friends "Alice" "MET") "3"))
+      (should (equal (supertag-stream-agent-test--prop friends "Alice" "NOTE") "喜欢爬山")))
+    (should (string-match-p
+             "用 choose"
+             (supertag-stream-agent-test--refusal
+              '((:name "TIER" :shape choice :values ("a")))
+              '((:key "x" :label "?" :field "TIER" :value ask)))))))
+
+;;; Managing agents
+
+(ert-deftest supertag-stream-agent-stop-start-and-delete ()
+  "A stopped agent keeps its file and no longer draws; started, it draws again; deleted, it is gone."
+  (supertag-stream-agent-test-with-vault
+    (supertag-stream-agent-test--keep supertag-stream-agent-test--contact)
+    (supertag-stream-agent-stop "contact")
+    (should (plist-get (supertag-stream-agent--read (supertag-stream-agent--file "contact"))
+                       :disabled))
+    (should-not (supertag-stream-agent-test--agent
+                 (supertag-stream-agent-test--open '(:tag "contact"))))
+    (supertag-stream-agent-start "contact")
+    (should-not (plist-member (supertag-stream-agent--read
+                               (supertag-stream-agent--file "contact"))
+                              :disabled))
+    (should (equal (supertag-stream-agent-test--agent
+                    (supertag-stream-agent-test--open '(:tag "contact")))
+                   "contact"))
+    (cl-letf (((symbol-function 'yes-or-no-p) (lambda (&rest _) t)))
+      (supertag-stream-agent-delete "contact"))
+    (should-not (file-exists-p (supertag-stream-agent--file "contact")))
+    (should-not (supertag-stream-agent-test--agent
+                 (supertag-stream-agent-test--open '(:tag "contact"))))))
+
+(ert-deftest supertag-stream-agent-list-shows-every-agent-and-why-one-fails ()
+  "Every kept agent is listed, a refused or unreadable one with why."
+  (supertag-stream-agent-test-with-vault
+    (supertag-stream-agent-test--keep
+     supertag-stream-agent-test--contact
+     (plist-put (copy-sequence supertag-stream-agent-test--family) :actions
+                '((:key "n" :label "?" :field "NOPE" :value today))))
+    (with-temp-file (supertag-stream-agent--file "broken") (insert "(:name"))
+    (let ((entries (supertag-stream-agent--all)))
+      (should (equal (mapcar (lambda (entry) (plist-get (car entry) :name)) entries)
+                     '("broken" "contact" "family")))
+      (should (equal (mapcar #'supertag-stream-agent--state entries)
+                     '("失效" "启用" "失效")))
+      (should (equal (cdr (car entries)) "文件读不出来")))))
 
 (provide 'stream-agent-test)
 

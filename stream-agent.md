@@ -66,17 +66,17 @@ overrides the place.
   (`…-arranges-the-stream-of-its-tag`)
 - **Prompted.** Lines separate items with `,` or `·`, never Org's markup
   characters `/ * _ = ~ +`.
-- **Prompted.** "其余" always comes last, so a note the sentence places
-  anywhere, last included, must be listed by the view itself. Whatever the
-  sentence asks for that the view cannot do is said in `:notes`.
+- **Prompted.** Whatever the sentence asks for that the view cannot do is
+  said in `:notes`.
 
 ## 5. Fields are made for the need
 
 Properties in Supertag have no schema decided in advance; they exist because
 a user needed them. So an agent declares the fields its actions write.
 
-- **Enforced.** An action writes only a declared field or one already in
-  use in scope. A field has a shape, `date`, `number`, `text` or `choice`;
+- **Enforced.** An action writes only a field the agent declares, even one
+  already in use in scope; otherwise the agent would fail the day that value
+  is removed. A revision asks the model to declare any it missed. A field has a shape, `date`, `number`, `text` or `choice`;
   `choice` lists its values. Names are upper case and not reserved (`ID`,
   `CREATED`, `CATEGORY`, Org's own, `…_ALL`). (`…-refuses-what-the-rules-forbid`)
 - **Enforced.** The declaration is the field's rule for every node in scope,
@@ -92,9 +92,13 @@ a user needed them. So an agent declares the fields its actions write.
 ## 6. Actions
 
 - **Enforced.** An action writes one field on the node at point and nothing
-  else. Its value is `today`, `created`, `choose` (the user picks), or a fixed
-  value among the field's values. No action creates a note or runs on a
-  timer. (`…-refuses-what-the-rules-forbid`)
+  else. Its value is `today`, `created`, `choose` (the user picks one of the
+  field's values), `ask` (the user types one), or a fixed value among the
+  field's values. No action creates a note or runs on a timer.
+  (`…-refuses-what-the-rules-forbid`)
+- **Enforced.** `ask` follows the field's shape: a date field asks for a
+  date, a number field for a number, a text field for one line. A `choice`
+  field takes `choose`, never `ask`. (`…-ask-takes-what-the-user-types`)
 - **Enforced.** Keys are single characters and never shadow Stream's own
   (`n p e v f u m g q`) or the agent's `R` and `C`.
 - **Enforced.** After a write the Stream redraws and the cursor stays at the
@@ -113,6 +117,13 @@ a user needed them. So an agent declares the fields its actions write.
 - **Enforced.** A reply is checked as summary's are; a refused reply goes
   back with the reason, at most three times, and nothing is kept if none
   passes. (`…-design-keeps-nothing-when-no-reply-passes`)
+- **Enforced.** A reply that runs is held to rules code can check, and
+  refused like any other when one fails, so the model writes it again:
+  every record is placed in one of its groups (`…-check-refuses-a-left-out-record`,
+  `…-design-rewrites-an-agent-that-leaves-records-out`); the view draws a
+  Stream of one note, as after narrowing
+  (`…-check-refuses-a-view-that-breaks-on-one-note`); and it still draws
+  after each key has written (`…-check-refuses-a-key-that-breaks-the-view`).
 - **Enforced.** Before an agent is kept, the model is shown what it draws on
   the real records, without titles or values: the groups and their sizes,
   how many fall to "其余", and where each key would move a note. It answers
@@ -124,9 +135,28 @@ a user needed them. So an agent declares the fields its actions write.
   change asked before. Only the user's own words are kept as revisions,
   never the model's checks. (`…-revision-keeps-only-the-users-words`)
 
-## 8. Still open
+## 8. Managing agents
 
-- Agents that run when a note arrives, or when one is opened.
-- An action that creates a note, or asks for a free value.
-- Whether more than the view's logic should be checked by rules rather than
-  by the model, e.g. an empty group or every note in "其余".
+- **Enforced.** `supertag-stream-agent-manage` lists every kept agent with
+  its state and sentence: 启用, 停用, or 失效 with the reason (a file that
+  can't be read, or one the rules refuse). From there an agent's Stream is
+  opened, or the agent is shown, revised, stopped, started or deleted.
+  (`…-list-shows-every-agent-and-why-one-fails`)
+- **Enforced.** Stopping keeps the file and marks it `:disabled`; its tag's
+  Stream is drawn as before until it is started again. Deleting asks, then
+  removes the file. Open Streams redraw either way.
+  (`…-stop-start-and-delete`)
+
+## 9. Decided against
+
+- **An action that creates a note.** Notes are only ever written in Org
+  text; a note enters a Stream when the user tags it there. The Stream is
+  a view of the text, never a place notes come from. The text is the only
+  truth, so an agent only changes properties of notes that already exist.
+- **Running when a note is opened.** Opening a tag's Stream is already the
+  moment the agent works: its groups, lines and keys are the interface for
+  that tag. A second, per-note moment adds nothing.
+
+## 10. Still open
+
+- Agents that run when a note arrives, to fill a field quietly.

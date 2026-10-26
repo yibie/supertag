@@ -59,9 +59,7 @@ promote 的定制是核心理念，配置只有两层：模板数据，以及把
 
 ## 恰到好处的回顾
 
-`M-x supertag-view-stream` 按标签（含子标签）把节点排开，适合顺着一个主题重读。
-
-`M-x supertag-view-stream-all` 是全部节点的流，`M-x supertag-view-stream-find` 是任意查询的流。在流里按 `f` 再加一个条件，打开对应的子流；按 `u` 回到它的上一级。按 `f` 后直接输入词，每个词都要在标题、正文、tag 或属性值里出现（包含这个词的一部分就算）；`tag:prj` 表示必须有这个 tag 或继承它的子 tag，`STATUS:todo` 表示这个属性等于这个值（库里要真有这个属性名才算，否则当普通词）；以 `(` 开头就是查询式，例如 `(tag "prj")`。Discovery 的 `s` 用同一套写法。`C-u f` 则一步步选条件。节点按从新到旧排列（`supertag-view-stream-order`）。很长的流只显示最新的 200 个节点（`supertag-view-stream-max-nodes`），按 `m` 显示两倍。
+`M-x supertag-view-stream` 打开全部节点的流，从新到旧排列；想顺着一个主题重读，按 `f` 输入 `tag:prj`，得到的就是这个标签（含子标签）的流。`M-x supertag-view-stream-find` 直接打开任意查询的流。在流里按 `f` 再加一个条件，打开对应的子流；按 `u` 回到它的上一级。按 `f` 后直接输入词，每个词都要在标题、正文、tag 或属性值里出现（包含这个词的一部分就算）；`tag:prj` 表示必须有这个 tag 或继承它的子 tag，`STATUS:todo` 表示这个属性等于这个值（库里要真有这个属性名才算，否则当普通词）；以 `(` 开头就是查询式，例如 `(tag "prj")`。Discovery 的 `s` 用同一套写法。`C-u f` 则一步步选条件。节点按从新到旧排列（`supertag-view-stream-order`）。很长的流只显示最新的 200 个节点（`supertag-view-stream-max-nodes`），按 `m` 显示两倍。
 
 `M-x supertag-discovery` 则是随机翻出一批笔记的完整正文；想找某个话题时按 `s` 搜全库，看中的引用能插回出发的那条笔记。
 
@@ -190,8 +188,7 @@ promote 的定制是核心理念，配置只有两层：模板数据，以及把
 | 记录与整理 | `supertag-add-link`、`supertag-find-node` | 插入节点链接；按标题查找并跳转节点 |
 | 记录与整理 | `supertag-tag-rename`、`supertag-delete-tag-everywhere` | 重命名标签；在整库删除标签 |
 | 查看与回顾 | `supertag-view-node` | 节点页：未链接提及、相似笔记等都在这里 |
-| 查看与回顾 | `supertag-view-stream` | 按标签（含子标签）把节点排开 |
-| 查看与回顾 | `supertag-view-stream-all` / `supertag-view-stream-find` | 全部节点的流 / 任意查询的流；`f` 收窄，`u` 返回 |
+| 查看与回顾 | `supertag-view-stream` / `supertag-view-stream-find` | 全部节点的流 / 任意查询的流；`f` 收窄，`u` 返回 |
 | 查看与回顾 | `supertag-discovery` | 随机翻出笔记；`s` 搜索全库，看中的引用能插回出发的笔记 |
 | 查看与回顾 | `supertag-mention-mode` | 在正文里标出已知概念的标题与别名，只提示，不写链接 |
 | 查询与自动化 | `supertag-add-query-block`、`supertag-query-build`、`supertag-query-describe-syntax` | 插入查询块；交互式拼查询；查看语法速查 |

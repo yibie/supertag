@@ -98,11 +98,9 @@ note, use `M-x supertag-move-node`.
 
 ## Reviewing, at the right moment
 
-`M-x supertag-view-stream` lays out nodes by tag (including sub-tags), good for rereading along
-one theme.
-
-`M-x supertag-view-stream-all` is the stream of every node, and `M-x supertag-view-stream-find`
-the stream of any query. Inside a stream, `f` adds one more condition and opens that substream,
+`M-x supertag-view-stream` is the stream of every node, newest first; narrow it to one theme with
+`f tag:prj`, which gives the same stream as the tag (including sub-tags). `M-x
+supertag-view-stream-find` opens the stream of any query directly. Inside a stream, `f` adds one more condition and opens that substream,
 `u` goes back to the stream it came from. At the `f` prompt, type words, each of which must
 appear somewhere in the title, body, tags or property values (a part of a word is enough);
 `tag:prj` asks for that tag or a tag that extends it, and `STATUS:todo` for a property value, when some node has
@@ -278,8 +276,7 @@ called directly, invalid-context calls are rejected before prompts or changes.
 | Capture & organize | `supertag-add-link`, `supertag-find-node` | insert a node link; find and jump to a node by title |
 | Capture & organize | `supertag-tag-rename`, `supertag-delete-tag-everywhere` | rename a tag; delete a tag across the vault |
 | Find & review | `supertag-view-node` | the node page: unlinked mentions, similar notes, and more |
-| Find & review | `supertag-view-stream` | lay nodes out by tag (including sub-tags) |
-| Find & review | `supertag-view-stream-all` / `supertag-view-stream-find` | the stream of every node / of any query; `f` narrows, `u` goes back |
+| Find & review | `supertag-view-stream` / `supertag-view-stream-find` | the stream of every node / of any query; `f` narrows, `u` goes back |
 | Find & review | `supertag-discovery` | flip out random notes; `s` searches the whole vault, and a picked quote can be inserted back |
 | Find & review | `supertag-mention-mode` | mark known concept titles and aliases in the body as hints only |
 | Query & automation | `supertag-add-query-block`, `supertag-query-build`, `supertag-query-describe-syntax` | insert a query block; assemble a query interactively; show the syntax reference |

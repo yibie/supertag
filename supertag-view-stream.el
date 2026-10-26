@@ -607,30 +607,35 @@ it defaults to the current one."
 
 ;;;###autoload
 (defun supertag-view-stream (&optional tag)
-  "Open a title Stream for TAG and all `:extends` descendants."
-  (interactive
-   (list (plist-get (supertag-view--read-tag) :value)))
-  (unless (and (stringp tag) (not (string-empty-p tag)))
-    (user-error "Stream View requires a tag"))
-  (supertag-view-stream--open (list :tag tag)))
-
-;;;###autoload
-(defun supertag-view-stream-all ()
-  "Open the stream of every node."
+  "Open the stream of every node, newest first.
+Narrow it with `supertag-view-stream-find'.  Called from Lisp with TAG,
+open the stream of TAG and every tag that extends it."
   (interactive)
-  (supertag-view-stream--open nil))
+  (when (and tag (or (not (stringp tag)) (string-empty-p tag)))
+    (user-error "Stream View requires a tag"))
+  (supertag-view-stream--open (and tag (list :tag tag))))
+
+(define-obsolete-function-alias 'supertag-view-stream-all
+  #'supertag-view-stream "0.3.1")
 
 (defun supertag-view-stream--narrowed (input condition)
   "Return INPUT narrowed by query CONDITION.
 Conditions accumulate in one top-level `and', so each narrowing adds one
-and `supertag-view-stream-up' removes the last."
-  (let* ((query (plist-get input :query))
-         (query (cond
-                 ((null query) condition)
-                 ((eq (car-safe query) 'and) (append query (list condition)))
-                 (t (list 'and query condition))))
-         (tag (plist-get input :tag)))
-    (append (and tag (list :tag tag)) (list :query query))))
+and `supertag-view-stream-up' removes the last.  One tag asked of the
+stream of every node opens that tag's own stream."
+  (if (and (null (plist-get input :tag))
+           (null (plist-get input :query))
+           (eq (car-safe condition) 'tag)
+           (stringp (cadr condition))
+           (null (cddr condition)))
+      (list :tag (cadr condition))
+    (let* ((query (plist-get input :query))
+           (query (cond
+                   ((null query) condition)
+                   ((eq (car-safe query) 'and) (append query (list condition)))
+                   (t (list 'and query condition))))
+           (tag (plist-get input :tag)))
+      (append (and tag (list :tag tag)) (list :query query)))))
 
 (defun supertag-view-stream--widened (input)
   "Return the input of the stream INPUT was narrowed from, or `none'.

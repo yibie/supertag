@@ -355,8 +355,12 @@
                      (or (cl-find (car pair) (all-completions "" table) :test #'equal)
                          (ert-fail "Missing canonical candidate")))))
           (should (equal (cdr pair) (supertag-view--read-tag)))))
-      (cl-letf (((symbol-function 'completing-read) (lambda (&rest _) "topic")))
-        (let ((buffer (call-interactively #'supertag-view-stream)))
+      ;; The stream of every node, narrowed by tag:topic, is the stream
+      ;; of the tag and the tags that extend it.
+      (cl-letf (((symbol-function 'read-string) (lambda (&rest _) "tag:topic")))
+        (let ((buffer (with-current-buffer
+                          (call-interactively #'supertag-view-stream)
+                        (call-interactively #'supertag-view-stream-find))))
           (unwind-protect
               (progn
                 (should (equal '("c" "g" "p") (sort (copy-sequence (supertag-view-stream--node-ids buffer)) #'string<)))

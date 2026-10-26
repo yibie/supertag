@@ -53,7 +53,6 @@
 ;; supertag-view-node.el (no autoload cookie; wrapped)
 (declare-function supertag-view-node "supertag-view-node" ())
 (declare-function supertag-view-stream "supertag-view-stream" (&optional tag-id))
-(declare-function supertag-view-stream-all "supertag-view-stream" ())
 (declare-function supertag-view-stream-find "supertag-view-stream" (&optional guided))
 
 ;; Tag, Node and Link commands (loaded through their feature wrappers)
@@ -132,10 +131,6 @@ errors propagate unchanged. DOC is the generated wrapper's docstring."
 (supertag-menu--defwrapper supertag-menu--view-stream
   supertag-view-stream supertag-view-stream
   "Open `supertag-view-stream', loading its feature first if needed.")
-
-(supertag-menu--defwrapper supertag-menu--view-stream-all
-  supertag-view-stream-all supertag-view-stream
-  "Open `supertag-view-stream-all', loading its feature first if needed.")
 
 (supertag-menu--defwrapper supertag-menu--view-stream-find
   supertag-view-stream-find supertag-view-stream
@@ -294,8 +289,6 @@ errors propagate unchanged. DOC is the generated wrapper's docstring."
     ("b" "Build query"       supertag-menu--query-build)
     ("h" "Query syntax help" supertag-menu--query-describe-syntax)]
    ["Additional views"
-    ("s" "Stream view"                 supertag-menu--view-stream)
-    ("a" "Stream of every node"        supertag-menu--view-stream-all)
     ("f" "Stream of a query"           supertag-menu--view-stream-find)]
    ["Display"
     ("c" "Toggle mentions" supertag-menu--toggle-mentions)]
@@ -340,6 +333,7 @@ errors propagate unchanged. DOC is the generated wrapper's docstring."
    ["Find & View"
     ("s" "Discovery"           supertag-menu--discovery)
     ("n" "Find node"           supertag-menu--find-node)
+    ("t" "Stream"              supertag-menu--view-stream)
     ("v" "Node view"           supertag-menu--view-node)
     ("V" "More find & view..." supertag-menu-find-more)]
    ["Maintain"

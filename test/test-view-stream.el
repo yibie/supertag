@@ -655,7 +655,15 @@ and the selected node's background ranks above the surface."
     (should (equal (supertag-view-stream--narrowed nil '(term "a"))
                    '(:query (term "a"))))
     (should (equal (supertag-view-stream--widened '(:query (term "a")))
-                   nil))))
+                   nil))
+    ;; One tag asked of the stream of every node is that tag's stream.
+    (should (equal (supertag-view-stream--narrowed nil '(tag "diary"))
+                   tagged))
+    (should (equal (supertag-view-stream--narrowed tagged '(tag "work"))
+                   '(:tag "diary" :query (tag "work"))))
+    (should (equal (supertag-view-stream--narrowed
+                    nil '(and (tag "diary") (word "a")))
+                   '(:query (and (tag "diary") (word "a")))))))
 
 (ert-deftest supertag-view-stream-find-and-up-open-the-substream-and-its-parent ()
   (supertag-view-stream-test--with-store
@@ -683,7 +691,12 @@ and the selected node's background ranks above the surface."
               (with-current-buffer all
                 (should (equal header-line-format " all   3 nodes "))
                 (should-error (supertag-view-stream-up)
-                              :type 'user-error)))))
+                              :type 'user-error)
+                ;; tag:diary in the stream of every node reopens the
+                ;; diary stream itself.
+                (cl-letf (((symbol-function 'read-string)
+                           (lambda (&rest _) "tag:diary")))
+                  (should (eq (supertag-view-stream-find) main)))))))
       (supertag-view-stream-test--kill-buffers))))
 
 ;; Find takes typed words, tag:NAME, KEY:VALUE or a query expression in
@@ -745,7 +758,7 @@ and the selected node's background ranks above the surface."
                            '("node-2" "node-3")))
             (should (equal (supertag-view-stream-test--ids '(:limit nil))
                            '("node-1" "node-2" "node-3")))
-            (let ((main (supertag-view-stream-all)))
+            (let ((main (supertag-view-stream)))
               (with-current-buffer main
                 (should (equal header-line-format
                                " all   newest 2 of 3 nodes "))

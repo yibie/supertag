@@ -646,14 +646,32 @@ from the stream of every node, which has no parent."
      (tag nil)
      (t 'none))))
 
-(defun supertag-view-stream--read-condition (raw)
-  "Read one query condition; RAW non-nil reads it as typed text."
-  (if raw
-      (let ((text (read-string "Query: ")))
-        (condition-case nil
-            (car (read-from-string text))
-          (error (user-error "Not a query: %s" text))))
-    (supertag-query-block--build-condition)))
+(defun supertag-view-stream--parse-condition (text)
+  "Return the query condition TEXT asks for.
+Text that starts with a parenthesis is a query expression; anything else
+is words, each of which the title or body must contain."
+  (let ((text (string-trim text)))
+    (cond
+     ((string-empty-p text) (user-error "Nothing to find"))
+     ((string-prefix-p "(" text)
+      (condition-case nil
+          (let ((read (read-from-string text)))
+            (unless (string-empty-p (string-trim (substring text (cdr read))))
+              (error "Trailing text"))
+            (car read))
+        (error (user-error "Not a query: %s" text))))
+     (t (let ((terms (mapcar (lambda (word) (list 'term word))
+                             (split-string text " " t))))
+          (if (cdr terms) (cons 'and terms) (car terms)))))))
+
+(defun supertag-view-stream--read-condition (guided)
+  "Read one query condition.
+Typed words or a query expression by default; GUIDED non-nil builds the
+condition step by step from prompts instead."
+  (if guided
+      (supertag-query-block--build-condition)
+    (supertag-view-stream--parse-condition
+     (read-string "Find (words, or a query such as (tag \"prj\")): "))))
 
 (defun supertag-view-stream-more ()
   "Show twice as many nodes in the current Stream."
@@ -675,11 +693,12 @@ from the stream of every node, which has no parent."
                          main))))
 
 ;;;###autoload
-(defun supertag-view-stream-find (&optional raw)
+(defun supertag-view-stream-find (&optional guided)
   "Narrow to the nodes that also match one more query condition.
 In a Stream this opens a substream of the stream at hand; elsewhere it
-opens a substream of every node.  The condition is built from prompts;
-with prefix argument RAW it is typed as a query expression."
+opens a substream of every node.  Type words, which the title or body must
+all contain, or a query expression such as (tag \"prj\"); with prefix
+argument GUIDED the condition is built step by step from prompts."
   (interactive "P")
   (let* ((main (supertag-view-stream--resolve-main-buffer))
          (input (and main
@@ -690,7 +709,7 @@ with prefix argument RAW it is typed as a query expression."
                       (buffer-local-value
                        'supertag-view-stream--origin-window-configuration
                        main)))
-         (condition (supertag-view-stream--read-condition raw)))
+         (condition (supertag-view-stream--read-condition guided)))
     (supertag-view-stream--open
      (supertag-view-stream--narrowed input condition) origin)))
 

@@ -61,7 +61,7 @@ promote 的定制是核心理念，配置只有两层：模板数据，以及把
 
 `M-x supertag-view-stream` 按标签（含子标签）把节点排开，适合顺着一个主题重读。
 
-`M-x supertag-view-stream-all` 是全部节点的流，`M-x supertag-view-stream-find` 是任意查询的流。在流里按 `f` 再加一个条件，打开对应的子流；按 `u` 回到它的上一级。节点按从新到旧排列（`supertag-view-stream-order`）。很长的流只显示最新的 200 个节点（`supertag-view-stream-max-nodes`），按 `m` 显示两倍。
+`M-x supertag-view-stream-all` 是全部节点的流，`M-x supertag-view-stream-find` 是任意查询的流。在流里按 `f` 再加一个条件，打开对应的子流；按 `u` 回到它的上一级。按 `f` 后直接输入词，标题或正文要包含全部这些词；也可以输入查询式，例如 `(tag "prj")`；`C-u f` 则一步步选条件。节点按从新到旧排列（`supertag-view-stream-order`）。很长的流只显示最新的 200 个节点（`supertag-view-stream-max-nodes`），按 `m` 显示两倍。
 
 `M-x supertag-discovery` 则是随机翻出一批笔记的完整正文；想找某个话题时按 `s` 搜全库，看中的引用能插回出发的那条笔记。
 

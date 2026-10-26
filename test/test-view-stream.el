@@ -667,7 +667,7 @@ and the selected node's background ranks above the surface."
                                      'supertag-query-block--build-condition)
                                     (lambda ()
                                       '(property "STATUS" "todo"))))
-                           (supertag-view-stream-find)))))
+                           (supertag-view-stream-find t)))))
               (should-not (eq sub main))
               (with-current-buffer sub
                 (should (equal header-line-format
@@ -681,6 +681,40 @@ and the selected node's background ranks above the surface."
                 (should (equal header-line-format " all   3 nodes "))
                 (should-error (supertag-view-stream-up)
                               :type 'user-error)))))
+      (supertag-view-stream-test--kill-buffers))))
+
+;; Find takes typed words or a query expression in one prompt; words
+;; become term conditions, and one find is one step back up.
+(ert-deftest supertag-view-stream-find-reads-words-or-a-query ()
+  (should (equal (supertag-view-stream--parse-condition "  发票 ")
+                 '(term "发票")))
+  (should (equal (supertag-view-stream--parse-condition "箱单 发票")
+                 '(and (term "箱单") (term "发票"))))
+  (should (equal (supertag-view-stream--parse-condition
+                  "(property \"STATUS\" \"todo\")")
+                 '(property "STATUS" "todo")))
+  (should-error (supertag-view-stream--parse-condition "") :type 'user-error)
+  (should-error (supertag-view-stream--parse-condition "(tag \"prj\"") :type 'user-error)
+  (should-error (supertag-view-stream--parse-condition "(tag \"a\") extra")
+                :type 'user-error)
+  (should (equal (supertag-view-stream--narrowed
+                  '(:tag "prj") (supertag-view-stream--parse-condition "a b"))
+                 '(:tag "prj" :query (and (term "a") (term "b")))))
+  (supertag-view-stream-test--with-store
+    (unwind-protect
+        (save-window-excursion
+          (supertag-view-stream-test--put-substream-fixture)
+          (let ((main (supertag-view-stream "diary")))
+            (cl-letf (((symbol-function 'supertag-query-block--build-condition)
+                       (lambda () (ert-fail "Guided prompts without a prefix"))))
+              (let ((sub (with-current-buffer main
+                           (cl-letf (((symbol-function 'read-string)
+                                      (lambda (&rest _) "(property \"STATUS\" \"todo\")")))
+                             (supertag-view-stream-find)))))
+                (with-current-buffer sub
+                  (should (string-match-p "Second" (buffer-string)))
+                  (should-not (string-match-p "First" (buffer-string)))
+                  (should (eq (supertag-view-stream-up) main)))))))
       (supertag-view-stream-test--kill-buffers))))
 
 (ert-deftest supertag-view-stream-shows-the-newest-nodes-up-to-the-limit ()

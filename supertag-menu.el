@@ -54,7 +54,7 @@
 (declare-function supertag-view-node "supertag-view-node" ())
 (declare-function supertag-view-stream "supertag-view-stream" (&optional tag-id))
 (declare-function supertag-view-stream-all "supertag-view-stream" ())
-(declare-function supertag-view-stream-find "supertag-view-stream" (&optional raw))
+(declare-function supertag-view-stream-find "supertag-view-stream" (&optional guided))
 
 ;; Tag, Node and Link commands (loaded through their feature wrappers)
 ;; Add Tag is owned by the Tag feature.

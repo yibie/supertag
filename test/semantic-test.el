@@ -153,6 +153,38 @@
    (let ((supertag-semantic-min-similarity 0) (supertag-semantic-max-results 1))
      (should (equal '("best") (mapcar (lambda (m) (plist-get m :id)) (supertag-semantic--matches "document-node")))))))
 
+;; A question is ranked against every note with no floor; stale vectors,
+;; excluded IDs and nodes with neither title nor body never come back.
+(ert-deftest supertag-semantic-search-ranks-without-floor ()
+  (supertag-semantic-test-with-index
+   (supertag-semantic-test-seed "near" "Near" "Related")
+   (supertag-semantic-test-seed "far" "Far" "Different")
+   (supertag-semantic-test-seed "keyword" "Keyword" "Already listed")
+   (supertag-semantic-test-seed "stale" "Stale" "Changed")
+   (supertag-semantic-test-seed "blank" "" "  ")
+   (supertag-semantic--ensure)
+   (maphash (lambda (id node)
+              (puthash id (cons (if (equal id "stale") "old-hash" (supertag-semantic--hash node))
+                                (supertag-semantic--quantize
+                                 (pcase id ("far" [0.2 1.0]) (_ [1.0 0.1]))))
+                       supertag-semantic--vectors))
+            (supertag-store-get-collection :nodes))
+   (setq supertag-semantic--dim 2)
+   (let (asked)
+     (cl-letf (((symbol-function 'supertag-semantic--embed-sync)
+                (lambda (texts) (setq asked texts) [[1.0 0.0]])))
+       (let ((ids (mapcar (lambda (m) (plist-get m :id))
+                          (supertag-semantic-search "a question" '("keyword") 10))))
+         (should (equal '("a question") asked))
+         (should (equal "far" (car (last ids))))
+         (should (member "near" ids))
+         (dolist (gone '("keyword" "stale" "blank")) (should-not (member gone ids))))
+       (should (= 1 (length (supertag-semantic-search "a question" nil 1))))))
+   (let ((supertag-semantic-enabled nil))
+     (should-error (supertag-semantic-search "a question")))
+   (clrhash supertag-semantic--vectors)
+   (should-error (supertag-semantic-search "a question"))))
+
 (ert-deftest supertag-semantic-stale-response-and-stale-text-are-not-committed ()
   (supertag-semantic-test-with-index
    (supertag-semantic-test-with-request

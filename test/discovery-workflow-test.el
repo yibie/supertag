@@ -172,6 +172,73 @@
                                       (buffer-string))))
           (when (buffer-live-p buffer) (kill-buffer buffer)))))))
 
+;; A search lists keyword matches first, then fills with notes close in
+;; meaning that lack the keywords; when meaning search cannot run, the
+;; keyword results stay and one line says why.
+(defun supertag-discovery-test--search (input)
+  (cl-letf (((symbol-function 'read-string) (lambda (&rest _) input)))
+    (supertag-discovery-search))
+  (plist-get supertag-view--instance :state))
+
+(defun supertag-discovery-test--scores (&rest pairs)
+  (let ((table (make-hash-table :test 'equal)))
+    (while pairs (puthash (pop pairs) (pop pairs) table))
+    table))
+
+(ert-deftest supertag-discovery-search-fills-by-meaning-after-keywords ()
+  (supertag-discovery-test--isolated
+    (supertag-discovery-test--put-node 1 "the needle is here")
+    (supertag-discovery-test--put-node 2 "a pin in a haystack")
+    (supertag-discovery-test--put-node 3 "a thread and a thimble")
+    (supertag-discovery-test--put-node 4 "another needle, closer")
+    (supertag-discovery-test--put-node 5 "a needle not yet indexed")
+    (supertag-discovery-test--put-node 6 "far away")
+    (require 'supertag-semantic)
+    (cl-letf (((symbol-function 'display-buffer) #'ignore)
+              ((symbol-function 'supertag-discovery--get-node-tags) #'ignore))
+      (let ((buffer (supertag-discovery)))
+        (unwind-protect
+            (with-current-buffer buffer
+              (let ((supertag-semantic-enabled t)
+                    (supertag-discovery-semantic-results 2))
+                (cl-letf (((symbol-function 'supertag-semantic-scores)
+                           (lambda (text)
+                             (should (equal "needle" text))
+                             (supertag-discovery-test--scores
+                              "node-01" 0.45 "node-04" 0.61 "node-02" 0.401
+                              "node-03" 0.512 "node-06" 0.20))))
+                  (let* ((state (supertag-discovery-test--search "needle"))
+                         (ids (mapcar (lambda (pair) (plist-get (car pair) :id))
+                                      (plist-get state :nodes))))
+                    ;; Keywords first, highest score first, unscored last;
+                    ;; then the two closest others, highest first.
+                    (should (equal '("node-04" "node-01" "node-05" "node-03" "node-02") ids))
+                    (should (string-match-p "Found 3 matching nodes, 2 more close in meaning"
+                                            (buffer-string)))
+                    (should (string-match-p "Close in meaning, without the keywords"
+                                            (buffer-string)))
+                    (should (string-match-p "Similarity: 0.61" (buffer-string)))
+                    (should (string-match-p "Similarity: 0.51" (buffer-string)))
+                    (should (string-match-p "Similarity: 0.40" (buffer-string)))
+                    (should-not (string-match-p "Similarity: 0.20" (buffer-string)))
+                    (should (= 5 (length (supertag-discovery--card-starts)))))))
+              (let ((supertag-semantic-enabled t))
+                (cl-letf (((symbol-function 'supertag-semantic-scores)
+                           (lambda (&rest _) (error "curl exited with status 7"))))
+                  (let ((state (supertag-discovery-test--search "needle")))
+                    (should (= 3 (length (plist-get state :nodes))))
+                    (should (string-match-p "Found 3 matching nodes\\. Search: needle"
+                                            (buffer-string)))
+                    (should (string-match-p "Meaning search unavailable: curl exited with status 7"
+                                            (buffer-string)))
+                    (should-not (string-match-p "Similarity:" (buffer-string))))))
+              (let ((supertag-semantic-enabled nil))
+                (cl-letf (((symbol-function 'supertag-semantic-scores)
+                           (lambda (&rest _) (ert-fail "Searched by meaning while off"))))
+                  (supertag-discovery-test--search "needle")
+                  (should (string-match-p "Meaning search is off" (buffer-string))))))
+          (when (buffer-live-p buffer) (kill-buffer buffer)))))))
+
 (ert-deftest supertag-discovery-refresh-preserves-visible-and-hidden-marks ()
   (supertag-discovery-test--isolated
     (dotimes (index 3)

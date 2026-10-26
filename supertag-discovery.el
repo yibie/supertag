@@ -35,6 +35,8 @@
                   (node-id &optional other-window))
 (declare-function supertag-node-location-find "supertag-service-org"
                   (node-id))
+(declare-function supertag-semantic-scores "supertag-semantic" (text))
+(defvar supertag-semantic-enabled)
 
 ;;; --- Search History Management ---
 
@@ -59,6 +61,13 @@ The default filename search-history.el stays unchanged to read existing history.
 (defcustom supertag-discovery-initial-sample-size 10
   "Number of notes shown when Discovery opens or refreshes its sample."
   :type '(integer 1)
+  :group 'supertag)
+
+(defcustom supertag-discovery-semantic-results 20
+  "Most notes a search adds by meaning after the keyword matches.
+They are ranked by similarity with no floor, highest first, and each shows
+its score; the keyword matches are sorted by the same score."
+  :type '(integer 0)
   :group 'supertag)
 
 (defvar-local supertag-discovery--marked-nodes nil
@@ -307,15 +316,58 @@ Handles both time stamps (list) and date strings."
     (seq-take (append nodes nil)
               (min (max 1 supertag-discovery-initial-sample-size) length))))
 
+(defun supertag-discovery--semantic-fill (keywords nodes)
+  "Return (KEYWORD-PAIRS PAIRS SCORES NOTE) for a search of KEYWORDS.
+KEYWORD-PAIRS are NODES, the keyword matches, sorted by similarity with
+unscored ones last.  PAIRS are the closest notes NODES lack, highest first,
+in the keyword result shape.  SCORES maps node IDs to similarity, and NOTE
+says why nothing was scored when semantic search could not run."
+  (let ((none (make-hash-table :test 'equal)))
+    (cond
+     ((<= supertag-discovery-semantic-results 0) (list nodes nil none nil))
+     ((not (and (require 'supertag-semantic nil t) supertag-semantic-enabled))
+      (list nodes nil none "Meaning search is off (supertag-semantic-enabled)."))
+     (t
+      (condition-case err
+          (let* ((scores (supertag-semantic-scores (string-join keywords " ")))
+                 (score-of (lambda (pair) (gethash (plist-get (car pair) :id) scores)))
+                 (keyword-ids (mapcar (lambda (pair) (plist-get (car pair) :id)) nodes))
+                 others)
+            (maphash (lambda (id score)
+                       (unless (member id keyword-ids) (push (cons id score) others)))
+                     scores)
+            (setq others (sort others (lambda (a b)
+                                        (if (= (cdr a) (cdr b))
+                                            (string-lessp (car a) (car b))
+                                          (> (cdr a) (cdr b))))))
+            (list (cl-stable-sort (copy-sequence nodes)
+                                  (lambda (a b)
+                                    (let ((x (funcall score-of a)) (y (funcall score-of b)))
+                                      (and x (or (null y) (> x y))))))
+                  (mapcar (lambda (entry) (cons (supertag-node-get (car entry)) nil))
+                          (seq-take others supertag-discovery-semantic-results))
+                  scores nil))
+        (error (list nodes nil none
+                     (format "Meaning search unavailable: %s"
+                             (error-message-string err)))))))))
+
 (defun supertag-discovery--build-view-state (input)
-  "Build Discovery view state from INPUT."
-  (let ((mode (or (plist-get input :mode) :sample))
-        (keywords (plist-get input :keywords)))
+  "Build Discovery view state from INPUT.
+A search lists keyword matches first, then notes close in meaning."
+  (let* ((mode (or (plist-get input :mode) :sample))
+         (keywords (plist-get input :keywords))
+         (nodes (cond
+                 ((plist-member input :nodes) (plist-get input :nodes))
+                 ((eq mode :search) (supertag-discovery-find-nodes keywords))
+                 (t (supertag-discovery--sample-nodes))))
+         (fill (when (and (eq mode :search) keywords
+                          (not (plist-member input :nodes)))
+                 (supertag-discovery--semantic-fill keywords nodes))))
     (list :mode mode :keywords keywords
-          :nodes (cond
-                  ((plist-member input :nodes) (plist-get input :nodes))
-                  ((eq mode :search) (supertag-discovery-find-nodes keywords))
-                  (t (supertag-discovery--sample-nodes))))))
+          :nodes (if fill (append (nth 0 fill) (nth 1 fill)) nodes)
+          :keyword-count (length nodes)
+          :scores (or (nth 2 fill) (make-hash-table :test 'equal))
+          :semantic-note (nth 3 fill))))
 
 (defun supertag-discovery--view-mode ()
   "Install the Discovery buffer modes."
@@ -347,8 +399,9 @@ Handles both time stamps (list) and date strings."
                       (user-error "Discovery card is no longer available")))
                   (call-interactively command))))
 
-(defun supertag-discovery--textui-card (pair width)
-  "Return a bordered TextUI reading card for PAIR at WIDTH."
+(defun supertag-discovery--textui-card (pair width &optional score)
+  "Return a bordered TextUI reading card for PAIR at WIDTH.
+SCORE, when given, is the card's similarity to a meaning search."
   (let* ((node (car pair))
          (id (plist-get node :id))
          (title (or (plist-get node :title) "No Title"))
@@ -365,6 +418,9 @@ Handles both time stamps (list) and date strings."
                   (format "%s %s" (if marked "[X]" "[ ]") title)
                   'supertag-discovery-title)
                  (supertag-discovery--text rule 'supertag-view-mute))
+           (when score
+             (list (supertag-discovery--text
+                    (format "Similarity: %.2f" score) 'supertag-view-mute)))
            (when file
              (list (supertag-discovery--text
                     (concat "File: " (file-name-nondirectory file))
@@ -397,21 +453,33 @@ Layout refreshes never resample notes or rerun queries."
   (let* ((state textui-state)
          (nodes (plist-get state :nodes))
          (searchp (eq (plist-get state :mode) :search))
-         (counts (supertag-discovery--mark-counts nodes)))
+         (keyword-count (or (plist-get state :keyword-count) (length nodes)))
+         (scores (plist-get state :scores))
+         (note (plist-get state :semantic-note))
+         (counts (supertag-discovery--mark-counts nodes))
+         (index 0))
     (list
      (list :type :flex :direction :column :gap 1 :children
            (list
             (supertag-discovery--text "Supertag Discovery" 'supertag-discovery-title)
             (list :type :flex :direction :column :gap 0 :children
-                  (list
-                   (supertag-discovery--text
-                    (if searchp
-                        (format "Found %d matching nodes. Search: %s" (length nodes)
-                                (string-join (plist-get state :keywords) " "))
-                      (format "Showing %d random notes." (length nodes))))
-                   (supertag-discovery--text
-                    (format "Marked: %d (%d hidden)" (car counts) (cadr counts))
-                    'supertag-view-mute)))
+                  (append
+                   (list
+                    (supertag-discovery--text
+                     (if searchp
+                         (concat
+                          (format "Found %d matching nodes" keyword-count)
+                          (when (> (length nodes) keyword-count)
+                            (format ", %d more close in meaning"
+                                    (- (length nodes) keyword-count)))
+                          (format ". Search: %s"
+                                  (string-join (plist-get state :keywords) " ")))
+                       (format "Showing %d random notes." (length nodes))))
+                    (supertag-discovery--text
+                     (format "Marked: %d (%d hidden)" (car counts) (cadr counts))
+                     'supertag-view-mute))
+                   (when (and searchp note)
+                     (list (supertag-discovery--text note 'supertag-view-mute)))))
             (list :type :flex :direction (if (< width 70) :column :row) :gap 2
                   :children
                   (list (supertag-discovery--action " SEARCH " #'supertag-discovery-search)
@@ -419,10 +487,23 @@ Layout refreshes never resample notes or rerun queries."
                         (supertag-discovery--action " INSERT REFERENCES " #'supertag-discovery-insert-references)
                         (supertag-discovery--action " QUIT " #'supertag-discovery-quit)))
             (list :type :flex :direction :column :gap 2
-                  :children (if nodes
-                                (mapcar (lambda (pair)
-                                          (supertag-discovery--textui-card pair width)) nodes)
-                              (list (supertag-discovery--text "No matching nodes found."))))
+                  :children
+                  (if nodes
+                      (cl-mapcan
+                       (lambda (pair)
+                         (prog1
+                             (append
+                              (when (and searchp (= index keyword-count))
+                                (list (supertag-discovery--text
+                                       "Close in meaning, without the keywords:"
+                                       'supertag-view-mute)))
+                              (list (supertag-discovery--textui-card
+                                     pair width
+                                     (and scores (gethash (plist-get (car pair) :id)
+                                                          scores)))))
+                           (cl-incf index)))
+                       nodes)
+                    (list (supertag-discovery--text "No matching nodes found."))))
             (supertag-discovery--text
              "n/p Navigate   SPC Mark   RET Open   s Search   g Refresh   i Insert   q Quit"
              'supertag-view-mute))))))

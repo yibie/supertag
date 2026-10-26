@@ -355,13 +355,12 @@ Return the curl process.  Request data and process buffers are always temporary.
        (kill-buffer output) (kill-buffer errors)
        (signal (car err) (cdr err))))))
 
-(defun supertag-semantic--probe ()
-  "Synchronously verify that the configured embedding endpoint accepts MODEL.
-
-The probe has no side effects on the semantic index and is deliberately capped
-at ten seconds, even when normal embedding requests are allowed more time."
-  (let ((input (make-temp-file "supertag-semantic-probe-"))
-        (output (generate-new-buffer " *supertag-semantic-probe*"))
+(defun supertag-semantic--embed-sync (texts)
+  "Synchronously embed TEXTS and return their vectors, or signal an error.
+Each call is capped at ten seconds, even when normal embedding requests are
+allowed more time, because the caller waits."
+  (let ((input (make-temp-file "supertag-semantic-sync-"))
+        (output (generate-new-buffer " *supertag-semantic-sync*"))
         (timeout (number-to-string (min 10 supertag-semantic-request-timeout)))
         headers status)
     (unwind-protect
@@ -369,23 +368,29 @@ at ten seconds, even when normal embedding requests are allowed more time."
           (let ((coding-system-for-write 'utf-8-unix))
             (with-temp-file input
               (insert (json-serialize
-                       (list :model supertag-semantic-model :input ["supertag probe"])))))
+                       (list :model supertag-semantic-model :input (vconcat texts))))))
           (setq headers (supertag-semantic--headers))
           (setq status
                 (apply #'call-process supertag-semantic-curl-program input output nil
                        (supertag-semantic--curl-args input headers timeout)))
           (unless (and (integerp status) (zerop status))
             (error "curl exited with status %s" status))
-          (let ((embeddings (with-current-buffer output
-                              (supertag-semantic--parse (buffer-string) supertag-semantic-api
-                                                        supertag-semantic-model))))
-            (unless (and (sequencep embeddings) (= (length embeddings) 1)
-                         (sequencep (elt embeddings 0)) (> (length (elt embeddings 0)) 0))
-              (error "Invalid embedding probe response"))
-            t))
+          (with-current-buffer output
+            (supertag-semantic--parse (buffer-string) supertag-semantic-api
+                                      supertag-semantic-model)))
       (dolist (file (list input headers))
         (when (and file (file-exists-p file)) (delete-file file)))
       (kill-buffer output))))
+
+(defun supertag-semantic--probe ()
+  "Synchronously verify that the configured embedding endpoint accepts MODEL.
+
+The probe has no side effects on the semantic index."
+  (let ((embeddings (supertag-semantic--embed-sync '("supertag probe"))))
+    (unless (and (sequencep embeddings) (= (length embeddings) 1)
+                 (sequencep (elt embeddings 0)) (> (length (elt embeddings 0)) 0))
+      (error "Invalid embedding probe response"))
+    t))
 
 (defun supertag-semantic--refresh (&optional node-id)
   "Refresh the matching view while preserving reading positions and window starts."
@@ -543,6 +548,51 @@ at ten seconds, even when normal embedding requests are allowed more time."
                                   (string-lessp (plist-get a :id) (plist-get b :id))
                                 (> (plist-get a :score) (plist-get b :score)))))
               supertag-semantic-max-results)))
+
+(defun supertag-semantic-scores (text)
+  "Return a hash table mapping indexed node IDs to their similarity to TEXT.
+No similarity floor applies.  Nodes whose vector is stale and nodes with
+neither title nor body are left out.  Signal an error when semantic search
+is off, the index is empty or the endpoint fails."
+  (unless supertag-semantic-enabled (error "Semantic search is off"))
+  (supertag-semantic--observe-context)
+  (unless (and supertag-semantic--dim (> (hash-table-count supertag-semantic--vectors) 0))
+    (error "No semantic index yet"))
+  (let* ((vectors (supertag-semantic--embed-sync (list text)))
+         (query (supertag-semantic--quantize
+                 (if (and (sequencep vectors) (= (length vectors) 1)) (elt vectors 0)
+                   (error "Invalid embedding response"))))
+         (scores (make-hash-table :test 'equal)))
+    (unless (= (length query) supertag-semantic--dim)
+      (error "Query and index dimensions differ"))
+    (maphash
+     (lambda (id entry)
+       (let ((node (supertag-semantic--node id)))
+         (when (and node
+                    (equal (car entry) (supertag-semantic--hash node))
+                    (not (and (string-empty-p (string-trim (or (plist-get node :title) "")))
+                              (string-empty-p (string-trim (or (plist-get node :content) ""))))))
+           (puthash id (supertag-semantic--score query (cdr entry)) scores))))
+     supertag-semantic--vectors)
+    scores))
+
+(defun supertag-semantic-search (text &optional exclude limit)
+  "Rank indexed nodes by meaning against TEXT; return (:id :node :score) plists.
+No similarity floor applies: a question scores lower against a note than two
+notes score against each other, so the best LIMIT matches are returned and the
+reader judges the scores.  IDs in EXCLUDE are skipped.  See
+`supertag-semantic-scores' for what else is left out and when it signals."
+  (let (matches)
+    (maphash (lambda (id score)
+               (unless (member id exclude)
+                 (push (list :id id :node (supertag-semantic--node id) :score score)
+                       matches)))
+             (supertag-semantic-scores text))
+    (seq-take (sort matches (lambda (a b)
+                              (if (= (plist-get a :score) (plist-get b :score))
+                                  (string-lessp (plist-get a :id) (plist-get b :id))
+                                (> (plist-get a :score) (plist-get b :score)))))
+              (or limit supertag-semantic-max-results))))
 
 ;;;###autoload
 (defun supertag-semantic-stop ()

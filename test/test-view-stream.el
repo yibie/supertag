@@ -82,7 +82,10 @@
         (should (equal (car undated) "No date"))
         (should (equal (mapcar (lambda (node) (plist-get node :id))
                                (cdr undated))
-                       '("untimed-a" "untimed-b")))))))
+                       '("untimed-a" "untimed-b")))))
+    ;; A query for the tag finds the same nodes as the tag's Stream.
+    (should (equal (sort (supertag-query-node-ids '(tag "diary")) #'string<)
+                   '("early" "flat-extends" "late" "untimed-a" "untimed-b")))))
 
 (ert-deftest supertag-view-stream-runtime-renders-date-grouped-title-list ()
   "The Runtime must group keyed title/tag rows by creation day."

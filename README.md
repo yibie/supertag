@@ -105,7 +105,7 @@ one theme.
 the stream of any query. Inside a stream, `f` adds one more condition and opens that substream,
 `u` goes back to the stream it came from. At the `f` prompt, type words, each of which must
 appear somewhere in the title, body, tags or property values (a part of a word is enough);
-`tag:prj` asks for the tag exactly and `STATUS:todo` for a property value, when some node has
+`tag:prj` asks for that tag or a tag that extends it, and `STATUS:todo` for a property value, when some node has
 that property; text starting with `(` is a query expression such as `(tag "prj")`. Discovery's
 `s` reads the same input. `C-u f` builds the condition step by step. Nodes are listed newest first
 (`supertag-view-stream-order`). A long stream shows its newest 200 nodes

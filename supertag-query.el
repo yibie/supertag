@@ -669,8 +669,8 @@ This uses indexes for O(1) lookups instead of O(n) table scans."
      ;; Fast index-based lookups below
      ((eq ast-type 'tag)
       (let ((tag-value (plist-get ast :value)))
-        (let ((result (supertag-index-get-nodes-by-tag tag-value)))
-          result)))
+        ;; A tag holds the nodes of every tag that extends it.
+        (supertag-index-get-nodes-by-tag tag-value t)))
 
      ((eq ast-type 'task)
       ;; Case-sensitive match against the projected :todo state; a node
@@ -1767,7 +1767,7 @@ reimplement parsing or execution."
 ;;; --- Guided builder -------------------------------------------------------
 
 (defconst supertag-query-block--operators
-  '(("tag"     . "(tag NAME) -- nodes carrying tag NAME")
+  '(("tag"     . "(tag NAME) -- nodes carrying tag NAME or a tag that extends it")
     ("property" . "(property KEY VALUE) -- nodes whose property KEY equals VALUE")
     ("links-to" . "(links-to LINK) -- nodes with a property value linking to LINK")
     ("term"    . "(term WORD) -- full-text search over title/content")
@@ -1949,7 +1949,7 @@ Combinators
   (not COND)             COND must not match
 
 Leaf conditions
-  (tag NAME)             nodes carrying tag NAME
+  (tag NAME)             nodes carrying tag NAME or a tag that extends it
   (PROPERTY VALUE)       custom Org property equals VALUE, e.g. (status \"doing\")
   (property KEY VALUE)   explicit property lookup, including reserved names
   (links-to LINK)        a property value holds a link to LINK, e.g. \"chai:BOOK\"

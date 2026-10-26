@@ -152,7 +152,7 @@
             (with-current-buffer buffer
               (cl-letf (((symbol-function 'read-string)
                          (lambda (prompt &rest _)
-                           (should (equal prompt "Search notes (all keywords): "))
+                           (should (equal prompt "Search notes (words, tag:NAME, KEY:VALUE or a query): "))
                            "shared ready")))
                 (supertag-discovery-search))
               (should (eq :search
@@ -709,6 +709,18 @@
           (ert-info ((format "keyword %s" keyword))
             (should matches)
             (should (equal "alpha" (plist-get (caar matches) :id))))))
+      ;; Discovery reads tag:NAME, KEY:VALUE and query expressions as
+      ;; Stream find does; plain words beside them keep the snippet.
+      (dolist (tokens '(("tag:topic") ("STAGE:ready") ("(tag" "\"topic\")")))
+        (ert-info ((format "tokens %S" tokens))
+          (should (equal '("alpha")
+                         (mapcar (lambda (pair) (plist-get (car pair) :id))
+                                 (supertag-discovery-find-nodes tokens))))))
+      (let ((matches (supertag-discovery-find-nodes '("tag:topic" "Needle"))))
+        (should (equal "alpha" (plist-get (caar matches) :id)))
+        (should (string-match-p "Needle" (cdar matches))))
+      (should-not (supertag-discovery-find-nodes '("tag:missing")))
+      (should-not (supertag-discovery-find-nodes '("STAGE:done")))
       (setq results (supertag-discovery--show-results
                      :search '("ready")
                      (supertag-discovery-find-nodes '("ready"))))

@@ -22,6 +22,7 @@
 (require 'supertag-core-store) ; For data access
 (require 'supertag-node)
 (require 'supertag-tag)
+(require 'supertag-query)
 (require 'supertag-view-framework)
 
 (declare-function supertag-reference-materialize-at-point
@@ -218,7 +219,29 @@ Handles both time stamps (list) and date strings."
 ;;; --- Search Functions ---
 
 (defun supertag-discovery-find-nodes (keywords)
-  "Find nodes matching KEYWORDS."
+  "Find nodes matching KEYWORDS, the tokens a search typed.
+Plain words are found in the title, body, tags or property values;
+tag:NAME, KEY:VALUE and a query expression read as in Stream find, by
+`supertag-query-parse-words'."
+  (let* ((condition (supertag-query-parse-words (string-join keywords " ")))
+         (words (supertag-query-words-of condition)))
+    (if (equal words keywords)
+        (supertag-discovery--find-by-words keywords)
+      (let ((context (and words
+                          (mapcar (lambda (pair)
+                                    (cons (plist-get (car pair) :id) (cdr pair)))
+                                  (supertag-discovery--find-by-words words)))))
+        (delq nil
+              (mapcar (lambda (id)
+                        (when-let* ((node (supertag-node-get id)))
+                          (if words
+                              (when-let* ((hit (assoc id context)))
+                                (cons node (cdr hit)))
+                            (cons node nil))))
+                      (supertag-query-node-ids condition)))))))
+
+(defun supertag-discovery--find-by-words (keywords)
+  "Find nodes matching every one of the plain words KEYWORDS."
   (let ((patterns (mapcar #'regexp-quote keywords))
         results)
     (dolist (pair (supertag-query-nodes (lambda (_id data) data)))
@@ -360,9 +383,14 @@ A search lists keyword matches first, then notes close in meaning."
                  ((plist-member input :nodes) (plist-get input :nodes))
                  ((eq mode :search) (supertag-discovery-find-nodes keywords))
                  (t (supertag-discovery--sample-nodes))))
-         (fill (when (and (eq mode :search) keywords
-                          (not (plist-member input :nodes)))
-                 (supertag-discovery--semantic-fill keywords nodes))))
+         ;; Only plain words carry meaning; tag:NAME, KEY:VALUE and a
+         ;; query expression have no sentence to embed.
+         (words (and (eq mode :search) keywords
+                     (not (plist-member input :nodes))
+                     (supertag-query-words-of
+                      (supertag-query-parse-words (string-join keywords " ")))))
+         (fill (when words
+                 (supertag-discovery--semantic-fill words nodes))))
     (list :mode mode :keywords keywords
           :nodes (if fill (append (nth 0 fill) (nth 1 fill)) nodes)
           :keyword-count (length nodes)
@@ -698,7 +726,10 @@ Layout refreshes never resample notes or rerun queries."
       (kill-buffer results-buffer))))
 
 (defun supertag-discovery-search ()
-  "Search all nodes using space-separated keywords; every keyword must match."
+  "Search all nodes; every space-separated token must match.
+A plain word is found in the title, body, tags or property values;
+tag:NAME and KEY:VALUE ask for a tag or a property, and text starting
+with a parenthesis is a query expression, as in Stream find."
   (declare (completion (lambda (_command buffer)
                          (supertag-view--context-p buffer 'discovery))))
   (interactive)
@@ -706,8 +737,16 @@ Layout refreshes never resample notes or rerun queries."
   (let* ((history (delete-dups
                    (mapcar (lambda (item) (plist-get item :query))
                            supertag-discovery--history)))
-         (input (read-string "Search notes (all keywords): " nil 'history history))
+         (input (read-string "Search notes (words, tag:NAME, KEY:VALUE or a query): "
+                             nil 'history history))
          (keywords (split-string input " " t))
+         (_valid (when keywords
+                   (condition-case err
+                       (supertag-query-validate
+                        (supertag-query-parse-words input))
+                     (user-error (signal (car err) (cdr err)))
+                     (error (user-error "Not a query: %s"
+                                        (error-message-string err))))))
          (view-input (if keywords
                          (list :mode :search :keywords keywords)
                        (list :mode :sample :keywords nil))))

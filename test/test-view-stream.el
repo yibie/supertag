@@ -683,23 +683,38 @@ and the selected node's background ranks above the surface."
                               :type 'user-error)))))
       (supertag-view-stream-test--kill-buffers))))
 
-;; Find takes typed words or a query expression in one prompt; words
-;; become term conditions, and one find is one step back up.
+;; Find takes typed words, tag:NAME, KEY:VALUE or a query expression in
+;; one prompt, and one find is one step back up.
 (ert-deftest supertag-view-stream-find-reads-words-or-a-query ()
-  (should (equal (supertag-view-stream--parse-condition "  发票 ")
-                 '(term "发票")))
-  (should (equal (supertag-view-stream--parse-condition "箱单 发票")
-                 '(and (term "箱单") (term "发票"))))
-  (should (equal (supertag-view-stream--parse-condition
-                  "(property \"STATUS\" \"todo\")")
-                 '(property "STATUS" "todo")))
-  (should-error (supertag-view-stream--parse-condition "") :type 'user-error)
-  (should-error (supertag-view-stream--parse-condition "(tag \"prj\"") :type 'user-error)
-  (should-error (supertag-view-stream--parse-condition "(tag \"a\") extra")
-                :type 'user-error)
-  (should (equal (supertag-view-stream--narrowed
-                  '(:tag "prj") (supertag-view-stream--parse-condition "a b"))
-                 '(:tag "prj" :query (and (term "a") (term "b")))))
+  (supertag-view-stream-test--with-store
+    (supertag-view-stream-test--put-substream-fixture)
+    (should (equal (supertag-query-parse-words "  发票 ") '(word "发票")))
+    (should (equal (supertag-query-parse-words "箱单 发票")
+                   '(and (word "箱单") (word "发票"))))
+    (should (equal (supertag-query-parse-words "tag:prj 发票")
+                   '(and (tag "prj") (word "发票"))))
+    (should (equal (supertag-query-parse-words "status:todo")
+                   '(property "status" "todo")))
+    ;; A colon before a name no node carries is part of a plain word.
+    (should (equal (supertag-query-parse-words "12:55 https://x.org")
+                   '(and (word "12:55") (word "https://x.org"))))
+    (should (equal (supertag-query-parse-words "(property \"STATUS\" \"todo\")")
+                   '(property "STATUS" "todo")))
+    (should-error (supertag-query-parse-words "") :type 'user-error)
+    (should-error (supertag-query-parse-words "(tag \"prj\"") :type 'user-error)
+    (should-error (supertag-query-parse-words "(tag \"a\") extra")
+                  :type 'user-error)
+    ;; A word is found in tags and property values, not only text.
+    (should (equal (sort (supertag-query-node-ids '(word "happy")) #'string<)
+                   '("node-2")))
+    (should (equal (sort (supertag-query-node-ids '(word "TODO")) #'string<)
+                   '("node-2")))
+    (should (equal (sort (supertag-query-node-ids
+                          (supertag-query-parse-words "tag:diary status:done"))
+                         #'string<)
+                   '("node-1"))))
+  (should (equal (supertag-view-stream--narrowed '(:tag "prj") '(and (word "a") (word "b")))
+                 '(:tag "prj" :query (and (word "a") (word "b")))))
   (supertag-view-stream-test--with-store
     (unwind-protect
         (save-window-excursion

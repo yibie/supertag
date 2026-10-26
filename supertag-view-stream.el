@@ -31,6 +31,7 @@
 (declare-function supertag-tag--name "supertag-tag" (tag-id))
 (declare-function supertag-query-node-ids "supertag-query" (query-sexp))
 (declare-function supertag-query-block--build-condition "supertag-query" ())
+(declare-function supertag-query-parse-words "supertag-query" (text))
 
 (defgroup supertag-view-stream nil
   "Chronological title views for tagged nodes."
@@ -646,32 +647,15 @@ from the stream of every node, which has no parent."
      (tag nil)
      (t 'none))))
 
-(defun supertag-view-stream--parse-condition (text)
-  "Return the query condition TEXT asks for.
-Text that starts with a parenthesis is a query expression; anything else
-is words, each of which the title or body must contain."
-  (let ((text (string-trim text)))
-    (cond
-     ((string-empty-p text) (user-error "Nothing to find"))
-     ((string-prefix-p "(" text)
-      (condition-case nil
-          (let ((read (read-from-string text)))
-            (unless (string-empty-p (string-trim (substring text (cdr read))))
-              (error "Trailing text"))
-            (car read))
-        (error (user-error "Not a query: %s" text))))
-     (t (let ((terms (mapcar (lambda (word) (list 'term word))
-                             (split-string text " " t))))
-          (if (cdr terms) (cons 'and terms) (car terms)))))))
-
 (defun supertag-view-stream--read-condition (guided)
   "Read one query condition.
-Typed words or a query expression by default; GUIDED non-nil builds the
+Typed words, tag:NAME, KEY:VALUE or a query expression by default, as
+`supertag-query-parse-words' reads them; GUIDED non-nil builds the
 condition step by step from prompts instead."
   (if guided
       (supertag-query-block--build-condition)
-    (supertag-view-stream--parse-condition
-     (read-string "Find (words, or a query such as (tag \"prj\")): "))))
+    (supertag-query-parse-words
+     (read-string "Find (words, tag:NAME, KEY:VALUE or a query): "))))
 
 (defun supertag-view-stream-more ()
   "Show twice as many nodes in the current Stream."
@@ -696,8 +680,9 @@ condition step by step from prompts instead."
 (defun supertag-view-stream-find (&optional guided)
   "Narrow to the nodes that also match one more query condition.
 In a Stream this opens a substream of the stream at hand; elsewhere it
-opens a substream of every node.  Type words, which the title or body must
-all contain, or a query expression such as (tag \"prj\"); with prefix
+opens a substream of every node.  Type words, each found in the title,
+body, tags or property values; tag:NAME or KEY:VALUE to ask for a tag or
+a property; or a query expression such as (tag \"prj\").  With prefix
 argument GUIDED the condition is built step by step from prompts."
   (interactive "P")
   (let* ((main (supertag-view-stream--resolve-main-buffer))

@@ -575,6 +575,10 @@ This function is compatible with the old query syntax."
       (unless (= (length args) 1)
         (error "'term' operator expects exactly one argument, but got %S" args))
       `(:type term :value ,(if (stringp (car args)) (car args) (symbol-name (car args)))))
+     ((eq op 'word)
+      (unless (and (= (length args) 1) (stringp (car args)))
+        (error "'word' operator expects exactly one string argument, but got %S" args))
+      `(:type word :value ,(car args)))
      ((eq op 'link)
       (supertag-query-link--parse-binary
        'link args #'supertag-query--parse-sexp))
@@ -732,6 +736,9 @@ This uses indexes for O(1) lookups instead of O(n) table scans."
 
      ((eq ast-type 'term)
       (supertag-index-get-nodes-by-word (plist-get ast :value)))
+
+     ((eq ast-type 'word)
+      (supertag-query--nodes-mentioning (plist-get ast :value)))
 
      ((eq ast-type 'link)
       (supertag-query-link--execute-forward
@@ -1239,6 +1246,86 @@ This is an O(N) operation and performs a simple substring search."
                      (push node-id results))))
                nodes-ht))
     (nreverse (delete-dups results))))
+
+(defun supertag-query--node-mentions-p (node-data pattern)
+  "Return non-nil when NODE-DATA's text, tags or property values match PATTERN.
+PATTERN is a regexp matched case-insensitively."
+  (let ((case-fold-search t)
+        (title (plist-get node-data :title))
+        (content (plist-get node-data :content)))
+    (or (and title (string-match-p pattern title))
+        (and content (string-match-p pattern content))
+        (cl-some (lambda (tag-id)
+                   (let ((name (plist-get (supertag-tag-get tag-id) :name)))
+                     (or (string-match-p pattern tag-id)
+                         (and (stringp name) (string-match-p pattern name)))))
+                 (plist-get node-data :tags))
+        (cl-loop for (_key value) on (plist-get node-data :properties) by #'cddr
+                 thereis (and (stringp value) (string-match-p pattern value))))))
+
+(defun supertag-query--nodes-mentioning (word)
+  "Return the ids of nodes whose title, body, tags or property values contain WORD."
+  (let ((pattern (regexp-quote word))
+        results)
+    (maphash (lambda (node-id node-data)
+               (when (supertag-query--node-mentions-p node-data pattern)
+                 (push node-id results)))
+             (supertag-store-get-collection :nodes))
+    (nreverse results)))
+
+(defun supertag-query--property-keys ()
+  "Return a hash set of the property keys any node carries."
+  (let ((keys (make-hash-table :test #'eq)))
+    (maphash (lambda (_id node-data)
+               (cl-loop for (key _value) on (plist-get node-data :properties)
+                        by #'cddr
+                        do (puthash key t keys)))
+             (supertag-store-get-collection :nodes))
+    keys))
+
+(defun supertag-query-parse-words (text)
+  "Return the query condition typed TEXT asks for.
+Text that starts with a parenthesis is a query expression.  Otherwise
+each space-separated token must match: tag:NAME asks for the tag NAME,
+KEY:VALUE for property KEY equal to VALUE when some node carries KEY,
+and any other token is a word found in the title, body, tags or property
+values.  Several tokens join in one `and'."
+  (let ((text (string-trim text)))
+    (cond
+     ((string-empty-p text) (user-error "Nothing to find"))
+     ((string-prefix-p "(" text)
+      (condition-case nil
+          (let ((read (read-from-string text)))
+            (unless (string-empty-p (string-trim (substring text (cdr read))))
+              (error "Trailing text"))
+            (car read))
+        (error (user-error "Not a query: %s" text))))
+     (t
+      (let* ((property-keys nil)
+             (conditions
+              (mapcar
+               (lambda (token)
+                 (if (string-match "\\`\\([^:]+\\):\\(.+\\)\\'" token)
+                     (let ((key (match-string 1 token))
+                           (value (match-string 2 token)))
+                       (cond
+                        ((string= (downcase key) "tag") (list 'tag value))
+                        ((gethash (supertag-query-normalize-property-key key)
+                                  (or property-keys
+                                      (setq property-keys
+                                            (supertag-query--property-keys))))
+                         (list 'property key value))
+                        (t (list 'word token))))
+                   (list 'word token)))
+               (split-string text " " t))))
+        (if (cdr conditions) (cons 'and conditions) (car conditions)))))))
+
+(defun supertag-query-words-of (condition)
+  "Return the plain words CONDITION from `supertag-query-parse-words' asks for."
+  (pcase condition
+    (`(word ,word) (list word))
+    (`(and . ,children) (mapcan #'supertag-query-words-of children))
+    (_ nil)))
 
 (defun supertag-index-get-nodes-by-date-range (start-time end-time &optional date-field)
   "Find all nodes created/modified within a date range by scanning.
@@ -1869,7 +1956,9 @@ Leaf conditions
   (todo STATE...)        Org TODO state; multiple states match any (case-sensitive)
   (priority VALUE...)    Org priority, e.g. (priority \"A\")
   (term WORD)            substring search over node title/content
-  (after DATE)           nodes dated after DATE
+  (word WORD)            substring search over title, content, tags and
+                         property values
+  (after DATE)          nodes dated after DATE
   (before DATE)          nodes dated before DATE
   (between START END)    nodes dated between START and END
   (recent-days N)        nodes created in the last N days

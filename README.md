@@ -295,7 +295,7 @@ is in [doc/customization.md](doc/customization.md).
 | Option | Default | Effect |
 |---|---|---|
 | `supertag-sync-directories` | `nil` | directories to sync; nil means not configured yet — set before `(require 'supertag)` in init (the wizard is retired) |
-| `supertag-file-id-source` | `'org-roam` | file-level ID source: `org-roam`, `supertag`, `denote`, `auto`, `disabled` |
+| `supertag-file-id-source` | `'auto` | file-level ID source: `org-roam`, `supertag`, `denote`, `auto`, `disabled` |
 | `supertag-sync-auto-interval` | `900` | auto-sync interval (seconds) |
 | `supertag-sync-idle-delay` | `1.0` | idle seconds before sync runs |
 | `supertag-db-backup-interval` | `86400` | daily database backup interval (seconds); retention in `supertag-db-backup-keep-days` |

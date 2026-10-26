@@ -71,7 +71,7 @@
 | `supertag-data-directory` | `(expand-file-name "supertag" user-emacs-directory)` | 数据目录（默认 `~/.emacs.d/supertag/`） |
 | `supertag-vault-auto-switch` | `nil` | 按文件路径自动切换到匹配的库（会加载该库的数据库与状态） |
 | `supertag-vault-modeline-indicator` | `t` | 在 mode line 显示当前库名 |
-| `supertag-file-id-source` | `'org-roam` | 文件级 ID 来源：`org-roam`、`supertag`、`denote`、`auto` 或 `disabled` |
+| `supertag-file-id-source` | `'auto` | 文件级 ID 来源：`org-roam`、`supertag`、`denote`、`auto` 或 `disabled` |
 | `supertag-project-root` | `(file-name-directory (file-name-directory (or load-file-name buffer-file-name)))` | 项目根目录，按源文件位置推导 |
 
 源码：[`../supertag-services-sync.el`](../supertag-services-sync.el)、[`../supertag-vault.el`](../supertag-vault.el)、[`../supertag.el`](../supertag.el)

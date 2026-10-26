@@ -264,7 +264,7 @@ records it has sent back; otherwise each item is processed here."
       (supertag-sync-parser--drained)
       (run-hooks 'supertag-async-drained-hook)))))
 
-(defvar supertag-file-id-source 'org-roam
+(defvar supertag-file-id-source 'auto
   "Policy for recognizing stable file node IDs.")
 
 ;;; Customization (from supertag-old/supertag-sync.el)

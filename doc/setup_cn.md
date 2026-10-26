@@ -26,15 +26,15 @@ M-x supertag-sync-full-rescan
 
 `supertag-file-id-source` 只决定**文件节点**的身份，与标题节点的 ID 无关，也不受 config guard 保护——想改就直接 `setq`：
 
-- `org-roam`（默认）：识别文件顶端 `:PROPERTIES:` drawer 里的 `:ID:`。用这个默认值**不需要**安装 org-roam。
+- `org-roam`：识别文件顶端 `:PROPERTIES:` drawer 里的 `:ID:`。**不需要**安装 org-roam。
 - `supertag`：同一条规则，用 Supertag 自己的名字。
 - `denote`：识别文件里的 `#+IDENTIFIER:`。
-- `auto`：两种格式都认；`disabled`：不创建文件级节点。
+- `auto`（默认）：两种格式都认，org-roam 和 denote 的文件都能识别；`disabled`：不创建文件级节点。
 
 标题节点一律用标题自己的 Org ID（`M-x org-id-get-create` 之类），与上面这项无关。
 
 ```emacs-lisp
-(setq supertag-file-id-source 'auto)
+(setq supertag-file-id-source 'denote)
 ```
 
 ## 可选：org-capture 集成

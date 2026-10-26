@@ -147,6 +147,66 @@ ID is the unique identifier of the node.
 Returns node data, or nil if it does not exist."
   (supertag-store-get-entity :nodes id))
 
+;;; Archived nodes
+
+(defcustom supertag-view-include-archived nil
+  "Non-nil means Stream and Discovery also show archived nodes.
+Org keeps archived entries readable and linkable but out of daily views;
+see `supertag-node-archived-p' for what counts as archived.
+`supertag-view-toggle-archived' flips this for the session."
+  :type 'boolean
+  :group 'supertag)
+
+(defun supertag-node--archive-file-p (file)
+  "Return non-nil when FILE is where Org or denote keeps archived entries.
+That is the file `org-archive-location' names (a %s in it stands for any
+file name), or a denote file whose name carries the keyword archive.  A
+file's own #+ARCHIVE: line is not consulted."
+  (when (stringp file)
+    (let* ((location (car (split-string (or (bound-and-true-p org-archive-location) "")
+                                     "::")))
+           (base (file-name-nondirectory file))
+           ;; Org fills %s with the source file's name; a relative location
+           ;; sits beside each source file, so only the name can be compared.
+           (absolute (and (not (string-empty-p location))
+                          (file-name-absolute-p location)))
+           (pattern (and (not (string-empty-p location))
+                         (concat "\\`"
+                                 (mapconcat #'regexp-quote
+                                            (split-string
+                                             (if absolute
+                                                 (expand-file-name location)
+                                               (file-name-nondirectory location))
+                                             "%s")
+                                            ".+")
+                                 "\\'"))))
+      (or (and pattern
+               (string-match-p pattern
+                               (if absolute (expand-file-name file) base)))
+          (and (string-match "__\\([^.]+\\)" base)
+               (member "archive"
+                       (split-string (match-string 1 base) "_" t)))))))
+
+(defun supertag-node-archived-p (node)
+  "Return non-nil when NODE is archived the way Org means it.
+A heading carrying `org-archive-tag', or under one that does, is archived;
+so is every node of an archive file (`supertag-node--archive-file-p')."
+  (or (plist-get node :archived)
+      (supertag-node--archive-file-p (plist-get node :file))))
+
+(defun supertag-node-hide-archived (nodes &optional key)
+  "Return (KEPT . HIDDEN) for NODES, HIDDEN counting archived ones left out.
+KEY turns an element of NODES into its node; it defaults to `identity'.
+Nothing is left out when `supertag-view-include-archived' is non-nil."
+  (if supertag-view-include-archived
+      (cons nodes 0)
+    (let ((hidden 0) kept)
+      (dolist (item nodes)
+        (if (supertag-node-archived-p (funcall (or key #'identity) item))
+            (cl-incf hidden)
+          (push item kept)))
+      (cons (nreverse kept) hidden))))
+
 (defun supertag-node-update (id updater)
   "Update node data using the unified commit system.
 ID is the unique identifier of the node.

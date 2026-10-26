@@ -159,6 +159,7 @@ the selected node's, which stays visible inside it."
     (define-key map (kbd "u") #'supertag-view-stream-up)
     (define-key map (kbd "m") #'supertag-view-stream-more)
     (define-key map (kbd "g") #'supertag-view-refresh)
+    (define-key map (kbd "A") #'supertag-view-toggle-archived)
     (define-key map (kbd "q") #'supertag-view-stream-quit)
     map)
   "Keymap for `supertag-view-stream-mode'.")
@@ -244,10 +245,12 @@ with neither selects every node."
                (not (and (stringp tag) (not (string-empty-p tag)))))
       (user-error "Stream View requires a tag"))
     (let* ((newest-first (eq supertag-view-stream-order 'newest-first))
+           ;; Org keeps archived entries out of daily views.
+           (visible (supertag-node-hide-archived
+                     (supertag-view-api-get-entities
+                      :nodes (supertag-view-stream--input-ids input))))
            (nodes (cl-stable-sort
-                   (copy-sequence
-                    (supertag-view-api-get-entities
-                     :nodes (supertag-view-stream--input-ids input)))
+                   (copy-sequence (car visible))
                    (if newest-first
                        #'supertag-view-stream--node-newer-p
                      #'supertag-view-stream--node-before-p)))
@@ -259,6 +262,7 @@ with neither selects every node."
              (list :tag tag
                    :query (plist-get input :query)
                    :total total
+                   :archived-hidden (cdr visible)
                    :nodes (cond
                            ((not (and (integerp limit) (> total limit))) nodes)
                            (newest-first (cl-subseq nodes 0 (max limit 0)))
@@ -461,13 +465,17 @@ See `supertag-view-stream-arrange-function'."
                      supertag-view-stream-mode-map))
   (setq header-line-format
         (let ((shown (length (plist-get state :nodes)))
-              (total (or (plist-get state :total) 0)))
-          (if (> total shown)
-              (format " %s   newest %d of %d nodes "
-                      (supertag-view-stream--label state) shown total)
-            (format " %s   %d %s "
-                    (supertag-view-stream--label state) shown
-                    (if (= shown 1) "node" "nodes")))))
+              (total (or (plist-get state :total) 0))
+              (hidden (or (plist-get state :archived-hidden) 0)))
+          (concat
+           (if (> total shown)
+               (format " %s   newest %d of %d nodes "
+                       (supertag-view-stream--label state) shown total)
+             (format " %s   %d %s "
+                     (supertag-view-stream--label state) shown
+                     (if (= shown 1) "node" "nodes")))
+           (when (> hidden 0)
+             (format "  %d archived hidden (A) " hidden)))))
   (font-lock-flush))
 
 (defun supertag-view-stream--buffer-name (input)

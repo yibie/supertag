@@ -201,6 +201,7 @@ Handles both time stamps (list) and date strings."
     (define-key map (kbd "RET") #'supertag-discovery-open-node)
     (define-key map (kbd "s") #'supertag-discovery-search)
     (define-key map (kbd "g") #'supertag-discovery-refresh)
+    (define-key map (kbd "A") #'supertag-view-toggle-archived)
     (define-key map (kbd "q") #'supertag-discovery-quit)
     (define-key map (kbd "i") #'supertag-discovery-insert-references)
     map))
@@ -329,9 +330,11 @@ tag:NAME, KEY:VALUE and a query expression read as in Stream find, by
 (defun supertag-discovery--sample-nodes ()
   "Return a without-replacement random sample of projected nodes."
   (let* ((nodes (vconcat
-                 (mapcar (lambda (pair) (cons (cdr pair) nil))
-                         (supertag-query-nodes
-                          (lambda (_id data) data)))))
+                 (car (supertag-node-hide-archived
+                       (mapcar (lambda (pair) (cons (cdr pair) nil))
+                               (supertag-query-nodes
+                                (lambda (_id data) data)))
+                       #'car))))
          (length (length nodes)))
     (dotimes (index length)
       (let ((other (+ index (random (- length index)))))
@@ -357,7 +360,11 @@ says why nothing was scored when semantic search could not run."
                  (keyword-ids (mapcar (lambda (pair) (plist-get (car pair) :id)) nodes))
                  others)
             (maphash (lambda (id score)
-                       (unless (member id keyword-ids) (push (cons id score) others)))
+                       (unless (or (member id keyword-ids)
+                                   (and (not supertag-view-include-archived)
+                                        (supertag-node-archived-p
+                                         (supertag-node-get id))))
+                         (push (cons id score) others)))
                      scores)
             (setq others (sort others (lambda (a b)
                                         (if (= (cdr a) (cdr b))
@@ -379,9 +386,14 @@ says why nothing was scored when semantic search could not run."
 A search lists keyword matches first, then notes close in meaning."
   (let* ((mode (or (plist-get input :mode) :sample))
          (keywords (plist-get input :keywords))
+         ;; Org keeps archived entries out of daily views; a search says
+         ;; how many it left out.
+         (found (when (and (eq mode :search) (not (plist-member input :nodes)))
+                  (supertag-node-hide-archived
+                   (supertag-discovery-find-nodes keywords) #'car)))
          (nodes (cond
                  ((plist-member input :nodes) (plist-get input :nodes))
-                 ((eq mode :search) (supertag-discovery-find-nodes keywords))
+                 (found (car found))
                  (t (supertag-discovery--sample-nodes))))
          ;; Only plain words carry meaning; tag:NAME, KEY:VALUE and a
          ;; query expression have no sentence to embed.
@@ -394,6 +406,7 @@ A search lists keyword matches first, then notes close in meaning."
     (list :mode mode :keywords keywords
           :nodes (if fill (append (nth 0 fill) (nth 1 fill)) nodes)
           :keyword-count (length nodes)
+          :archived-hidden (or (cdr found) 0)
           :scores (or (nth 2 fill) (make-hash-table :test 'equal))
           :semantic-note (nth 3 fill))))
 
@@ -507,7 +520,12 @@ Layout refreshes never resample notes or rerun queries."
                      (format "Marked: %d (%d hidden)" (car counts) (cadr counts))
                      'supertag-view-mute))
                    (when (and searchp note)
-                     (list (supertag-discovery--text note 'supertag-view-mute)))))
+                     (list (supertag-discovery--text note 'supertag-view-mute)))
+                   (let ((hidden (or (plist-get state :archived-hidden) 0)))
+                     (when (and searchp (> hidden 0))
+                       (list (supertag-discovery--text
+                              (format "%d archived hidden (A shows them)." hidden)
+                              'supertag-view-mute))))))
             (list :type :flex :direction (if (< width 70) :column :row) :gap 2
                   :children
                   (list (supertag-discovery--action " SEARCH " #'supertag-discovery-search)

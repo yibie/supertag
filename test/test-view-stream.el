@@ -780,6 +780,69 @@ and the selected node's background ranks above the surface."
         (should (equal (supertag-view-stream-test--ids nil)
                        '("node-3" "node-2")))))))
 
+(ert-deftest supertag-view-stream-archive-rules-follow-org-and-denote ()
+  "A node is archived by Org's tag, the archive location, or denote's keyword."
+  (let ((org-archive-location "~/notes/archive.org::"))
+    (should (supertag-node-archived-p '(:archived t :file "/x/a.org")))
+    (should (supertag-node-archived-p
+             (list :file (expand-file-name "~/notes/archive.org"))))
+    (should-not (supertag-node-archived-p
+                 (list :file (expand-file-name "~/notes/other.org"))))
+    (should (supertag-node-archived-p
+             '(:file "/x/20260617T084039--reference__archive.org")))
+    (should (supertag-node-archived-p
+             '(:file "/x/20260622T100518--threadnote__archive_electron.org")))
+    ;; Only a whole keyword counts, and only in the keyword part.
+    (should-not (supertag-node-archived-p
+                 '(:file "/x/20260617T084039--archive-notes__reference.org")))
+    (should-not (supertag-node-archived-p
+                 '(:file "/x/20260617T084039--notes__archived.org"))))
+  ;; Org's default puts each file's archive beside it as FILE_archive.
+  (let ((org-archive-location "%s_archive::"))
+    (should (supertag-node-archived-p '(:file "/x/todo.org_archive")))
+    (should-not (supertag-node-archived-p '(:file "/x/todo.org")))))
+
+(ert-deftest supertag-view-stream-archive-tag-covers-the-subtree ()
+  "Org's ARCHIVE tag marks its heading and the headings under it."
+  (with-temp-buffer
+    (insert "* Kept\n:PROPERTIES:\n:ID: kept\n:END:\n"
+            "* Old :ARCHIVE:\n:PROPERTIES:\n:ID: old\n:END:\n"
+            "** Under\n:PROPERTIES:\n:ID: under\n:END:\n")
+    (org-mode)
+    (let ((archived nil))
+      (org-element-map (org-element-parse-buffer) 'headline
+        (lambda (headline)
+          (push (cons (org-element-property :ID headline)
+                      (plist-get (supertag-extractor--archived headline nil nil)
+                                 :archived))
+                archived)))
+      (should (equal (nreverse archived)
+                     '(("kept") ("old" . t) ("under" . t)))))))
+
+(ert-deftest supertag-view-stream-hides-archived-nodes-until-asked ()
+  "Stream leaves archived nodes out, counts them, and shows them on request."
+  (supertag-view-stream-test--with-store
+    (let ((org-archive-location "~/notes/archive.org::")
+          (supertag-view-include-archived nil))
+      (supertag-view-stream-test--put-node
+       "live" "Live" nil "" '(0 1 0 0) "/x/a.org")
+      (supertag-view-stream-test--put-node
+       "moved" "Moved" nil "" '(0 2 0 0)
+       (expand-file-name "~/notes/archive.org"))
+      (supertag-store-put-entity
+       :nodes "tagged"
+       '(:id "tagged" :type :node :title "Tagged" :archived t
+         :created-at (0 3 0 0) :file "/x/a.org" :level 1))
+      (let ((state (supertag-view-stream--build-state nil)))
+        (should (equal (mapcar (lambda (node) (plist-get node :id))
+                               (plist-get state :nodes))
+                       '("live")))
+        (should (= 1 (plist-get state :total)))
+        (should (= 2 (plist-get state :archived-hidden))))
+      (let ((supertag-view-include-archived t))
+        (should (equal (supertag-view-stream-test--ids nil)
+                       '("live" "moved" "tagged")))))))
+
 (provide 'test-view-stream)
 
 ;;; test-view-stream.el ends here

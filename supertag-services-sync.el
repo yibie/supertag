@@ -364,7 +364,7 @@ this option can extend that contract, but cannot remove Document Facts."
 (defconst supertag-sync-document-fact-hash-props
   '(:title :raw-value :olp :tags :todo :priority :scheduled :deadline
     :tag-occurrences :unresolved-tags :content :properties :ref-to :named-links :property-links :file
-    :level :position :pos :parent-id :link-type)
+    :level :position :pos :parent-id :link-type :archived)
   "Document Projection properties that must participate in node hashes.")
 
 (defcustom supertag-property-link-types nil
@@ -2531,6 +2531,18 @@ Returns: :tag-occurrences (list of sanitized Org tokens)."
                     inline-tags org-native-tags)))
     (list :tag-occurrences all-tags)))
 
+(defun supertag-extractor--archived (headline _file _ctx)
+  "Mark HEADLINE archived when it or a heading above it has `org-archive-tag'.
+Org sets :archivedp on the tagged heading only, and archiving covers the
+subtree under it.  Returns: (:archived t), or nil."
+  (let ((current headline) archived)
+    (while (and current (not archived))
+      (when (and (eq (org-element-type current) 'headline)
+                 (org-element-property :archivedp current))
+        (setq archived t))
+      (setq current (org-element-property :parent current)))
+    (when archived (list :archived t))))
+
 (defun supertag-extractor--properties (headline _file _ctx)
   "Extract user-defined properties from a headline element.
 Returns: :properties (plist of keyword-value pairs)."
@@ -2591,6 +2603,8 @@ Returns: :ref-to (list of UUID strings), :named-links and :property-links."
                                :fn #'supertag-extractor--olp)
   (supertag-extractor-register :name 'tags :priority 20
                                :fn #'supertag-extractor--tags)
+  (supertag-extractor-register :name 'archived :priority 25
+                               :fn #'supertag-extractor--archived)
   (supertag-extractor-register :name 'properties :priority 30
                                :fn #'supertag-extractor--properties)
   (supertag-extractor-register :name 'content :priority 40

@@ -797,6 +797,22 @@ STATS is a list of (label . value) pairs."
             (with-current-buffer target
               (supertag-view--refresh-instance))))))))
 
+(defvar supertag-view-include-archived)
+
+(defun supertag-view-toggle-archived ()
+  "Show or hide archived nodes in Stream and Discovery, then refresh this view.
+The choice lasts for the session; set `supertag-view-include-archived' to
+keep it."
+  (declare (completion (lambda (_command buffer)
+                         (supertag-view--context-p buffer))))
+  (interactive)
+  (supertag-view--require-context)
+  (setq supertag-view-include-archived (not supertag-view-include-archived))
+  (supertag-view-refresh)
+  (message (if supertag-view-include-archived
+               "Archived nodes shown"
+             "Archived nodes hidden")))
+
 
 ;; ============================================================================
 ;; Configuration Persistence

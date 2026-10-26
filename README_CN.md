@@ -59,7 +59,7 @@ promote 的定制是核心理念，配置只有两层：模板数据，以及把
 
 ## 恰到好处的回顾
 
-`M-x supertag-view-stream` 打开全部节点的流，从新到旧排列；想顺着一个主题重读，按 `f` 输入 `tag:prj`，得到的就是这个标签（含子标签）的流。`M-x supertag-view-stream-find` 直接打开任意查询的流；`M-x supertag-stream-agent-open` 在任何 Org 文件里都能直接打开某个嵌入式代理的流。在流里按 `f` 再加一个条件，打开对应的子流；按 `u` 回到它的上一级。按 `f` 后直接输入词，每个词都要在标题、正文、tag 或属性值里出现（包含这个词的一部分就算）；`tag:prj` 表示必须有这个 tag 或继承它的子 tag，`STATUS:todo` 表示这个属性等于这个值（库里要真有这个属性名才算，否则当普通词）；以 `(` 开头就是查询式，例如 `(tag "prj")`。Discovery 的 `s` 用同一套写法。`C-u f` 则一步步选条件。节点按从新到旧排列（`supertag-view-stream-order`）。很长的流只显示最新的 200 个节点（`supertag-view-stream-max-nodes`），按 `m` 显示两倍。
+`M-x supertag-view-stream` 打开全部节点的流，从新到旧排列；想顺着一个主题重读，按 `f` 输入 `tag:prj`，得到的就是这个标签（含子标签）的流。`M-x supertag-view-stream-find` 直接打开任意查询的流；`M-x supertag-stream-agent-open` 在任何 Org 文件里都能直接打开某个嵌入式代理的流。在流里按 `f` 再加一个条件，打开对应的子流；按 `u` 回到它的上一级。按 `f` 后直接输入词，每个词都要在标题、正文、tag 或属性值里出现（包含这个词的一部分就算）；`tag:prj` 表示必须有这个 tag 或继承它的子 tag，`STATUS:todo` 表示这个属性等于这个值（库里要真有这个属性名才算，否则当普通词）；以 `(` 开头就是查询式，例如 `(tag "prj")`。Discovery 的 `s` 用同一套写法。`C-u f` 则一步步选条件。节点按从新到旧排列（`supertag-view-stream-order`）。很长的流只显示最新的 200 个节点（`supertag-view-stream-max-nodes`），按 `m` 显示两倍。归档的节点不出现在流和 Discovery 里，和 Org 的 agenda 一样：带 `ARCHIVE` 标签的标题（及其下级）、`org-archive-location` 指向的文件里的全部节点，以及文件名带 denote 关键词 `archive` 的文件。它们仍在 Store 里，指向它们的链接和反向链接照常可用；按 `A` 显示或隐藏（`supertag-view-include-archived`）。
 
 `M-x supertag-discovery` 则是随机翻出一批笔记的完整正文；想找某个话题时按 `s` 搜全库，看中的引用能插回出发的那条笔记。
 

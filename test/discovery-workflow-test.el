@@ -239,6 +239,50 @@
                   (should (string-match-p "Meaning search is off" (buffer-string))))))
           (when (buffer-live-p buffer) (kill-buffer buffer)))))))
 
+(ert-deftest supertag-discovery-leaves-archived-nodes-out-until-asked ()
+  "Search, meaning fill and the sample skip archived nodes; A brings them back."
+  (supertag-discovery-test--isolated
+    (supertag-discovery-test--put-node 1 "the needle is here")
+    (supertag-discovery-test--put-node 2 "an archived needle")
+    (supertag-discovery-test--put-node 3 "a thread")
+    (supertag-discovery-test--put-node 4 "an archived thread")
+    (supertag-discovery-test--put-node 5 "a thimble")
+    (dolist (id '("node-02" "node-04"))
+      (supertag-store-put-entity
+       :nodes id (plist-put (copy-tree (supertag-node-get id)) :archived t)))
+    (require 'supertag-semantic)
+    (cl-letf (((symbol-function 'display-buffer) #'ignore)
+              ((symbol-function 'supertag-discovery--get-node-tags) #'ignore))
+      (let ((supertag-view-include-archived nil)
+            (supertag-discovery-initial-sample-size 10)
+            (buffer (supertag-discovery)))
+        (unwind-protect
+            (with-current-buffer buffer
+              (should-not (cl-some (lambda (pair) (plist-get (car pair) :archived))
+                                   (plist-get (plist-get supertag-view--instance :state)
+                                              :nodes)))
+              (let ((supertag-semantic-enabled t)
+                    (supertag-discovery-semantic-results 1))
+                (cl-letf (((symbol-function 'supertag-semantic-scores)
+                           (lambda (_text)
+                             (supertag-discovery-test--scores
+                              "node-01" 0.6 "node-04" 0.59 "node-03" 0.5))))
+                  (let* ((state (supertag-discovery-test--search "needle"))
+                         (ids (mapcar (lambda (pair) (plist-get (car pair) :id))
+                                      (plist-get state :nodes))))
+                    ;; The archived thread scores higher but the fill skips it.
+                    (should (equal '("node-01" "node-03") ids))
+                    (should (= 1 (plist-get state :archived-hidden)))
+                    (should (string-match-p "1 archived hidden" (buffer-string))))
+                  (supertag-view-toggle-archived)
+                  (should supertag-view-include-archived)
+                  (let ((ids (mapcar (lambda (pair) (plist-get (car pair) :id))
+                                     (plist-get (plist-get supertag-view--instance
+                                                           :state)
+                                                :nodes))))
+                    (should (equal '("node-01" "node-02" "node-04") ids))))))
+          (when (buffer-live-p buffer) (kill-buffer buffer)))))))
+
 (ert-deftest supertag-discovery-refresh-preserves-visible-and-hidden-marks ()
   (supertag-discovery-test--isolated
     (dotimes (index 3)

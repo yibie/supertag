@@ -153,6 +153,10 @@ a user needed them. So an agent declares the fields its actions write.
   can't be read, or one the rules refuse). From there an agent's Stream is
   opened, or the agent is shown, revised, stopped, started or deleted.
   (`…-list-shows-every-agent-and-why-one-fails`)
+- **Enforced.** `supertag-stream-agent-open` opens an agent's Stream from
+  anywhere, an Org file included, so an agent is a shortcut as well as a
+  layout. Only agents in use are offered; a `:query` scope opens the
+  stream of that query. (`…-open-offers-agents-in-use`)
 - **Enforced.** Stopping keeps the file and marks it `:disabled`; its tag's
   Stream is drawn as before until it is started again. Deleting asks, then
   removes the file. Open Streams redraw either way.

@@ -632,18 +632,22 @@ The node may move to another group; the cursor does not follow it."
       (when (derived-mode-p 'supertag-view-stream-mode)
         (supertag-view-refresh)))))
 
-(defun supertag-stream-agent--show-stream (tag)
-  "Show a Stream of TAG, opening one when none is open."
-  (if-let* ((open (seq-find
-                   (lambda (buffer)
-                     (with-current-buffer buffer
-                       (and (derived-mode-p 'supertag-view-stream-mode)
-                            (equal (plist-get (plist-get supertag-view--instance :input)
-                                              :tag)
-                                   tag))))
-                   (buffer-list))))
-      (pop-to-buffer open)
-    (supertag-view-stream--open (list :tag tag))))
+(defun supertag-stream-agent--show-stream (scope)
+  "Show the Stream of SCOPE, opening one when none is open.
+SCOPE is an agent scope, (:tag NAME) or (:query EXPR), or a tag name."
+  (let ((input (if (stringp scope) (list :tag scope)
+                 (let ((tag (plist-get scope :tag)))
+                   (if tag (list :tag tag)
+                     (list :query (plist-get scope :query)))))))
+    (if-let* ((open (seq-find
+                     (lambda (buffer)
+                       (with-current-buffer buffer
+                         (and (derived-mode-p 'supertag-view-stream-mode)
+                              (equal (plist-get supertag-view--instance :input)
+                                     input))))
+                     (buffer-list))))
+        (pop-to-buffer open)
+      (supertag-view-stream--open input))))
 
 ;;; Design
 
@@ -885,7 +889,7 @@ pressed: the facts a model needs to see whether it did what was asked."
   (supertag-stream-agent--write agent)
   (setq supertag-stream-agent--last (plist-put job :outcome 'kept))
   (supertag-stream-agent--refresh-streams)
-  (supertag-stream-agent--show-stream (plist-get (plist-get agent :scope) :tag))
+  (supertag-stream-agent--show-stream (plist-get agent :scope))
   (message "Stream agent %s kept" (plist-get agent :name)))
 
 (defun supertag-stream-agent--give-up (job why)
@@ -1025,9 +1029,11 @@ user's words are kept as revisions, never the model's own checks."
         ((plist-get (car entry) :disabled) "停用")
         (t "启用")))
 
-(defun supertag-stream-agent--pick ()
-  "Have the user pick a kept agent; return its (AGENT . TROUBLE) pair."
-  (let* ((entries (or (supertag-stream-agent--all)
+(defun supertag-stream-agent--pick (&optional predicate)
+  "Have the user pick a kept agent; return its (AGENT . TROUBLE) pair.
+PREDICATE, when given, keeps only the pairs it accepts."
+  (let* ((entries (or (seq-filter (or predicate #'identity)
+                                  (supertag-stream-agent--all))
                       (user-error "No Stream agent yet; make one with `supertag-stream-agent-design'")))
          (table (mapcar (lambda (entry) (cons (plist-get (car entry) :name) entry))
                         entries))
@@ -1081,6 +1087,22 @@ user's words are kept as revisions, never the model's own checks."
       (supertag-stream-agent--refresh-streams)
       (message "Stream agent %s deleted" name))))
 
+;;;###autoload
+(defun supertag-stream-agent-open (name)
+  "Open the Stream the agent NAME lays out, from anywhere.
+Only agents in use are offered: started, working, with a scope."
+  (interactive
+   (list (plist-get
+          (car (supertag-stream-agent--pick
+                (lambda (entry)
+                  (and (null (cdr entry))
+                       (not (plist-get (car entry) :disabled))
+                       (plist-get (car entry) :scope)))))
+          :name)))
+  (let ((agent (or (supertag-stream-agent--read (supertag-stream-agent--file name))
+                   (user-error "No agent named %s" name))))
+    (supertag-stream-agent--show-stream (plist-get agent :scope))))
+
 (defun supertag-stream-agent-manage ()
   "List every Stream agent and act on the one picked.
 Each shows its state (启用, 停用 or 失效 with why) and its sentence."
@@ -1099,8 +1121,7 @@ Each shows its state (启用, 停用 or 失效 with why) and its sentence."
                                 '(?t "停用" "Stream 恢复原样，文件保留"))
                               '(?d "删除" "删除它和它的文件"))))))
     (pcase (car choice)
-      (?o (supertag-stream-agent--show-stream
-           (plist-get (plist-get agent :scope) :tag)))
+      (?o (supertag-stream-agent--show-stream (plist-get agent :scope)))
       (?s (supertag-stream-agent-show name))
       (?r (supertag-stream-agent-revise
            name (read-string (format "%s 要怎么改：" name))))

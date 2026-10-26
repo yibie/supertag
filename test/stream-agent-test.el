@@ -642,6 +642,40 @@ two contact files; work.org declares TIER_ALL itself."
                      '("失效" "启用" "失效")))
       (should (equal (cdr (car entries)) "文件读不出来")))))
 
+(ert-deftest supertag-stream-agent-open-offers-agents-in-use ()
+  "Open lists only working, started agents and shows the Stream of the scope."
+  (supertag-stream-agent-test-with-vault
+    (supertag-stream-agent-test--keep
+     supertag-stream-agent-test--contact
+     (plist-put (copy-sequence supertag-stream-agent-test--family) :actions
+                '((:key "n" :label "?" :field "NOPE" :value today))))
+    (with-temp-file (supertag-stream-agent--file "broken") (insert "(:name"))
+    (let (offered buffers)
+      (unwind-protect
+          (save-window-excursion
+            (cl-letf (((symbol-function 'completing-read)
+                       (lambda (_prompt table &rest _)
+                         (setq offered (mapcar #'car table))
+                         "contact")))
+              (push (call-interactively #'supertag-stream-agent-open) buffers))
+            (should (equal offered '("contact")))
+            (with-current-buffer (car buffers)
+              (should (equal (plist-get supertag-view--instance :input)
+                             '(:tag "contact"))))
+            ;; Opened again, the same Stream comes back.
+            (should (eq (supertag-stream-agent-open "contact") (car buffers)))
+            ;; A query scope opens the stream of that query.
+            (push (supertag-stream-agent--show-stream '(:query (tag "contact")))
+                  buffers)
+            (with-current-buffer (car buffers)
+              (should (equal (plist-get supertag-view--instance :input)
+                             '(:query (tag "contact")))))
+            (supertag-stream-agent-stop "contact")
+            (should-error (call-interactively #'supertag-stream-agent-open)
+                          :type 'user-error))
+        (mapc (lambda (buffer) (when (buffer-live-p buffer) (kill-buffer buffer)))
+              buffers)))))
+
 (provide 'stream-agent-test)
 
 ;;; stream-agent-test.el ends here

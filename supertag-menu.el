@@ -54,6 +54,7 @@
 (declare-function supertag-view-node "supertag-view-node" ())
 (declare-function supertag-view-stream "supertag-view-stream" (&optional tag-id))
 (declare-function supertag-view-stream-find "supertag-view-stream" (&optional guided))
+(declare-function supertag-stream-agent-open "supertag-stream-agent" (name))
 
 ;; Tag, Node and Link commands (loaded through their feature wrappers)
 ;; Add Tag is owned by the Tag feature.
@@ -131,6 +132,10 @@ errors propagate unchanged. DOC is the generated wrapper's docstring."
 (supertag-menu--defwrapper supertag-menu--view-stream
   supertag-view-stream supertag-view-stream
   "Open `supertag-view-stream', loading its feature first if needed.")
+
+(supertag-menu--defwrapper supertag-menu--stream-agent-open
+  supertag-stream-agent supertag-stream-agent-open
+  "Open `supertag-stream-agent-open', loading its feature first if needed.")
 
 (supertag-menu--defwrapper supertag-menu--view-stream-find
   supertag-view-stream-find supertag-view-stream
@@ -334,6 +339,7 @@ errors propagate unchanged. DOC is the generated wrapper's docstring."
     ("s" "Discovery"           supertag-menu--discovery)
     ("n" "Find node"           supertag-menu--find-node)
     ("t" "Stream"              supertag-menu--view-stream)
+    ("a" "Stream of an agent"  supertag-menu--stream-agent-open)
     ("v" "Node view"           supertag-menu--view-node)
     ("V" "More find & view..." supertag-menu-find-more)]
    ["Maintain"

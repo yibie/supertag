@@ -100,7 +100,8 @@ note, use `M-x supertag-move-node`.
 
 `M-x supertag-view-stream` is the stream of every node, newest first; narrow it to one theme with
 `f tag:prj`, which gives the same stream as the tag (including sub-tags). `M-x
-supertag-view-stream-find` opens the stream of any query directly. Inside a stream, `f` adds one more condition and opens that substream,
+supertag-view-stream-find` opens the stream of any query directly, and `M-x
+supertag-stream-agent-open` the stream a Stream agent lays out, from any Org file. Inside a stream, `f` adds one more condition and opens that substream,
 `u` goes back to the stream it came from. At the `f` prompt, type words, each of which must
 appear somewhere in the title, body, tags or property values (a part of a word is enough);
 `tag:prj` asks for that tag or a tag that extends it, and `STATUS:todo` for a property value, when some node has

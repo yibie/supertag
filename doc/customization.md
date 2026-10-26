@@ -133,7 +133,7 @@ Source: [`../supertag-core-persistence.el`](../supertag-core-persistence.el),
 | `supertag-view-node-todo-keywords` | `'("TODO" "DONE" "NEXT" ...)` (illustrative; long value elided — see the source) | the TODO keyword list to strip |
 | `supertag-summary-directory` | `nil` | where summary panels are kept, one `NAME.org.summary` each; nil means `summaries/` under the sync directory (so Git carries them), or under the data directory when none is set |
 | `supertag-summary-palette` | `'paper` | buffer-local palette for summary panels |
-| `supertag-summary-skip-file-regexp` | `"archive\\.org\\'"` | notes in files whose name matches are left out of every summary panel; nil leaves nothing out |
+| `supertag-summary-skip-file-regexp` | `nil` | notes in files whose name matches are left out of every summary panel; archived notes are left out already (the rule Stream and Discovery use), so this only excludes further files |
 | `supertag-summary-timeout` | `180` | seconds a model may take to write a panel or a component |
 | `supertag-summary-run-timeout` | `20` | seconds a panel's layout code may run in its child Emacs before it is stopped |
 

@@ -108,7 +108,7 @@ appear somewhere in the title, body, tags or property values (a part of a word i
 that property; text starting with `(` is a query expression such as `(tag "prj")`. Discovery's
 `s` reads the same input. `C-u f` builds the condition step by step. Nodes are listed newest first
 (`supertag-view-stream-order`). A long stream shows its newest 200 nodes
-(`supertag-view-stream-max-nodes`); `m` shows twice as many. Archived nodes stay out of Stream and Discovery, as Org keeps them out of the agenda: a heading tagged `ARCHIVE` (or under one), every node of the file `org-archive-location` names, and denote files whose name carries the keyword `archive`. They remain in the Store, so links and backlinks to them work; `A` shows or hides them (`supertag-view-include-archived`).
+(`supertag-view-stream-max-nodes`); `m` shows twice as many. Archived nodes stay out of Stream, Discovery and Summary panels, as Org keeps them out of the agenda: a heading tagged `ARCHIVE` (or under one), every node of the file `org-archive-location` names, and denote files whose name carries the keyword `archive`. They remain in the Store, so links and backlinks to them work; in Stream and Discovery `A` shows or hides them (`supertag-view-include-archived`).
 
 `M-x supertag-discovery` flips out a batch of notes with their full bodies instead; press `s`
 to search the whole vault, and a quote you pick can be inserted back into the note you started

@@ -79,9 +79,11 @@ Components are kept in its `components/' subdirectory."
   :type 'symbol
   :group 'supertag-summary)
 
-(defcustom supertag-summary-skip-file-regexp "archive\\.org\\'"
+(defcustom supertag-summary-skip-file-regexp nil
   "Notes in files whose name matches this are left out of every panel.
-Nil leaves nothing out."
+Archived notes are left out already, by the rule Stream and Discovery use
+\(`supertag-node-archived-p'); this excludes further files.  Nil excludes
+nothing further."
   :type '(choice (const :tag "Leave nothing out" nil) regexp)
   :group 'supertag-summary)
 
@@ -359,8 +361,11 @@ records share is a category the layout may need to group by or write back."
   "What a model is told about node properties, by summary and by Stream agents.")
 
 (defun supertag-summary--live-p (node)
-  "Return non-nil when NODE is a heading outside the skipped files."
+  "Return non-nil when NODE is a heading outside the skipped files.
+Archived headings are left out unless `supertag-view-include-archived'."
   (not (or (eql (plist-get node :level) 0)
+           (and (not supertag-view-include-archived)
+                (supertag-node-archived-p node))
            (and supertag-summary-skip-file-regexp
                 (string-match-p supertag-summary-skip-file-regexp
                                 (or (plist-get node :file) ""))))))

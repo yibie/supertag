@@ -150,7 +150,7 @@ Returns node data, or nil if it does not exist."
 ;;; Archived nodes
 
 (defcustom supertag-view-include-archived nil
-  "Non-nil means Stream and Discovery also show archived nodes.
+  "Non-nil means Stream, Discovery and Summary also show archived nodes.
 Org keeps archived entries readable and linkable but out of daily views;
 see `supertag-node-archived-p' for what counts as archived.
 `supertag-view-toggle-archived' flips this for the session."

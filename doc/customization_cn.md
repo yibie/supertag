@@ -108,7 +108,7 @@
 | `supertag-view-node-todo-keywords` | `'("TODO" "DONE" "NEXT" ...)`（示意，长值省略；完整默认值见源码） | 要去掉的 TODO 关键字列表 |
 | `supertag-summary-directory` | `nil` | summary 面板存放的目录，一块面板一个 `名字.org.summary`；nil 表示同步目录下的 `summaries/`（这样会随 Git 同步），没有同步目录时放在数据目录下 |
 | `supertag-summary-palette` | `'paper` | summary 面板的局部调色板 |
-| `supertag-summary-skip-file-regexp` | `"archive\\.org\\'"` | 文件名匹配的笔记不进入任何 summary 面板；nil 表示不排除 |
+| `supertag-summary-skip-file-regexp` | `nil` | 文件名匹配的笔记不进入任何 summary 面板；归档的笔记本来就不进入（与流和 Discovery 同一规则），这里只用来再排除别的文件 |
 | `supertag-summary-timeout` | `180` | 模型编写一块面板或一个组件最多用多少秒 |
 | `supertag-summary-run-timeout` | `20` | 面板的版式代码在子进程 Emacs 里最多运行多少秒，超时即停止 |
 

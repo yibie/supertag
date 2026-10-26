@@ -217,6 +217,22 @@ file.  Panels are kept under the vault."
     (let ((supertag-summary-skip-file-regexp nil))
       (should (= 7 (length (supertag-summary-test--rows)))))))
 
+(ert-deftest supertag-summary-leaves-out-archived-notes ()
+  "Archived notes stay out of panels by the rule Stream uses, until asked."
+  (supertag-summary-test-with-vault
+    (with-temp-file (expand-file-name "shelf.org" tmp)
+      (insert "* Shelved launch #prj :ARCHIVE:\n:PROPERTIES:\n:ID:       ws-shelved\n:END:\n"))
+    (with-temp-file (expand-file-name "20260301T090000--old__archive.org" tmp)
+      (insert "* Old plan #prj\n:PROPERTIES:\n:ID:       ws-old\n:END:\n"))
+    (should (eq 'complete (plist-get (supertag-reindex-org) :status)))
+    (should (plist-get (supertag-node-get "ws-shelved") :archived))
+    (let ((supertag-view-include-archived nil))
+      (should (= 7 (length (supertag-summary-test--rows)))))
+    (let ((supertag-view-include-archived t))
+      (should (equal (sort (mapcar #'car (supertag-summary-test--rows)) #'string<)
+                     '("ws-a1" "ws-a2" "ws-a3" "ws-alpha" "ws-b1" "ws-beta"
+                       "ws-old" "ws-s1" "ws-shelved"))))))
+
 (ert-deftest supertag-summary-design-sends-a-sample-and-no-body ()
   "Designing a panel sends six records' facts and no note body."
   (supertag-summary-test-with-vault

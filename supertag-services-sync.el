@@ -1521,7 +1521,7 @@ Identity selection follows `supertag-file-id-source'."
     (let* ((identity (supertag-sync--file-header-identity))
            (id (car identity))
            (link-type (cdr identity))
-           title file-tags ref-to named-links)
+           title file-tags ref-to named-links properties)
       ;; Read #+TITLE:
       (goto-char (point-min))
       (when (re-search-forward
@@ -1536,22 +1536,25 @@ Identity selection follows `supertag-file-id-source'."
         (let ((raw (string-trim (match-string 1))))
           (setq file-tags (supertag-sync--parse-filetags raw))))
       ;; File-node content ends where the first heading begins.
-      (setq ref-to
-            (save-restriction
-              (narrow-to-region
-               (point-min)
-               (save-excursion
-                 (goto-char (point-min))
-                 (if (re-search-forward "^\\*+\\s-" nil t)
-                     (match-beginning 0)
-                   (point-max))))
-              (cl-delete-duplicates
-               (supertag--extract-refs
-                (org-element-contents (org-element-parse-buffer)))
-               :test #'equal)))
+      (save-restriction
+        (narrow-to-region
+         (point-min)
+         (save-excursion
+           (goto-char (point-min))
+           (if (re-search-forward "^\\*+\\s-" nil t)
+               (match-beginning 0)
+             (point-max))))
+        (let ((data (org-element-parse-buffer)))
+          (setq ref-to (cl-delete-duplicates
+                        (supertag--extract-refs (org-element-contents data))
+                        :test #'equal))
+          ;; Org reads a property drawer at the top of the file as the
+          ;; document's own properties; they belong to the file node.
+          (setq properties (supertag--parse-properties data))))
       (setq named-links (supertag-sync--extract-file-header-named-links))
       (append (list :id id :link-type link-type :title title
                     :file-tags file-tags :ref-to ref-to)
+              (when properties (list :properties properties))
               (when named-links (list :named-links named-links))))))
 
 (defun supertag-sync--parse-filetags (raw)
@@ -1579,7 +1582,7 @@ an :id."
                 :ref-to (plist-get file-header :ref-to)
                 :position 1
                 :content nil
-                :properties nil)
+                :properties (plist-get file-header :properties))
           (when-let* ((named-links (plist-get file-header :named-links)))
             (list :named-links named-links))))
 

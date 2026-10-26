@@ -312,15 +312,73 @@
        (supertag-service-org-set-property "node-id" :status "missing"))
       (should (equal before (supertag-node-get "node-id"))))))
 
-(ert-deftest supertag-automation-property-rejects-file-level-node ()
-  "AC6 accepts identified headings, not synthetic file-level nodes."
-  (supertag-automation-property-test--with-node ":STATUS: live"
-    (supertag-node-update
-     "node-id" (lambda (node) (plist-put (copy-tree node) :level 0)))
-    (should-error
-     (supertag-service-org-set-property "node-id" :status "blocked"))
-    (should (equal "live"
-                   (supertag-automation-property-test--disk-property file "STATUS")))))
+(ert-deftest supertag-automation-property-writes-a-file-node-s-top-drawer ()
+  "A file node's property goes into the drawer at the top of its file.
+Org keeps planning and TODO state on headings, so those stay refused."
+  (let* ((tmp (make-temp-file "supertag-automation-property-test-" t))
+         (file (expand-file-name "doc.org" tmp))
+         (supertag--store nil)
+         (supertag--subscribers (make-hash-table :test 'equal))
+         (supertag-sync--internal-modifications (make-hash-table :test 'equal))
+         (supertag-file-id-source 'org-roam))
+    (unwind-protect
+        (progn
+          (with-temp-file file
+            (insert ":PROPERTIES:\n:ID:       file-id\n:END:\n"
+                    "#+TITLE: Doc\n\n* Heading\n:PROPERTIES:\n"
+                    ":ID:       heading-id\n:END:\n"))
+          (supertag--ensure-store)
+          (supertag-node-create
+           `(:id "file-id" :title "Doc" :file ,file :level 0 :position 1))
+          (supertag-service-org-set-property "file-id" :status "doing")
+          (should (equal "doing"
+                         (supertag-automation-property-test--disk-property
+                          file "STATUS")))
+          (should (equal "doing"
+                         (plist-get (plist-get (supertag-node-get "file-id")
+                                               :properties)
+                                    :STATUS)))
+          (should-error
+           (supertag-service-org-set-property "file-id" "SCHEDULED" "2026-11-01"))
+          (should-not (string-match-p
+                       "SCHEDULED"
+                       (with-temp-buffer (insert-file-contents file)
+                                         (buffer-string)))))
+      (when-let* ((buffer (find-buffer-visiting file)))
+        (with-current-buffer buffer (set-buffer-modified-p nil))
+        (kill-buffer buffer))
+      (ignore-errors (delete-directory tmp t)))))
+
+(ert-deftest supertag-automation-property-gives-a-denote-file-a-top-drawer ()
+  "A denote file without a drawer gains one above its front matter.
+Its identity still comes from #+IDENTIFIER:, so the Store record keeps it."
+  (let* ((tmp (make-temp-file "supertag-automation-property-test-" t))
+         (file (expand-file-name "20260706T214706--doc__project.org" tmp))
+         (supertag--store nil)
+         (supertag--subscribers (make-hash-table :test 'equal))
+         (supertag-sync--internal-modifications (make-hash-table :test 'equal))
+         (supertag-file-id-source 'auto))
+    (unwind-protect
+        (progn
+          (with-temp-file file
+            (insert "#+TITLE:      Doc\n#+IDENTIFIER: 20260706T214706\n\n* H\n"))
+          (supertag--ensure-store)
+          (supertag-node-create
+           `(:id "20260706T214706" :title "Doc" :file ,file :level 0
+             :position 1 :link-type denote))
+          (supertag-service-org-set-property "20260706T214706" :status "doing")
+          (with-temp-buffer
+            (insert-file-contents file)
+            (goto-char (point-min))
+            (should (looking-at ":PROPERTIES:\n:STATUS: +doing\n:END:\n#\\+TITLE:")))
+          (let ((node (supertag-node-get "20260706T214706")))
+            (should (eq 'denote (plist-get node :link-type)))
+            (should (equal "doing"
+                           (plist-get (plist-get node :properties) :STATUS)))))
+      (when-let* ((buffer (find-buffer-visiting file)))
+        (with-current-buffer buffer (set-buffer-modified-p nil))
+        (kill-buffer buffer))
+      (ignore-errors (delete-directory tmp t)))))
 
 (ert-deftest supertag-automation-property-trigger-matches-repeat-save-once ()
   "Repeated matching tag events reach Org, whose live no-op saves only once."

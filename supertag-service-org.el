@@ -1193,8 +1193,13 @@ deletion."
          (node (supertag-node-get node-id)))
     (unless node
       (user-error "Node not found: %s" node-id))
-    (when (zerop (or (plist-get node :level) 1))
-      (user-error "Automation properties require an identified Org heading"))
+    ;; A file node's properties live in the drawer at the top of its file,
+    ;; which Org reads and writes natively.  Org keeps these special
+    ;; properties on headings only.
+    (when (and (zerop (or (plist-get node :level) 1))
+               (member name supertag-service-org--writable-special-properties))
+      (user-error "%s belongs to an Org heading; a file node cannot hold it"
+                  name))
     (supertag-service-org--update-buffer-and-resync
      node-id
      (lambda ()

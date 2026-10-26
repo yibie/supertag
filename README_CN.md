@@ -208,7 +208,7 @@ promote 的定制是核心理念，配置只有两层：模板数据，以及把
 | 配置项 | 默认值 | 作用 |
 |---|---|---|
 | `supertag-sync-directories` | `nil` | 要同步的目录；nil 表示还没设置，在 init 里于 `(require 'supertag)` 之前设置（向导已退役） |
-| `supertag-file-id-source` | `'org-roam` | 文件级 ID 来源：`org-roam`、`denote`、`auto`、`disabled` |
+| `supertag-file-id-source` | `'org-roam` | 文件级 ID 来源：`org-roam`、`supertag`、`denote`、`auto`、`disabled` |
 | `supertag-sync-auto-interval` | `900` | 自动同步间隔（秒） |
 | `supertag-sync-idle-delay` | `1.0` | 空闲多少秒后触发同步 |
 | `supertag-db-backup-interval` | `86400` | 数据库每日备份间隔（秒）；保留天数见 `supertag-db-backup-keep-days` |

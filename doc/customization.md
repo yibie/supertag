@@ -94,7 +94,7 @@ source files; where a long default is elided, the source is authoritative.
 | `supertag-data-directory` | `(expand-file-name "supertag" user-emacs-directory)` | data directory (default `~/.emacs.d/supertag/`) |
 | `supertag-vault-auto-switch` | `nil` | switch to the matching vault by file path (loads that vault's database and state) |
 | `supertag-vault-modeline-indicator` | `t` | show the current vault name in the mode line |
-| `supertag-file-id-source` | `'org-roam` | file-level ID source: `org-roam`, `denote`, `auto` or `disabled` |
+| `supertag-file-id-source` | `'org-roam` | file-level ID source: `org-roam`, `supertag`, `denote`, `auto` or `disabled` |
 | `supertag-project-root` | `(file-name-directory (file-name-directory (or load-file-name buffer-file-name)))` | project root, derived from the source file's location |
 
 Source: [`../supertag-services-sync.el`](../supertag-services-sync.el),

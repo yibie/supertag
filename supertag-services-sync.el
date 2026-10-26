@@ -1500,7 +1500,7 @@ wants the ID alone pays for no parse."
              (min 2000 (point-max)) t)
         (setq denote-id (string-trim (match-string 1))))
       (pcase supertag-file-id-source
-        ((or 'org-roam 'org-id)
+        ((or 'supertag 'org-roam 'org-id)
          (cons org-id (and org-id 'id)))
         ('denote
          (cons denote-id (and denote-id 'denote)))

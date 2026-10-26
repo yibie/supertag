@@ -27,6 +27,7 @@ M-x supertag-sync-full-rescan
 `supertag-file-id-source` only decides the identity of **file nodes**. It is independent of heading-node IDs and is not covered by the config guard — just `setq` it:
 
 - `org-roam` (default): reads the `:ID:` in the `:PROPERTIES:` drawer at the top of the file. The default does **not** require org-roam.
+- `supertag`: the same rule under Supertag's own name.
 - `denote`: reads `#+IDENTIFIER:` in the file.
 - `auto`: accepts both; `disabled`: no file-level nodes.
 

@@ -1082,7 +1082,7 @@ A deleted-file node and a heading whose ID is absent are still deleted."
                   "#+TITLE: Note\n#+IDENTIFIER: denote-one\n"
                   ":PROPERTIES:\n:ID: org-two\n:END:\n#+IDENTIFIER: denote-two\n"
                   "#+TITLE: No identity\n* Heading\n:PROPERTIES:\n:ID: h\n:END:\n"))
-    (dolist (policy '(org-id org-roam denote auto disabled))
+    (dolist (policy '(supertag org-id org-roam denote auto disabled))
       (with-temp-buffer
         (insert text)
         (goto-char (point-max))

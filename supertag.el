@@ -58,13 +58,16 @@
 
 (defcustom supertag-file-id-source 'org-roam
   "Policy for recognizing stable file node IDs.
-- `org-roam' => require :ID: in the top-level :PROPERTIES: drawer
+- `org-roam' => require :ID: in the top-level :PROPERTIES: drawer;
+               org-roam itself is not needed
+- `supertag' => the same rule under Supertag's own name
 - `denote'   => require a #+IDENTIFIER: keyword
 - `auto'     => prefer a top-level :ID:, then #+IDENTIFIER:
 - `disabled' => do not create file nodes
 
 Files without the selected persistent identity remain ordinary Org files."
   :type '(choice (const :tag "org-roam (:PROPERTIES: :ID:)" org-roam)
+                 (const :tag "supertag (same as org-roam)" supertag)
                  (const :tag "denote (#+IDENTIFIER:)" denote)
                  (const :tag "auto-detect either identity" auto)
                  (const :tag "disable file nodes" disabled))

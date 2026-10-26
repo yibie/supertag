@@ -27,6 +27,7 @@ M-x supertag-sync-full-rescan
 `supertag-file-id-source` 只决定**文件节点**的身份，与标题节点的 ID 无关，也不受 config guard 保护——想改就直接 `setq`：
 
 - `org-roam`（默认）：识别文件顶端 `:PROPERTIES:` drawer 里的 `:ID:`。用这个默认值**不需要**安装 org-roam。
+- `supertag`：同一条规则，用 Supertag 自己的名字。
 - `denote`：识别文件里的 `#+IDENTIFIER:`。
 - `auto`：两种格式都认；`disabled`：不创建文件级节点。
 

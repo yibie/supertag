@@ -26,7 +26,7 @@
 - `supertag-data-directory` 默认 `~/.emacs.d/supertag/`；`supertag-db-file`、`supertag-db-backup-directory`、`supertag-sync-state-file` 都按它计算，所以实际路径随数据目录变化。
 - `supertag-project-root` 按源文件位置推导，不用手写。
 - 路径类默认值在加载（或激活某个库）时按当时的 `user-emacs-directory` 与库根算一次；事后改 `supertag-data-directory` 不会自动改写已算好的 `supertag-db-file`、`supertag-db-backup-directory`、`supertag-sync-state-file`，需要重设这些变量或重启。
-- `supertag-view-node-palette`、`supertag-view-tag-cards-palette` 是缓冲区局部生效，不覆盖全局 `supertag-view-palette`。
+- `supertag-view-node-palette`、`supertag-summary-palette` 是缓冲区局部生效，不覆盖全局 `supertag-view-palette`。
 - nil 的含义要看具体项：`supertag-sync-directories` 是「还没设置」，`supertag-creation-templates` 是「用内置预设」，`supertag-discovery-history-file` 是「不落盘」，`supertag-text-link-relation-types` 是「无预设类型」（会话显式接受的类型仍然有效）。
 
 ## 启用时机与注意
@@ -106,16 +106,13 @@
 | `supertag-view-node-side` | `'right` | Node View 侧窗在左边还是右边 |
 | `supertag-view-node-strip-todo-keywords` | `t` | 视图标题里是否去掉 TODO 关键字 |
 | `supertag-view-node-todo-keywords` | `'("TODO" "DONE" "NEXT" ...)`（示意，长值省略；完整默认值见源码） | 要去掉的 TODO 关键字列表 |
-| `supertag-view-tag-cards-favorite-groups` | `nil` | Tag Cards 里作为收藏分组显示的标签 ID |
-| `supertag-view-tag-cards-manifesto` | `'("MAKE ROOM" "FOR THE UNEXPECTED." "Tags are fuel. The connections are computed for you: click any + row to narrow.")` | Tag Cards 报头下的三行文字 |
-| `supertag-view-tag-cards-palette` | `'neon` | Tag Cards 的局部调色板 |
 | `supertag-summary-directory` | `nil` | summary 面板存放的目录，一块面板一个 `名字.org.summary`；nil 表示同步目录下的 `summaries/`（这样会随 Git 同步），没有同步目录时放在数据目录下 |
 | `supertag-summary-palette` | `'paper` | summary 面板的局部调色板 |
 | `supertag-summary-skip-file-regexp` | `"archive\\.org\\'"` | 文件名匹配的笔记不进入任何 summary 面板；nil 表示不排除 |
 | `supertag-summary-timeout` | `180` | 模型编写一块面板或一个组件最多用多少秒 |
 | `supertag-summary-run-timeout` | `20` | 面板的版式代码在子进程 Emacs 里最多运行多少秒，超时即停止 |
 
-源码：[`../supertag-view-framework.el`](../supertag-view-framework.el)、[`../supertag-view-node.el`](../supertag-view-node.el)、[`../supertag-view-tag-cards.el`](../supertag-view-tag-cards.el)、[`../supertag-summary.el`](../supertag-summary.el)
+源码：[`../supertag-view-framework.el`](../supertag-view-framework.el)、[`../supertag-view-node.el`](../supertag-view-node.el)、[`../supertag-summary.el`](../supertag-summary.el)
 
 ## 标签显示与补全
 

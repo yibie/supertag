@@ -89,9 +89,20 @@ later panels call it by name.
   **[Enforced]**
 - A component returns the same 11 elements and passes the same checks.
   **[Enforced]**
+- A component is kept with the Tag and the demo layout it was shown with, so
+  it can be drawn again later. Components kept before this have neither.
+- `M-x supertag-summary-components` opens the gallery: one card per
+  component on its own surface, with its sentence, its docstring, its demo
+  drawn on the Tag's notes as they are now, and the panels and components
+  that call it. A component without a kept demo shows only its text.
+- From a card: CODE shows the component and its demo; DEMO opens the demo as
+  a panel; REVISE (`supertag-summary-component-revise`) sends the current
+  code and the user's feedback to the model, and the reply passes the same
+  checks; DELETE (`supertag-summary-component-delete`) asks first and names
+  every panel that calls the component, since those stop drawing.
 - Verified: a model wrote a component from one sentence, and a second panel
   called it unprompted.
-- Open: components have no versions, so redefining one overwrites it; and
+- Open: components have no versions, so revising one overwrites it; and
   nothing keeps layouts consistent in style as components multiply.
 
 **Page.** The page skeleton is the five bands of `design.md` section 5.
@@ -110,7 +121,7 @@ reliable; everything that drifted in the experiments was at the third.
 |---|---|---|
 | **Enforced** | The model cannot produce a violation | One font size; no colored text; fills are not clickable; a fill pads one space on each side and uppercases English; tones are a closed set and Supertag picks the colors; buttons are traditional `[ ]` text buttons |
 | **Accepted** | A violation is refused automatically and sent back to the model | The page lays out at 120 and at 80 columns; no line is wider than the page; the code uses only whitelisted functions |
-| **Prompted** | Stated only in the prompt; the model may not comply | Labels read `NOUN / NOUN`; neighboring fills rotate 1, 2, 3; three-part cards; no borders by default; empty groups are not drawn as shells; overview before detail; single-line elements get enough width |
+| **Prompted** | Stated only in the prompt; the model may not comply | Labels read `NOUN / NOUN`; neighboring fills rotate 1, 2, 3; three-part cards; each card or group on a `:surface t` container, no borders; empty groups are not drawn as shells; overview before detail; single-line elements get enough width |
 | **Judged** | Only the user can tell by looking | Whether the layout answers the sentence; whether something asked for is missing; how tight the spacing is; which records count as "tasks" |
 
 The drift seen in the experiments was all at the last two levels:
@@ -178,7 +189,7 @@ The limits, stated plainly:
 - Generate the prompt from this file and the element registry instead of
   copying it by hand. The "design rules" in today's prompt are a hand-made
   Chinese copy of `design.md`, which already makes two sources.
-- How this relates to Tag Cards and Stream: when an existing view is the
+- How this relates to Stream: when an existing view is the
   right tool and when a summary is.
 - Move every rule that can move from "Prompted" in section 5 down into an
   element constraint or an acceptance check.

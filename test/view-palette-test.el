@@ -68,5 +68,22 @@
 (ert-deftest supertag-view-palette-rejects-unknown-name ()
   (should-error (supertag-view-apply-palette 'not-a-palette) :type 'user-error))
 
+(ert-deftest supertag-view-surface-shifts-only-the-lightness-of-the-background ()
+  "A surface is the background moved by the offset: lighter on dark, darker on light."
+  (let ((supertag-view-surface-offset 5))
+    (should (equal "#171725" (supertag-view-surface-color "#0e0e16")))
+    (should (equal "#f2f2f2" (supertag-view-surface-color "#ffffff")))
+    (should-not (supertag-view-surface-color "unspecified-bg"))
+    (should-not (supertag-view-surface-color nil))))
+
+(ert-deftest supertag-view-text-faces-leave-the-surface-showing ()
+  "No role face inherits `default', which would paint the page background over a surface."
+  (should-not (memq 'default (ensure-list (face-attribute 'supertag-view-accent :inherit))))
+  (should-not (memq 'default (ensure-list (face-attribute 'supertag-view-score :inherit))))
+  (dolist (palette supertag-view-palettes)
+    (dolist (entry (cdr palette))
+      (should-not (eq 'default (plist-get (cadr entry) :inherit)))
+      (should-not (eq 'default (plist-get (cddr entry) :inherit))))))
+
 (provide 'view-palette-test)
 ;;; view-palette-test.el ends here

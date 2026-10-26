@@ -16,10 +16,9 @@ bash test/run-tests.sh --guidance       # lightweight links/entrypoints
 
 `compile-check.sh` needs a native-comp capable Emacs and only the declared
 ht/dash dependencies. It checks disposable source copies, keeps full logs,
-and fails on compiler warnings or errors. Experimental Tag Cards and the published `test/` and `scripts/` files stay
+and fails on compiler warnings or errors. The published `test/` and `scripts/` files stay
 source-only. Directory-local flags also protect recursive native compilation;
 `.elpaignore` keeps development directories out of package byte compilation.
-Tag Cards requires TextUI only when explicitly invoked.
 
 [Static manifest](renovation-suites.el) owns file/ERT selections. The old
 `bash test/run-refactor-batch1.sh` pathname delegates to the same executor;

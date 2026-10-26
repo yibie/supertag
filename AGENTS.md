@@ -1,6 +1,6 @@
 # Supertag agent notes
 
-Before you write or change any view buffer (Node View, Tag Cards, Stream,
+Before you write or change any view buffer (Node View, Stream, Summary,
 Tag Manager, or a new `supertag-view-*.el`), read `design.md`. It is the
 single source of truth for how a view looks: one font size, accent colors
 as filled blocks only, `NOUN / NOUN` label grammar, character-built

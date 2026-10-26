@@ -38,8 +38,7 @@ cat > "$root/check.el" <<'ELISP'
     (let ((result (if native (native-compile file) (byte-compile-file file))))
       (cond
        ((or (eq result 'no-byte-compile) (and native (null result)))
-        (unless (or (equal (file-name-nondirectory file) "supertag-view-tag-cards.el")
-                    (file-in-directory-p file (expand-file-name "test/" root))
+        (unless (or (file-in-directory-p file (expand-file-name "test/" root))
                     (file-in-directory-p file (expand-file-name "scripts/" root)))
           (error "Unexpected compilation skip: %s" file))
         (cl-incf skipped))

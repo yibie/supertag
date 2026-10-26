@@ -96,6 +96,45 @@ bottom.  Nodes without a creation time come last either way."
 (defvar-local supertag-view-stream--origin-window-configuration nil
   "Window configuration to restore when the Stream quits.")
 
+(defun supertag-view-stream--group-label (label)
+  "Return LABEL as a group's filled label, marked as the start of a group."
+  (propertize (concat " " label " ")
+              'font-lock-face 'supertag-view-stream-date-face
+              'supertag-view-stream-group t))
+
+(defun supertag-view-stream--add-group-surfaces ()
+  "Put every group of the current Stream on the surface, `design.md' 1.
+
+A group runs from its label to its last non-blank line.  The surface is an
+overlay because Org's fontification would replace a `face' property, and it
+starts after the label so the label keeps its fill.  Its priority is below
+the selected node's, which stays visible inside it."
+  (remove-overlays (point-min) (point-max) 'supertag-view-stream-surface t)
+  (let ((labels nil)
+        (position (point-min)))
+    (while (setq position (text-property-any position (point-max)
+                                             'supertag-view-stream-group t))
+      (push position labels)
+      (setq position (or (next-single-property-change
+                          position 'supertag-view-stream-group)
+                         (point-max))))
+    (setq labels (nreverse labels))
+    (cl-loop for (label next) on labels
+             do (save-excursion
+                  (goto-char (or next (point-max)))
+                  (skip-chars-backward " \t\n")
+                  (let ((start (progn (save-excursion
+                                        (goto-char label)
+                                        (line-end-position))))
+                        (end (min (point-max) (1+ (line-end-position)))))
+                    (when (< start end)
+                      (let ((overlay (make-overlay start end)))
+                        (overlay-put overlay 'supertag-view-stream-surface t)
+                        (overlay-put overlay 'priority -10)
+                        (overlay-put overlay 'face
+                                     '(:inherit supertag-view-surface
+                                       :extend t)))))))))
+
 (defvar-local supertag-view-stream--selection-overlay nil
   "Selection overlay in a Stream buffer.")
 
@@ -353,10 +392,8 @@ INPUT is a Runtime input or a state; both carry `:tag' and `:query'."
         :spacing 0
         :children
         (cons (list :type :text
-                    :content (propertize
-                              (concat " " (upcase (car group)) " ")
-                              'font-lock-face
-                              'supertag-view-stream-date-face))
+                    :content (supertag-view-stream--group-label
+                              (upcase (car group))))
               (mapcar #'supertag-view-stream--node-widget (cdr group)))))
 
 (defun supertag-view-stream--arranged-widgets (arrangement)
@@ -371,10 +408,8 @@ See `supertag-view-stream-arrange-function'."
                   (list :type :stack :spacing 0
                         :children
                         (cons (list :type :text
-                                    :content (propertize
-                                              (concat " " (car group) " ")
-                                              'font-lock-face
-                                              'supertag-view-stream-date-face))
+                                    :content (supertag-view-stream--group-label
+                                              (car group)))
                               (mapcar (lambda (row)
                                         (supertag-view-stream--node-widget
                                          (car row) (cdr row)))
@@ -417,6 +452,8 @@ See `supertag-view-stream-arrange-function'."
   (supertag-view-widget--render-tree
    (supertag-view-stream--widgets state) state)
   (supertag-view-stream--add-entity-properties)
+  (supertag-view-update-surface)
+  (supertag-view-stream--add-group-surfaces)
   ;; From STATE, not the instance: the framework stores STATE on the
   ;; instance only after rendering.
   (use-local-map (or (plist-get (plist-get state :arrangement) :keymap)

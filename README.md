@@ -144,7 +144,7 @@ Required. These are the packages in Supertag's `Package-Requires`:
 | Emacs | 29.1 or newer | | |
 | Org | 9.6 or newer | Built into Emacs 29.1 | Your notes |
 | [ht](https://github.com/Wilfred/ht.el) | 2.4 or newer | MELPA | Hash tables in the database |
-| [TextUI](https://github.com/yibie/textui) | 0.8.0 or newer | GitHub only | Rendering Discovery and Tag Cards |
+| [TextUI](https://github.com/yibie/textui) | 0.9.0 or newer | GitHub only | Rendering Discovery and summary panels |
 | [Corfu](https://github.com/minad/corfu) | 1.0 or newer | GNU ELPA | The completion UI for `#` tags |
 
 - **ht and Corfu** come from package archives, so a package manager that reads

@@ -1,6 +1,6 @@
 # Supertag view design: terminal editorial
 
-Every Supertag view buffer (Node View, Tag Cards, Stream, Tag Manager, and
+Every Supertag view buffer (Node View, Stream, Summary, Tag Manager, and
 any future view) is a page of the same dark terminal magazine. The
 reference is a "ORBIT / CREATIVE OS" style UI: near-black ground, three
 accent colors used as filled blocks, one monospace size, uppercase
@@ -22,11 +22,27 @@ order of strength:
    titles (a card's tag, a section label, the masthead brand).
 2. **Case**: labels and titles are UPPERCASE; body and entries are
    sentence case.
-3. **Whitespace**: one blank line between a card's three parts, one blank
-   line between cards, two before the footer. Padding inside a fill is one
-   space on each side.
+3. **Whitespace**: one blank line between a card's three parts, three
+   blank lines between rows of cards, two before the footer. The gap
+   between objects is always wider than any gap inside one. Padding inside
+   a fill is one space on each side.
 4. **Position**: identity top-left, live status top-right, colophon at the
    bottom. Position carries meaning; keep it constant across views.
+
+These levers rank. They do not tell one kind of object from another. A
+self-contained object sits on its own surface: the `surface` background
+under every line it occupies. A surface is a background, never a line drawn
+around the object. Its color is not chosen by a palette: it is the theme's
+background with its lightness moved by `supertag-view-surface-offset`
+(5 percent), lighter on a dark theme and darker on a light one, so it suits
+whatever theme is loaded. What counts as one object:
+
+- Tag Cards (local and unreleased): a card.
+- Stream: a group, from its label to its last line. The label keeps its
+  fill; the selected note's background ranks above the surface.
+- Summary: whatever the model draws as one card or group. The prompt asks
+  the model to put each in a `:flex` with `:surface t :padding 1`; Supertag
+  turns `:surface t` into TextUI's `:face supertag-view-surface`.
 
 ## 2. Color is area, not ink
 
@@ -40,11 +56,12 @@ foreground text is not part of this system.
 | chip2 (lavender) | `supertag-view-chip2` | structure, container | section labels, second group family |
 | chip3 (pale cyan) | `supertag-view-chip3` | information, tertiary | counts, third group family, status |
 | panel | `supertag-view-panel` | quiet surface | masthead block, manifesto block |
+| surface | `supertag-view-surface` | one object | card, Stream group (computed, section 1) |
 | mute | `supertag-view-mute` | metadata | parent chain, dates, colophon |
 | rule | `supertag-view-rule` | ornament | `+ . + .` rules |
 
 Palettes are chosen per view. Node View uses `paper` (the warm palette);
-Tag Cards uses `neon` (lime, lavender, pale cyan). All palettes live in
+Tag Cards (local and unreleased) uses `neon` (lime, lavender, pale cyan). All palettes live in
 `supertag-view-framework.el`, keep the same role structure, and are applied
 per buffer, so two views can show different palettes at the same time. Rotate chip1/chip2/chip3 across groups so
 siblings share a color and neighbors differ.
@@ -74,8 +91,8 @@ All decoration is text so it survives any monospace terminal:
 - Bars and ratios: `03:42 ====---- 05:18`.
 - Markers: `+` before a co-occurring facet, `→` before a note entry.
 
-Box-drawing borders around cards are not used by default. Cards are separated
-by whitespace and by their filled title.
+Box-drawing borders around cards are not used by default. Each card sits on
+its surface, and rows of cards are separated by whitespace.
 
 **Discovery exception (user preference):** retain its bordered reading cards,
 with title, file/tags and complete body in distinct sections. Preserve title
@@ -105,10 +122,24 @@ say is omitted, never left as an empty gap.
 5. **Colophon**: rule, then one muted line `01 / TAG FIELD  absolute
    counts + live store`, then the brand line.
 
+### Width follows the window
+
+A view lays out to the width of the window that shows it, and lays out
+again when that width changes. Cards and groups sit side by side only in
+a grid whose column count drops as the window narrows, down to one
+column; a fixed horizontal row of cards or groups is not used, because it
+runs past the right edge of a narrow window. Every width inside the
+field, of a column or of a single-line element, is computed from the
+window width, never written as a constant. When the window is narrower
+than one column's minimum, objects stack vertically instead of
+overflowing.
+
 ## 6. Card template
 
 Every card is a self-contained small page with three parts separated by
-one blank line:
+one blank line. The whole card is one surface, including those
+blank lines and one blank line at its bottom. Cards in the same grid row
+are the same height, so their surfaces end on the same line:
 
 ```
 diary                                  ← muted parent chain, or blank line
@@ -134,8 +165,11 @@ and S-TAB move among buttons; RET and mouse-1 activate. Modal editing
 
 ## 8. Checks before shipping a view
 
-- Render the page to text at width 120 and width 80; no line exceeds the
-  width and narrow widths drop columns instead of overflowing.
+- Render the page to text at width 120 and width 80, and once at a
+  half-screen width such as 60; no line exceeds the width and narrow
+  widths drop columns instead of overflowing.
+- In a GUI frame at both widths, every surface has a straight right edge,
+  including rows with CJK text, and cards in one row end on the same line.
 - One font size; every emphasis is a fill, case, or whitespace.
 - Every fill is a label or title; every action is a `[ ]` button.
 - Masthead and colophon present; manifesto present or deliberately

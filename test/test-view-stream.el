@@ -161,6 +161,50 @@
                   (search-forward "Next day"))))))
       (supertag-view-stream-test--kill-buffers))))
 
+(ert-deftest supertag-view-stream-each-group-sits-on-one-surface ()
+  "Each date group is one surface from its label to its last line.
+
+The label keeps its fill, the blank line between groups stays on the ground,
+and the selected node's background ranks above the surface."
+  (supertag-view-stream-test--with-store
+    (unwind-protect
+        (progn
+          (supertag-view-stream-test--put-node
+           "node-1" "First" '("emacs") "First body"
+           (encode-time 0 14 7 2 11 2025))
+          (supertag-view-stream-test--put-node
+           "node-2" "Next day" '("emacs") "Next body"
+           (encode-time 0 0 8 3 11 2025))
+          (let ((system-time-locale "C"))
+            (cl-letf (((symbol-function 'display-buffer) #'ignore))
+              (with-current-buffer (supertag-view-open 'stream '(:tag "emacs"))
+                (let ((surfaces
+                       (sort (cl-remove-if-not
+                              (lambda (overlay)
+                                (overlay-get overlay 'supertag-view-stream-surface))
+                              (overlays-in (point-min) (point-max)))
+                             (lambda (a b) (< (overlay-start a) (overlay-start b))))))
+                  (should (= 2 (length surfaces)))
+                  (goto-char (point-min))
+                  (search-forward " 2025-11-02 SUN ")
+                  ;; The label is outside the surface; its line end is inside.
+                  (should (= (overlay-start (car surfaces)) (point)))
+                  (should-not (cl-some (lambda (overlay)
+                                         (overlay-get overlay 'supertag-view-stream-surface))
+                                       (overlays-at (match-beginning 0))))
+                  (search-forward "First body")
+                  (should (= (overlay-end (car surfaces)) (1+ (line-end-position))))
+                  ;; The blank line between the groups is on the ground.
+                  (forward-line 1)
+                  (should (looking-at-p "$"))
+                  (should-not (cl-some (lambda (overlay)
+                                         (overlay-get overlay 'supertag-view-stream-surface))
+                                       (overlays-at (point))))
+                  (search-forward " 2025-11-03 MON ")
+                  (should (= (overlay-start (cadr surfaces)) (point)))
+                  (should (< (overlay-get (car surfaces) 'priority) 0)))))))
+      (supertag-view-stream-test--kill-buffers))))
+
 (ert-deftest supertag-view-stream-refresh-restores-node-id-and-falls-back ()
   "Refresh must restore the same node, then fall back when it disappears."
   (supertag-view-stream-test--with-store

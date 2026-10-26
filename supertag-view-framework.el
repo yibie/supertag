@@ -10,6 +10,7 @@
 ;;; Code:
 
 (require 'cl-lib)
+(require 'color)
 (require 'button)
 (require 'subr-x)
 (require 'org)
@@ -26,6 +27,54 @@
   '((t :extend t))
   "Panel background behind a Node View heading."
   :group 'supertag)
+
+(defface supertag-view-surface
+  '((t))
+  "Background under one self-contained object: a card, a Stream group.
+Its color is computed from the theme's background by
+`supertag-view-update-surface', not chosen by a palette."
+  :group 'supertag)
+
+(defcustom supertag-view-surface-offset 5
+  "How far a surface's lightness is from the background, in percent.
+A dark background is lightened by this much and a light one darkened."
+  :type 'number
+  :group 'supertag)
+
+(defun supertag-view-surface-color (background)
+  "Return the surface color for BACKGROUND, or nil if it is not a color.
+Only the lightness moves, by `supertag-view-surface-offset', so the surface
+keeps the background's hue."
+  (when-let* ((rgb (and (stringp background)
+                        ;; A `#RRGGBB' spec is read without the display,
+                        ;; which on a terminal would round it to a tty color.
+                        (if-let* ((values (color-values-from-color-spec
+                                           background)))
+                            (mapcar (lambda (value) (/ value 65535.0)) values)
+                          (color-name-to-rgb background)))))
+    (pcase-let* ((`(,hue ,saturation ,lightness)
+                  (apply #'color-rgb-to-hsl rgb))
+                 (offset (/ supertag-view-surface-offset 100.0)))
+      (apply #'color-rgb-to-hex
+             (append (color-hsl-to-rgb
+                      hue saturation
+                      (if (< lightness 0.5)
+                          (min 1.0 (+ lightness offset))
+                        (max 0.0 (- lightness offset))))
+                     '(2))))))
+
+(defun supertag-view-update-surface (&rest _)
+  "Recompute `supertag-view-surface' from the default background.
+On a terminal without a known background the face keeps no background."
+  (set-face-attribute 'supertag-view-surface nil
+                      :background (or (supertag-view-surface-color
+                                       (face-background 'default nil t))
+                                      'unspecified)))
+
+(when (boundp 'enable-theme-functions)
+  (add-hook 'enable-theme-functions #'supertag-view-update-surface))
+(when (boundp 'disable-theme-functions)
+  (add-hook 'disable-theme-functions #'supertag-view-update-surface))
 
 (defface supertag-view-title
   '((((background dark)) :foreground "#f2f2f2" :weight bold :height 1.4)
@@ -53,8 +102,8 @@
 (defface supertag-view-chip1 '((t :weight bold)) "Primary Node View chip." :group 'supertag)
 (defface supertag-view-chip2 '((t :weight bold)) "Secondary Node View chip." :group 'supertag)
 (defface supertag-view-chip3 '((t :weight bold)) "Tertiary Node View chip." :group 'supertag)
-(defface supertag-view-accent '((t :inherit default :weight bold)) "Neutral Node View emphasis." :group 'supertag)
-(defface supertag-view-score '((t :inherit default :weight bold)) "Node View similarity score." :group 'supertag)
+(defface supertag-view-accent '((t :weight bold)) "Neutral Node View emphasis." :group 'supertag)
+(defface supertag-view-score '((t :weight bold)) "Node View similarity score." :group 'supertag)
 (defface supertag-view-rule '((t)) "Node View footer rule." :group 'supertag)
 
 ;; Each palette maps a role face to (LIGHT-PLIST . DARK-PLIST).
@@ -64,32 +113,32 @@
      (supertag-view-chip1  (:foreground "#1f3d00" :background "#e4ff9a") . (:foreground "#0b0b14" :background "#d7ff64"))
      (supertag-view-chip2  (:foreground "#2a1c7a" :background "#d9d2ff") . (:foreground "#0b0b14" :background "#a99bff"))
      (supertag-view-chip3  (:foreground "#0c4a5a" :background "#d6f4fb") . (:foreground "#0b0b14" :background "#bfeefb"))
-     (supertag-view-accent (:inherit default :foreground unspecified :weight bold) . (:inherit default :foreground unspecified :weight bold))
-     (supertag-view-score  (:inherit default :foreground unspecified :weight bold) . (:inherit default :foreground unspecified :weight bold))
+     (supertag-view-accent (:foreground unspecified :weight bold) . (:foreground unspecified :weight bold))
+     (supertag-view-score  (:foreground unspecified :weight bold) . (:foreground unspecified :weight bold))
      (supertag-view-rule   (:foreground "#c8c8d8") . (:foreground "#3a3a55")))
     (paper
      (supertag-view-panel  (:background "#f3ede1") . (:background "#2a2420"))
      (supertag-view-chip1  (:foreground "#5a1f0a" :background "#f2c7b0") . (:foreground "#1a0f0a" :background "#e08a63"))
      (supertag-view-chip2  (:foreground "#4a3a00" :background "#f2dd9a") . (:foreground "#1a1400" :background "#e3c05a"))
      (supertag-view-chip3  (:foreground "#1f3d2a" :background "#cfe3cf") . (:foreground "#0d1a10" :background "#9cc7a2"))
-     (supertag-view-accent (:inherit default :foreground unspecified :weight bold) . (:inherit default :foreground unspecified :weight bold))
-     (supertag-view-score  (:inherit default :foreground unspecified :weight bold) . (:inherit default :foreground unspecified :weight bold))
+     (supertag-view-accent (:foreground unspecified :weight bold) . (:foreground unspecified :weight bold))
+     (supertag-view-score  (:foreground unspecified :weight bold) . (:foreground unspecified :weight bold))
      (supertag-view-rule   (:foreground "#d8cdb8") . (:foreground "#4a3f36")))
     (ink
      (supertag-view-panel  (:background "#f2f2f2") . (:background "#1c1c1c"))
      (supertag-view-chip1  (:foreground "#ffffff" :background "#111111") . (:foreground "#111111" :background "#f2f2f2"))
      (supertag-view-chip2  (:foreground "#ffffff" :background "#6b6b6b") . (:foreground "#111111" :background "#a8a8a8"))
      (supertag-view-chip3  (:foreground "#111111" :background "#dcdcdc") . (:foreground "#f2f2f2" :background "#3a3a3a"))
-     (supertag-view-accent (:inherit default :foreground unspecified :weight bold) . (:inherit default :foreground unspecified :weight bold))
-     (supertag-view-score  (:inherit default :foreground unspecified :weight bold) . (:inherit default :foreground unspecified :weight bold))
+     (supertag-view-accent (:foreground unspecified :weight bold) . (:foreground unspecified :weight bold))
+     (supertag-view-score  (:foreground unspecified :weight bold) . (:foreground unspecified :weight bold))
      (supertag-view-rule   (:foreground "#cfcfcf") . (:foreground "#3a3a3a")))
     (ocean
      (supertag-view-panel  (:background "#e9f0f7") . (:background "#101a26"))
      (supertag-view-chip1  (:foreground "#ffffff" :background "#1e3a8a") . (:foreground "#0b0f1a" :background "#93b4ff"))
      (supertag-view-chip2  (:foreground "#063b3b" :background "#b7ecec") . (:foreground "#0b0f1a" :background "#5fd3d3"))
      (supertag-view-chip3  (:foreground "#0b3a5c" :background "#cfe6fa") . (:foreground "#0b0f1a" :background "#9fd0f5"))
-     (supertag-view-accent (:inherit default :foreground unspecified :weight bold) . (:inherit default :foreground unspecified :weight bold))
-     (supertag-view-score  (:inherit default :foreground unspecified :weight bold) . (:inherit default :foreground unspecified :weight bold))
+     (supertag-view-accent (:foreground unspecified :weight bold) . (:foreground unspecified :weight bold))
+     (supertag-view-score  (:foreground unspecified :weight bold) . (:foreground unspecified :weight bold))
      (supertag-view-rule   (:foreground "#c5d3e3") . (:foreground "#2a3a4d"))))
   "Named role-face palettes for Supertag views.")
 
@@ -135,6 +184,7 @@ at the same time.  Return NAME."
                (dark (cddr entry)))
           (face-remap-add-relative face (if dark-p dark light)))))
     (setq-local supertag-view--local-palette name)
+    (supertag-view-update-surface)
     name))
 
 (defun supertag-view--set-palette (symbol value)
@@ -169,6 +219,7 @@ at the same time.  Return NAME."
   (message "Supertag view palette: %s" name))
 
 (supertag-view-apply-palette supertag-view-palette)
+(supertag-view-update-surface)
 
 (defun supertag-view-helper-insert-action-button (label action data help &optional prop)
   "Insert LABEL with ACTION, HELP and DATA stored under PROP."

@@ -301,6 +301,18 @@ file.  Panels are kept under the vault."
                 panel (format "(lambda (data width) (delete-file %S) (list))" victim))))
       (should (file-exists-p victim)))))
 
+(ert-deftest supertag-summary-closes-up-to-two-missing-brackets ()
+  "A reply one or two brackets short is closed at its end; anything else is left as it is."
+  (should (equal "(list (list 1))"
+                 (supertag-summary--close-brackets "(list (list 1)")))
+  (should (equal "(list (list (list 1)))"
+                 (supertag-summary--close-brackets "(list (list (list 1)")))
+  (should (equal "(list (list (list (list 1)"
+                 (supertag-summary--close-brackets "(list (list (list (list 1)")))
+  (should (equal "(list \"open" (supertag-summary--close-brackets "(list \"open")))
+  (should (equal "(list 1))" (supertag-summary--close-brackets "(list 1))")))
+  (should (equal "(list 1)" (supertag-summary--close-brackets "(list 1)"))))
+
 (ert-deftest supertag-summary-names-a-missing-paren ()
   "Code that is not one whole expression is refused with what is missing."
   (supertag-summary-test-with-vault
@@ -453,9 +465,18 @@ file.  Panels are kept under the vault."
                     '(:type supertag-summary-fill :label "x" :tone 1))))
         (line (car (supertag-summary--expand-line
                     '(:type supertag-summary-line :value "x")))))
-    (should (eq (plist-get fill :type) 'supertag-view-tag-cards-item))
+    (should (eq (plist-get fill :type) 'supertag-summary-text-widget))
     (should-not (plist-member fill :action))
     (should-not (plist-member line :action))))
+
+(ert-deftest supertag-summary-fill-width-counts-the-label-alone ()
+  "[Enforced] A fill whose :width is its label's width shows the whole label."
+  (let* ((fill (car (supertag-summary--expand-fill
+                     `(:type supertag-summary-fill :label "核心"
+                       :tone 1 :width ,(string-width "核心")))))
+         (text (plist-get fill :value)))
+    (should (string-match-p "核心" text))
+    (should-not (string-match-p "…" text))))
 
 ;;; Acting on an entry
 
@@ -511,6 +532,33 @@ file.  Panels are kept under the vault."
         (should (equal (supertag-embark-target-finder)
                        (cl-list* 'supertag-node-reference
                                  "Write the announcement" start end)))))))
+
+(ert-deftest supertag-summary-surface-covers-the-whole-card ()
+  "A card the model marks :surface sits on the surface, links included."
+  (supertag-summary-test-with-vault
+    (supertag-summary--accept
+     (supertag-summary-test--panel)
+     "(lambda (data width)
+  (list `(:type :flex :direction :column :gap 0 :padding 1 :surface t
+          :layout (:width 30)
+          :children
+          ((:type supertag-summary-fill :label \"CARD / ONE\" :tone 1)
+           (:type supertag-summary-link :node ,(plist-get (car (plist-get data :records)) :ref)
+            :label \"Open\" :marker \"→\" :width 20)))
+        '(:type supertag-summary-line :value \"Outside\")))")
+    (with-current-buffer "*Supertag Summary: board*"
+      (let ((on (lambda (position)
+                  (memq 'supertag-view-surface
+                        (ensure-list (get-text-property position 'face))))))
+        (goto-char (point-min))
+        (should (search-forward "→ Open" nil t))
+        (should (funcall on (match-beginning 0)))
+        ;; The padding cell left of the link and the row above it.
+        (should (funcall on (1- (match-beginning 0))))
+        (forward-line -1)
+        (should (funcall on (line-beginning-position)))
+        (should (search-forward "Outside" nil t))
+        (should-not (funcall on (match-beginning 0)))))))
 
 (ert-deftest supertag-summary-unchanged-redraw-starts-no-child ()
   "A redraw with unchanged records does not run the layout code again."
@@ -689,7 +737,7 @@ file.  Panels are kept under the vault."
       (should (= 2 (length forms)))
       (should (eq (car verdict) :ok))
       (should-not (supertag-summary--components))
-      (supertag-summary--keep-component 'week-heat (car forms) "weeks")
+      (supertag-summary--keep-component 'week-heat (car forms) panel (cadr forms))
       (should (file-exists-p
                (expand-file-name "summaries/components/week-heat.org.summary" tmp)))
       (should (equal (mapcar #'car (supertag-summary--components)) '(week-heat)))
@@ -786,6 +834,27 @@ file.  Panels are kept under the vault."
                                               supertag-summary--example)
                      '(:ok))))))
 
+(ert-deftest supertag-summary-nested-element-lists-and-nils-are-spliced ()
+  "A list of elements placed where one belongs spreads into its parent; nil drops."
+  (supertag-summary-test-with-vault
+    (let* ((verdict (supertag-summary--field
+                     (supertag-summary-test--panel)
+                     "(lambda (data width)
+  (list (list (list :type :text :value \"one\"))
+        nil
+        (list :type :flex :direction :column
+              :children (list (when nil (list :type :text :value \"x\"))
+                              (list (list :type :text :value \"two\")
+                                    (list :type :text :value \"three\"))))))"
+                     80))
+           (field (cadr verdict)))
+      (should (eq (car verdict) :ok))
+      (should (= (length field) 2))
+      (should (equal (plist-get (car field) :value) "one"))
+      (should (equal (mapcar (lambda (child) (plist-get child :value))
+                             (plist-get (cadr field) :children))
+                     '("two" "three"))))))
+
 (ert-deftest supertag-summary-design-retries-then-keeps-the-layout ()
   "A refused reply goes back with its reason; an accepted one is kept."
   (supertag-summary-test-with-vault
@@ -864,6 +933,89 @@ file.  Panels are kept under the vault."
     (should-not (file-exists-p (supertag-summary--file "week-heat-demo")))
     (with-current-buffer "*Supertag Summary: week-heat-demo*"
       (should (string-match-p "^Mon [░▒▓█]" (supertag-summary-test--buffer-text))))))
+
+(defun supertag-summary-test--keep-week-heat (&optional panel)
+  "Keep the stand-in component week-heat, made through PANEL's demo."
+  (supertag-summary--keep-component
+   'week-heat supertag-summary-test--week-heat
+   (or panel (supertag-summary-test--panel "week-heat-demo"))
+   supertag-summary-test--week-heat-demo))
+
+(ert-deftest supertag-summary-component-keeps-its-demo-and-tag ()
+  "A kept component records the Tag and the demo it was shown with."
+  (supertag-summary-test-with-vault
+    (supertag-summary-test--keep-week-heat)
+    (pcase-let ((`(:ok ,data) (supertag-summary--kept-component "week-heat")))
+      (should (equal "prj" (plist-get data :tag)))
+      (should (equal supertag-summary-test--week-heat-demo (plist-get data :demo))))))
+
+(ert-deftest supertag-summary-gallery-draws-every-component ()
+  "The gallery shows each component drawn live, with where it is used."
+  (supertag-summary-test-with-vault
+    (supertag-summary-test--keep-week-heat)
+    (supertag-summary--accept (supertag-summary-test--panel "weeks")
+                              supertag-summary-test--week-heat-demo)
+    (with-current-buffer (supertag-summary-components)
+      (let ((text (supertag-summary-test--buffer-text)))
+        (should (string-match-p "WEEK-HEAT" text))
+        (should (string-match-p "^ *Mon [░▒▓█]" text))
+        (should (string-match-p "USED IN  panel weeks" text))
+        (should (string-match-p "\\[ REVISE \\]" text))
+        (should (string-match-p "\\[ DELETE \\]" text))
+        (goto-char (point-min))
+        (search-forward "Mon ")
+        (should (eq 'supertag-view-surface
+                    (let ((face (get-text-property (1- (point)) 'face)))
+                      (if (listp face) (car (last face)) face))))))))
+
+(ert-deftest supertag-summary-gallery-says-when-no-demo-was-kept ()
+  "A component kept without a demo is listed with its text and a note."
+  (supertag-summary-test-with-vault
+    (supertag-summary--write
+     (supertag-summary--component-file 'old)
+     (list :format 1 :kind 'component :name "old" :sentence "an old one"
+           :revisions nil :code "(lambda (width) \"Draws nothing.\" (list))"))
+    (with-current-buffer (supertag-summary-components)
+      (let ((text (supertag-summary-test--buffer-text)))
+        (should (string-match-p "an old one" text))
+        (should (string-match-p "Draws nothing\\." text))
+        (should (string-match-p "No demo was kept" text))
+        (should-not (string-match-p "\\[ DEMO \\]" text))))))
+
+(ert-deftest supertag-summary-component-delete-names-its-users ()
+  "Deleting a component asks first, names the panels calling it, and removes it."
+  (supertag-summary-test-with-vault
+    (supertag-summary-test--keep-week-heat)
+    (supertag-summary--accept (supertag-summary-test--panel "weeks")
+                              supertag-summary-test--week-heat-demo)
+    (let (asked)
+      (cl-letf (((symbol-function 'yes-or-no-p)
+                 (lambda (prompt) (setq asked prompt) nil)))
+        (supertag-summary-component-delete "week-heat"))
+      (should (string-match-p "panel weeks" asked))
+      (should (file-exists-p (supertag-summary--component-file "week-heat")))
+      (cl-letf (((symbol-function 'yes-or-no-p) (lambda (_) t)))
+        (supertag-summary-component-delete "week-heat"))
+      (should-not (file-exists-p (supertag-summary--component-file "week-heat"))))))
+
+(ert-deftest supertag-summary-component-revise-keeps-the-feedback ()
+  "Revising sends the current code and keeps the feedback with the component."
+  (supertag-summary-test-with-vault
+    (supertag-summary-test--keep-week-heat)
+    (let (sent)
+      (cl-letf (((symbol-function 'supertag-summary--ask)
+                 (lambda (prompt _system callback)
+                   (setq sent prompt)
+                   (funcall callback
+                            (concat supertag-summary-test--week-heat "\n\n"
+                                    supertag-summary-test--week-heat-demo)
+                            'completed))))
+        (supertag-summary-component-revise "week-heat" "darker cells"))
+      (should (string-match-p "darker cells" sent))
+      (should (string-match-p "这是现在的组件代码" sent))
+      (pcase-let ((`(:ok ,data) (supertag-summary--kept-component "week-heat")))
+        (should (equal '("darker cells") (plist-get data :revisions)))
+        (should (equal "prj" (plist-get data :tag)))))))
 
 (ert-deftest supertag-summary-opens-without-superchat ()
   "Opening a kept panel needs no Superchat; designing one says what is missing."

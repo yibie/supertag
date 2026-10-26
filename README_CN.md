@@ -95,7 +95,7 @@ promote 的定制是核心理念，配置只有两层：模板数据，以及把
 | Emacs | 29.1 或更高 | | |
 | Org | 9.6 或更高 | Emacs 29.1 自带 | 你的笔记 |
 | [ht](https://github.com/Wilfred/ht.el) | 2.4 或更高 | MELPA | 数据库里的哈希表 |
-| [TextUI](https://github.com/yibie/textui) | 0.8.0 或更高 | 只在 GitHub | 渲染 Discovery 和 Tag Cards |
+| [TextUI](https://github.com/yibie/textui) | 0.9.0 或更高 | 只在 GitHub | 渲染 Discovery 和 summary 面板 |
 | [Corfu](https://github.com/minad/corfu) | 1.0 或更高 | GNU ELPA | `#` 标签的补全界面 |
 
 - **ht 和 Corfu** 在包源里，能读取 `Package-Requires` 的包管理器会随 Supertag 一起装上。ht 需要你的包源里有 MELPA。

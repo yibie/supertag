@@ -36,7 +36,7 @@ source files; where a long default is elided, the source is authoritative.
   later does not rewrite the already-computed `supertag-db-file`,
   `supertag-db-backup-directory` or `supertag-sync-state-file` — reset those variables or
   restart.
-- `supertag-view-node-palette` and `supertag-view-tag-cards-palette` are buffer-local and do
+- `supertag-view-node-palette` and `supertag-summary-palette` are buffer-local and do
   not override the global `supertag-view-palette`.
 - Read `nil` per option: for `supertag-sync-directories` it means "not configured yet", for
   `supertag-creation-templates` "use the built-in preset", for
@@ -131,9 +131,6 @@ Source: [`../supertag-core-persistence.el`](../supertag-core-persistence.el),
 | `supertag-view-node-side` | `'right` | which side the Node View side window takes |
 | `supertag-view-node-strip-todo-keywords` | `t` | strip TODO keywords from view titles |
 | `supertag-view-node-todo-keywords` | `'("TODO" "DONE" "NEXT" ...)` (illustrative; long value elided — see the source) | the TODO keyword list to strip |
-| `supertag-view-tag-cards-favorite-groups` | `nil` | tag IDs shown as favourite groups in Tag Cards |
-| `supertag-view-tag-cards-manifesto` | `'("MAKE ROOM" "FOR THE UNEXPECTED." "Tags are fuel. The connections are computed for you: click any + row to narrow.")` | the three lines under the Tag Cards masthead |
-| `supertag-view-tag-cards-palette` | `'neon` | buffer-local palette for Tag Cards |
 | `supertag-summary-directory` | `nil` | where summary panels are kept, one `NAME.org.summary` each; nil means `summaries/` under the sync directory (so Git carries them), or under the data directory when none is set |
 | `supertag-summary-palette` | `'paper` | buffer-local palette for summary panels |
 | `supertag-summary-skip-file-regexp` | `"archive\\.org\\'"` | notes in files whose name matches are left out of every summary panel; nil leaves nothing out |
@@ -142,7 +139,6 @@ Source: [`../supertag-core-persistence.el`](../supertag-core-persistence.el),
 
 Source: [`../supertag-view-framework.el`](../supertag-view-framework.el),
 [`../supertag-view-node.el`](../supertag-view-node.el),
-[`../supertag-view-tag-cards.el`](../supertag-view-tag-cards.el),
 [`../supertag-summary.el`](../supertag-summary.el)
 
 ## Tag display and completion

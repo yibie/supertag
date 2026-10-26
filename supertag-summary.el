@@ -2,10 +2,12 @@
 
 ;;; Commentary:
 ;; Commands: supertag-summary-design, supertag-summary-revise,
-;; supertag-summary-open, supertag-summary-component.
+;; supertag-summary-open, supertag-summary-component,
+;; supertag-summary-components, supertag-summary-component-revise,
+;; supertag-summary-component-delete.
 ;; Dependencies: cl-lib, subr-x, seq, textui, supertag-vault, supertag-node,
 ;; supertag-query, supertag-tag, supertag-services-sync, supertag-service-org,
-;; supertag-ai, supertag-view-framework, supertag-view-tag-cards,
+;; supertag-ai, supertag-view-framework,
 ;; supertag-summary-runner; superchat or gptel, optional, to write code.
 ;;
 ;; A summary is the information panel of one tag.  The user says in one
@@ -17,6 +19,7 @@
 ;;   M-x supertag-summary-revise     name → what to change
 ;;   M-x supertag-summary-open       name
 ;;   M-x supertag-summary-component  tag → name → what it draws
+;;   M-x supertag-summary-components every kept component, drawn
 ;;
 ;; The model decides the layout and nothing else.  Its code never runs in
 ;; this session: a child Emacs refuses it unless every function it names is
@@ -37,7 +40,9 @@
 (require 'cl-lib)
 (require 'subr-x)
 (require 'seq)
+(require 'widget)
 (require 'textui)
+(require 'textui-widgets)
 (require 'supertag-vault)
 (require 'supertag-node)
 (require 'supertag-query)
@@ -46,7 +51,6 @@
 (require 'supertag-service-org)
 (require 'supertag-ai)
 (require 'supertag-view-framework)
-(require 'supertag-view-tag-cards)
 (require 'supertag-summary-runner)
 
 (declare-function superchat-sink-create "superchat-sink" (&rest plist))
@@ -484,9 +488,9 @@ signature of the records."
 ;;; Checking what layout code returned
 
 (defconst supertag-summary--keys
-  '((:flex :direction :gap :padding :border :layout :children)
+  '((:flex :direction :gap :padding :border :surface :layout :children)
     (:grid :columns :min-column-width :gap :column-gap :row-gap :padding
-     :border :layout :children)
+     :border :surface :layout :children)
     (:text :value :tone :layout)
     (supertag-summary-line :value :tone :width :layout)
     (supertag-summary-fill :label :tone :width :layout)
@@ -594,6 +598,16 @@ string fits.  Without WIDTH nothing is cut."
            append (list key (supertag-summary--count
                              (plist-get element key) (symbol-name key) 0))))
 
+(defun supertag-summary--splice (elements)
+  "Return ELEMENTS with each nil dropped and each nested list spread in place.
+A component returns a list of elements, and a model often puts that list
+where one element belongs, or leaves the nil of an unmet `when'.  Both read
+as the user meant them, so neither is worth a failed attempt."
+  (cl-loop for element in elements
+           if (and (consp element) (listp (car element)))
+           append (supertag-summary--splice element)
+           else if element collect element))
+
 (defun supertag-summary--children (element index depth)
   "Return the checked children of container ELEMENT at DEPTH.
 INDEX resolves the records they name."
@@ -601,7 +615,7 @@ INDEX resolves the records they name."
     (unless (proper-list-p children)
       (error ":children 必须是元素的列表：%s" (supertag-summary--show children)))
     (mapcar (lambda (child) (supertag-summary--clean child index (1+ depth)))
-            children)))
+            (supertag-summary--splice children))))
 
 (defun supertag-summary--canvas-row (row)
   "Return canvas ROW as a checked one-line element.
@@ -667,6 +681,7 @@ from plain text, so no function and no text property can ride along."
              (list :type :flex :direction direction)
              (supertag-summary--gaps element '(:gap :padding))
              (and (funcall take :border) (list :border t))
+             (and (funcall take :surface) (list :face 'supertag-view-surface))
              (list :children
                    (supertag-summary--children element index depth)))))
          (:grid
@@ -680,6 +695,7 @@ from plain text, so no function and no text property can ride along."
            (supertag-summary--gaps
             element '(:gap :column-gap :row-gap :padding))
            (and (funcall take :border) (list :border t))
+           (and (funcall take :surface) (list :face 'supertag-view-surface))
            (list :children
                  (supertag-summary--children element index depth))))
          (:text
@@ -774,11 +790,100 @@ from plain text, so no function and no text property can ride along."
                   :children (mapcar #'supertag-summary--canvas-row rows)))))
        (and layout (list :layout layout))))))
 
+;;; Widgets
+
+(defun supertag-summary--button-face (_widget)
+  "Keep panel controls on the ordinary `widget-button' face."
+  'widget-button)
+
+(define-widget 'supertag-summary-button-widget 'textui-button
+  "A traditional Emacs text button for panels."
+  :button-face-get #'supertag-summary--button-face)
+
+(defun supertag-summary--button (label action &optional focus-id)
+  "Return a text button named LABEL running ACTION."
+  (append (list :type 'supertag-summary-button-widget
+                :value label
+                :action action)
+          (when focus-id (list :layout (list :focus-id focus-id)))))
+
+(defun supertag-summary--text-measure (widget)
+  "Return WIDGET's static value with its faces.
+TextUI's stock `item' measures a property-free substring, which would drop
+the fills."
+  (copy-sequence (format "%s" (or (widget-get widget :value) ""))))
+
+(defun supertag-summary--text-attach (widget from to)
+  "Attach static WIDGET to its measured text from FROM through TO.
+The faces are copied from the value again, so they survive whatever TextUI
+does to the measured text."
+  (widget-put widget :from (copy-marker from t))
+  (widget-put widget :to (copy-marker to nil))
+  (widget-put widget :delete #'widget-leave-text)
+  (widget-put widget :textui-attached t)
+  (let* ((value (format "%s" (or (widget-get widget :value) "")))
+         (length (min (length value) (- to from)))
+         (position 0))
+    (while (< position length)
+      (let ((next (next-single-property-change position 'face value length))
+            (face (get-text-property position 'face value)))
+        (when face
+          (put-text-property (+ from position) (+ from next) 'face face))
+        (setq position next)))))
+
+(define-widget 'supertag-summary-text-widget 'item
+  "A static item whose faces survive measurement."
+  :format "%v"
+  :textui-measure #'supertag-summary--text-measure
+  :textui-attach #'supertag-summary--text-attach)
+
+(defun supertag-summary--link-measure (widget)
+  "Return the bracket-free label of link WIDGET."
+  (format "%s" (or (widget-get widget :tag) (widget-get widget :value) "")))
+
+(defun supertag-summary--link-value-create (widget)
+  "Insert the bracket-free label of link WIDGET."
+  (insert (supertag-summary--link-measure widget)))
+
+(defun supertag-summary--link-attach (widget from to)
+  "Attach link WIDGET to its text between FROM and TO."
+  (widget-put widget :from (copy-marker from t))
+  (widget-put widget :to (copy-marker to nil))
+  (widget-put widget :delete #'widget-leave-text)
+  (widget-put widget :textui-attached t)
+  (widget-specify-button widget from to)
+  ;; TextUI rebuilds the row word by word and leaves the spaces between words
+  ;; without the label's properties, so the node id that Embark reads is put
+  ;; on here, over the label without its padding.
+  (when-let* ((id (widget-get widget :supertag-node-id)))
+    (put-text-property
+     from (min to (+ from (length (string-trim-right
+                                   (supertag-summary--link-measure widget)))))
+     'supertag-node-id id)))
+
+(define-widget 'supertag-summary-link-widget 'link
+  "A bracket-free link to a node."
+  :button-prefix ""
+  :button-suffix ""
+  :button-face-get #'supertag-summary--button-face
+  :value-create #'supertag-summary--link-value-create
+  :textui-measure #'supertag-summary--link-measure
+  :textui-attach #'supertag-summary--link-attach)
+
+(defun supertag-summary--enforce-no-wrap ()
+  "Keep panel rows on one visual line in the current buffer.
+Global visual-line settings can change these locals after the mode runs, so
+this is called again after the buffer is opened."
+  (when (fboundp 'visual-line-mode)
+    (visual-line-mode -1))
+  (setq-local truncate-lines t
+              word-wrap nil))
+
 ;;; The element vocabulary
 
 (defun supertag-summary--item (text face element)
   "Return a static one-line item showing TEXT in FACE, laid out as ELEMENT asks."
-  (append (list :type 'supertag-view-tag-cards-item :format "%v"
+  (append (list :type 'supertag-summary-text-widget :format "%v"
                 :value (if face (propertize text 'face face) text))
           (when-let* ((layout (plist-get element :layout)))
             (list :layout layout))))
@@ -794,16 +899,18 @@ from plain text, so no function and no text property can ride along."
            nil element))))
 
 (defun supertag-summary--expand-fill (element)
-  "Expand the filled label ELEMENT."
-  (list (supertag-summary--item
-         (supertag-summary--fit
-          (propertize (upcase (format "%s" (or (plist-get element :label) "")))
-                      'face (pcase (plist-get element :tone)
-                              (2 'supertag-view-chip2)
-                              (3 'supertag-view-chip3)
-                              (_ 'supertag-view-chip1)))
-          (plist-get element :width) " " " ")
-         nil element)))
+  "Expand the filled label ELEMENT.
+Its :width counts the label alone; the space on each side comes on top."
+  (let ((width (plist-get element :width)))
+    (list (supertag-summary--item
+           (supertag-summary--fit
+            (propertize (upcase (format "%s" (or (plist-get element :label) "")))
+                        'face (pcase (plist-get element :tone)
+                                (2 'supertag-view-chip2)
+                                (3 'supertag-view-chip3)
+                                (_ 'supertag-view-chip1)))
+            (and width (+ width 2)) " " " ")
+           nil element))))
 
 (defun supertag-summary--expand-link (element)
   "Expand the node link ELEMENT into a bracket-free link button."
@@ -811,7 +918,7 @@ from plain text, so no function and no text property can ride along."
                 (format "%s" (or (plist-get element :label) ""))
                 (plist-get element :width)))
         (id (plist-get element :node-id)))
-    (list (append (list :type 'supertag-view-tag-cards-link
+    (list (append (list :type 'supertag-summary-link-widget
                         :tag label :value label
                         :action (lambda (&rest _) (supertag-goto-node id t))
                         :supertag-node-id id)
@@ -907,7 +1014,7 @@ from plain text, so no function and no text property can ride along."
          (state (or (plist-get (supertag-node-get id) :todo) "-"))
          (label (truncate-string-to-width state width nil ?\s)))
     ;; The focus id lets TextUI put point back on this button after a redraw.
-    (list (append (supertag-view-tag-cards--button
+    (list (append (supertag-summary--button
                    label
                    (lambda (&rest _) (supertag-summary--set-todo id)))
                   (when-let* ((layout
@@ -964,7 +1071,7 @@ Nothing is run.  A file that cannot be read is left out."
       (concat
        "\n* 可用的组件\n\n\
 下面这些是以前写好的组件。它们已经绑定在同名的变量上，用 (funcall 名字 参数 …) 调用，\
-返回一个元素的列表：可以直接当作某个容器的 :children，或者用 append 拼进别的列表。\
+返回由若干元素组成的列表，不是单个元素：可以直接当作某个容器的 :children，或者用 append 拼进别的列表。\
 合用的时候优先用组件，不要重新画一遍。\n\n"
        (mapconcat
         (pcase-lambda (`(,name . ,form))
@@ -1048,6 +1155,20 @@ the model nothing to correct."
               (format "第一个表达式在第 %d 行就结束了，后面还有别的内容；只输出一个完整的表达式"
                       (funcall line (1+ end)))))))))))
 
+(defun supertag-summary--close-brackets (code)
+  "Return CODE with up to two missing closing brackets added at its end.
+Models often stop one or two brackets short and cannot find where when told.
+CODE is returned unchanged when it is open inside a string or comment, or
+more than two brackets are missing; the check then reports why."
+  (with-temp-buffer
+    (with-syntax-table emacs-lisp-mode-syntax-table
+      (insert code)
+      (let* ((state (syntax-ppss (point-max)))
+             (depth (car state)))
+        (if (and (<= 1 depth 2) (not (nth 3 state)) (not (nth 4 state)))
+            (concat code (make-string depth ?\)))
+          code)))))
+
 (defun supertag-summary--field (panel code width)
   "Run CODE for PANEL at WIDTH in a child Emacs and check what it returns.
 Return (:ok ELEMENTS UNRESOLVED) or (:failed TEXT)."
@@ -1088,7 +1209,10 @@ See `supertag-summary--field'."
                          (frame (with-temp-buffer
                                   (insert-file-contents out-file)
                                   (goto-char (point-min))
-                                  (read (current-buffer))))
+                                  (let ((read (read (current-buffer))))
+                                    (if (proper-list-p read)
+                                        (supertag-summary--splice read)
+                                      read))))
                          (supertag-summary--budget 4000)
                          (supertag-summary--unresolved 0)
                          (supertag-summary--buttoned nil))
@@ -1171,15 +1295,15 @@ See `supertag-summary--field'."
                                     " ")))))
        (list :type :flex :direction :row :gap 2
              :children
-             (list (supertag-view-tag-cards--button
+             (list (supertag-summary--button
                     "REVISE"
                     (lambda (&rest _)
                       (supertag-summary-revise
                        name (read-string "What to change: "))))
-                   (supertag-view-tag-cards--button
+                   (supertag-summary--button
                     "CODE"
                     (lambda (&rest _) (supertag-summary--show-code name)))
-                   (supertag-view-tag-cards--button
+                   (supertag-summary--button
                     "REFRESH"
                     (lambda (&rest _) (textui-refresh (current-buffer)))))))
       field
@@ -1316,7 +1440,7 @@ TAB and S-TAB move among links and buttons; RET and mouse-1 activate."
   (setq-local buffer-read-only t
               cursor-type 'box
               line-spacing 0.1)
-  (supertag-view-tag-cards--enforce-no-wrap)
+  (supertag-summary--enforce-no-wrap)
   (supertag-view-apply-palette-locally supertag-summary-palette))
 
 (supertag-view-register-modal-state 'supertag-summary-mode)
@@ -1416,10 +1540,11 @@ data 是一个属性列表：
 每个元素是一个带 :type 的属性列表。只有下面十一种；别的类型、别的属性都会被拒绝。
 
 布局元素：
-  (:type :flex :direction :row 或 :column :gap N :padding N :border t :children (元素 …))
+  (:type :flex :direction :row 或 :column :gap N :padding N :border t :surface t :children (元素 …))
       :row 横排，一行放不下时后面的子元素自动换到下一行，:gap 是子元素之间的空格数。
       :column 竖排，:gap 是子元素之间的空行数。:gap 不写时是 1，想紧挨着就写 :gap 0。
-  (:type :grid :columns N :min-column-width N :column-gap N :row-gap N :children (元素 …))
+      :surface t 给整个容器铺一层底色，包括留白和间距。:padding N 在四周各留 N 格（上下是 N 行），算在容器的宽度里。
+  (:type :grid :columns N :min-column-width N :column-gap N :row-gap N :surface t :children (元素 …))
       等宽的列，子元素按顺序填入。:columns 是最多几列；窗口变窄时自动减少列数，每列不窄于 :min-column-width。
   任何元素都可以带 :layout (:width N :grow N)，供它的父容器使用：:width 是起始宽度，:grow 是分配剩余宽度的权重。
 
@@ -1429,7 +1554,8 @@ data 是一个属性列表：
   (:type supertag-summary-line :value \"…\" :tone … :width N)
       单行文字，不折行。给了 :width 就截断到这么多列并补上 …。
   (:type supertag-summary-fill :label \"…\" :tone 1 或 2 或 3 :width N)
-      色块标签：强调色背景上的深色字，两侧各留一格，英文自动转成大写。
+      色块标签：强调色背景上的深色字，两侧各留一格，英文自动转成大写。\
+:width 只算标签文字本身，两侧的留白另加，整个色块占 :width + 2 列。
   (:type supertag-summary-link :node REF :label \"…\" :marker \"→\" :width N)
       可以点击的链接，点了跳到那条笔记。REF 是记录的 :ref。单行，不折行。
   (:type supertag-summary-todo :node REF :width N)
@@ -1453,7 +1579,8 @@ data 是一个属性列表：
 - 只有一种字号，没有彩色文字。层次只靠四样东西：色块、大小写、留白、位置。
 - 色块只用于名称和标题，不用于正文和说明。标签写成 \"NOUN / NOUN\" 或 \"NOUN / 007\"，斜杠两侧各一个空格。相邻的块轮换 1、2、3：1 是当前的、主要的，2 是结构和容器，3 是信息和计数。
 - 一张卡片分三部分，各部分之间空一行：一行次要信息（:mute），色块标题，然后是内容和条目。条目用链接，:marker 是 \"→\"。
-- 默认不用边框，卡片之间靠留白和色块标题分开。
+- 每张卡片、每一组自成一个对象：放进一个 :surface t :padding 1 的 :flex，让它坐在自己的底色上。不用边框。\
+卡片与卡片之间的空行要比卡片内部的空行多，比如卡片之间 :gap 2 或 :row-gap 2。
 - 空的字段、没有内容的组不要画成空壳；值得一提的话，合在一行次要文字里。
 - 这是一块信息面板，不是一张字段表。按用户的话和这批信息的性质决定版式：先给出一眼能看到的全局（总数、分布、谁最需要注意），再给细节。能用比例条、密度格表达的数量就不要只写成数字。
 
@@ -1461,10 +1588,12 @@ data 是一个属性列表：
 
 - 中文和全角符号每个按 2 列估算，英文、数字和这些符号 = - + . → … 各占 1 列。用 string-width 量。屏幕上中文往往比 2 列略宽，所以估算要留余量。
 - 给了 :width 的单行元素，会按屏幕上的真实宽度裁剪到这么多列，一定不会超出。没给 :width 的不会被裁剪。
+- 裁剪只用于长度不定的标题。用来分辨的词（色块里的组名、状态、数字）不能被裁掉：它的 :width 至少要放得下最长的那个取值；放不下就换一个完整的短词，不要裁成 \"re…\" 这样看不懂的半截。
 - 任何一行都不能超过 width 列，否则整块面板被拒绝。
 - :text 会自动折行。其余内容元素都是单行的，不会自动变窄；凡是内容长度不定的（标题、链接），要么用 :text，要么给 :width。
 - 用 :grid 时自己由 width 决定列数，把同一个数同时用作 :columns，并让 :min-column-width 足够小。每列的宽度是 (/ (- width (* 列间距 (1- 列数))) 列数)，列里的单行元素 :width 不能超过它。
 - 横排（:row）里并排的单行元素，宽度加上间距之和不能超过它们所在容器的宽度。
+- 卡片和组不要整排放进一个 :row；要并排就用 :grid，窗口变窄时它会减少列数，直到一列。列数和各处的 :width 都从 width 算出来，不要写死常数。
 
 %s日期是字符串。要算星期或相隔几天，先 (date-to-time (concat day \" 00:00:00\"))，只有 \"YYYY-MM-DD\" 这种完整日期才能这样转；\
 (format-time-string \"%%u\" 时间) 得到星期几（1 是周一，7 是周日），(float-time 时间) 除以 86400 得到天数。
@@ -1631,7 +1760,8 @@ BASE is the request without any report of an earlier failure."
   (supertag-summary--ask
    prompt (supertag-summary--system)
    (lambda (response status)
-     (let* ((code (supertag-summary--strip-fence response))
+     (let* ((code (supertag-summary--close-brackets
+                   (supertag-summary--strip-fence response)))
             (verdict (if (eq status 'completed)
                          (supertag-summary--check panel code)
                        (list :failed (format "%s" response)))))
@@ -1685,7 +1815,7 @@ BASE is the request without any report of an earlier failure."
         (supertag-summary-mode)))
     (textui-open buffer-name #'supertag-summary--frame (list :panel name))
     (with-current-buffer buffer
-      (supertag-view-tag-cards--enforce-no-wrap)
+      (supertag-summary--enforce-no-wrap)
       (supertag-view-apply-palette-locally supertag-summary-palette))
     buffer))
 
@@ -1782,7 +1912,7 @@ the model except the title, state and tags of six records, as a sample."
    (format "你为用户的笔记面板编写一个可以反复使用的组件，名字是 %s。用户用一句话说了它画什么。\
 输出两个 Emacs Lisp 表达式，一前一后，都从行首的 (lambda 开始；不要解释，不要代码块标记。
 
-第一个是组件：(lambda (参数 … width) \"说明\" …)，返回一个元素的列表。\
+第一个是组件：(lambda (参数 … width) \"说明\" …)，返回由若干元素组成的列表，不是单个元素。\
 参数表后面必须紧跟一个字符串作为说明，它是以后使用这个组件的人唯一能看到的东西，要写清楚：\
 它画什么；每个参数是什么（类型、形状、能不能是 nil）；占多宽、多少行。\
 组件拿不到 data，要画的东西全部由参数传进来，这样换一批数据、换一块面板也能用；\
@@ -1836,15 +1966,25 @@ records of PANEL with it.  Otherwise return (:failed TEXT)."
       (error (list :failed (format "读不出表达式，多半是括号不配对：%s"
                                    (error-message-string err)))))))
 
-(defun supertag-summary--keep-component (name source sentence)
-  "Keep SOURCE as component NAME, with the SENTENCE it was made from."
+(defun supertag-summary--forget-drawings ()
+  "Drop every drawing this session cached, so panels call components anew."
+  (maphash (lambda (_name panel) (clrhash (plist-get panel :cache)))
+           supertag-summary--panels))
+
+(defun supertag-summary--keep-component (name source panel demo)
+  "Keep SOURCE as component NAME, made and shown through the demo PANEL.
+DEMO is the layout that draws PANEL's records with the component; it is kept
+with the Tag of PANEL so the gallery can draw the component again."
   (supertag-summary--write
    (supertag-summary--component-file name)
    (list :format 1 :kind 'component
          :name (format "%s" name)
-         :sentence sentence
-         :revisions nil
-         :code source)))
+         :sentence (plist-get panel :sentence)
+         :revisions (plist-get panel :revisions)
+         :tag (plist-get panel :tag)
+         :demo demo
+         :code source))
+  (supertag-summary--forget-drawings))
 
 (defun supertag-summary--component-attempt (panel name base prompt tries)
   "Ask for component NAME and a demo drawing PANEL; retry TRIES more times.
@@ -1860,9 +2000,9 @@ BASE is the request without any report of an earlier failure."
        (supertag-summary--note-attempt verdict text)
        (cond
         ((eq (car verdict) :ok)
-         (supertag-summary--keep-component
-          name (car forms) (plist-get panel :sentence))
+         (supertag-summary--keep-component name (car forms) panel (cadr forms))
          (supertag-summary--accept panel (cadr forms))
+         (supertag-summary--refresh-gallery)
          (supertag-summary--finish :ok)
          (message "Supertag summary component %s: kept; its demo is panel %s"
                   name (plist-get panel :name)))
@@ -1920,6 +2060,267 @@ panels.  A demo panel named NAME-demo shows it for this session only."
     (let ((base (format "组件要画的是：%s\n\n示例面板要画的这批数据：\n%s"
                         sentence (plist-get panel :describe))))
       (supertag-summary--component-attempt panel symbol base base 2))))
+
+(defun supertag-summary--kept-component (name)
+  "Return (:ok DATA) for the kept component NAME, or (:failed TEXT)."
+  (let ((file (supertag-summary--component-file name)))
+    (if (file-exists-p file)
+        (supertag-summary--read file 'component)
+      (list :failed (format "no component named %s is kept" name)))))
+
+;;;###autoload
+(defun supertag-summary-component-revise (name feedback)
+  "Have the model change the kept component NAME as FEEDBACK asks.
+The component is drawn again on the notes of the Tag it was made for; a
+component kept before Tags were recorded asks for one."
+  (interactive
+   (list (completing-read "Component: "
+                          (mapcar #'symbol-name (supertag-summary--component-names))
+                          nil t)
+         (read-string "What to change: ")))
+  (when (string-empty-p (string-trim feedback))
+    (user-error "Say what to change"))
+  (pcase-let* ((symbol (intern name))
+               (data (pcase (supertag-summary--kept-component name)
+                       (`(:ok ,data) data)
+                       (`(:failed ,reason) (user-error "Component %s: %s" name reason))))
+               (tag (or (and (stringp (plist-get data :tag))
+                             (supertag-tag-get (plist-get data :tag))
+                             (plist-get data :tag))
+                        (supertag-summary--tag-id
+                         (completing-read "Show it on tag: "
+                                          (supertag-view-api-list-tags) nil t))))
+               (panel (supertag-summary--make (concat name "-demo") tag
+                                              (plist-get data :sentence)))
+               (records (cdr (supertag-summary--collect tag))))
+    (when (null (plist-get records :records))
+      (user-error "No notes under the tag %s" tag))
+    (plist-put panel :transient t)
+    (plist-put panel :revisions (cons feedback (plist-get data :revisions)))
+    (supertag-summary--sync panel)
+    (plist-put panel :describe (supertag-summary--describe records))
+    (supertag-summary--start name)
+    (message "Supertag summary component %s: asking the model…" name)
+    (let ((base (format "组件要画的是：%s\n\n这是现在的组件代码：\n%s\n\n%s\
+用户看了组件，要求修改：%s\n\n示例面板要画的这批数据：\n%s\n\n\
+输出修改后的组件和示例面板，两个完整的表达式。"
+                        (or (plist-get data :sentence) "")
+                        (plist-get data :code)
+                        (if (stringp (plist-get data :demo))
+                            (format "这是现在的示例面板：\n%s\n\n" (plist-get data :demo))
+                          "")
+                        feedback (plist-get panel :describe))))
+      (supertag-summary--component-attempt panel symbol base base 2))))
+
+(defun supertag-summary--component-users (name)
+  "Return the kept panels and other components whose code calls NAME."
+  (let ((pattern (format "(funcall[ \t\n]+%s\\_>" (regexp-quote (format "%s" name))))
+        users)
+    (dolist (panel (supertag-summary--names))
+      (pcase (supertag-summary--read (supertag-summary--file panel) 'panel)
+        (`(:ok ,data)
+         (when (string-match-p pattern (plist-get data :code))
+           (push (format "panel %s" panel) users)))))
+    (dolist (other (supertag-summary--component-names))
+      (unless (equal (symbol-name other) (format "%s" name))
+        (pcase (supertag-summary--kept-component (symbol-name other))
+          (`(:ok ,data)
+           (when (string-match-p pattern (plist-get data :code))
+             (push (format "component %s" other) users))))))
+    (nreverse users)))
+
+;;;###autoload
+(defun supertag-summary-component-delete (name)
+  "Delete the kept component NAME, after saying which panels call it."
+  (interactive
+   (list (completing-read "Delete component: "
+                          (mapcar #'symbol-name (supertag-summary--component-names))
+                          nil t)))
+  (let ((file (supertag-summary--component-file name))
+        (users (supertag-summary--component-users name)))
+    (unless (file-exists-p file)
+      (user-error "No component named %s" name))
+    (if (not (yes-or-no-p
+              (if users
+                  (format "%s calls it and will stop drawing.  Delete component %s? "
+                          (string-join users ", ") name)
+                (format "Delete component %s? " name))))
+        (message "Kept component %s" name)
+      (delete-file file)
+      ;; Code removed this file, so no save hook saw it.
+      (when (and (bound-and-true-p supertag-git-sync-mode)
+                 (fboundp 'supertag-git-sync-file-written))
+        (supertag-git-sync-file-written file))
+      (remhash (concat name "-demo") supertag-summary--panels)
+      (supertag-summary--forget-drawings)
+      (supertag-summary--refresh-gallery)
+      (message "Deleted component %s" name))))
+
+(defun supertag-summary--show-component-code (name)
+  "Display the code of component NAME and of its demo."
+  (pcase (supertag-summary--kept-component name)
+    (`(:failed ,reason) (user-error "Component %s: %s" name reason))
+    (`(:ok ,data)
+     (with-current-buffer (get-buffer-create
+                           (format "*Supertag Component Code: %s*" name))
+       (let ((inhibit-read-only t))
+         (erase-buffer)
+         (insert ";; " (or (plist-get data :sentence) "") "\n")
+         (dolist (feedback (reverse (plist-get data :revisions)))
+           (insert ";; revised: " feedback "\n"))
+         (insert "\n" (plist-get data :code) "\n")
+         (when (stringp (plist-get data :demo))
+           (insert "\n;; Demo\n\n" (plist-get data :demo) "\n"))
+         (emacs-lisp-mode)
+         (setq buffer-read-only t)
+         (goto-char (point-min)))
+       (display-buffer (current-buffer))))))
+
+;;; The gallery of kept components
+
+(defconst supertag-summary--gallery-buffer "*Supertag Components*"
+  "The buffer that shows every kept component.")
+
+(defun supertag-summary--refresh-gallery ()
+  "Draw the component gallery again when it is open."
+  (when-let* ((buffer (get-buffer supertag-summary--gallery-buffer)))
+    (textui-refresh buffer)))
+
+(defun supertag-summary--demo-panel (name data)
+  "Return the session panel that draws component NAME's demo, from DATA.
+It is made again when the component file changed since it was made."
+  (let* ((demo-name (concat name "-demo"))
+         (mtime (supertag-summary--mtime (supertag-summary--component-file name)))
+         (panel (gethash demo-name supertag-summary--panels)))
+    (if (and panel (plist-get panel :transient)
+             (equal (plist-get panel :mtime) mtime)
+             (equal (plist-get panel :code) (plist-get data :demo)))
+        panel
+      (let ((panel (supertag-summary--make demo-name (plist-get data :tag)
+                                           (plist-get data :sentence))))
+        (plist-put panel :transient t)
+        (plist-put panel :mtime mtime)
+        (plist-put panel :code (string-trim (plist-get data :demo)))
+        (puthash demo-name panel supertag-summary--panels)))))
+
+(defun supertag-summary--gallery-card (name width)
+  "Return the card of component NAME, WIDTH columns wide."
+  (let* ((inner (- width 2))
+         (verdict (supertag-summary--kept-component name))
+         (data (and (eq (car verdict) :ok) (cadr verdict)))
+         (form (and data (ignore-errors (car (read-from-string (plist-get data :code))))))
+         (doc (and (eq (car-safe form) 'lambda) (stringp (nth 2 form)) (nth 2 form)))
+         (tag (and data (stringp (plist-get data :tag)) (plist-get data :tag)))
+         (demo (and tag (stringp (plist-get data :demo))))
+         (users (and data (supertag-summary--component-users name)))
+         (text (lambda (value face)
+                 (list :type :text :wrap 'greedy :align 'left
+                       :value (if face (propertize value 'face face) value)))))
+    (list
+     :type :flex :direction :column :gap 1 :padding 1
+     :face 'supertag-view-surface
+     :children
+     (append
+      (list
+       (list :type :flex :direction :row :gap 2
+             :children
+             (list (list :type 'supertag-summary-fill :label name :tone 1)
+                   (list :type 'supertag-summary-line :tone :mute
+                         :value (cond ((null tag) "NO DEMO TAG")
+                                      ((supertag-tag-get tag)
+                                       (format "ON #%s" (upcase (supertag-tag--name tag))))
+                                      (t (format "ON A REMOVED TAG %s" tag)))))))
+      (cond
+       ((null data)
+        (list (funcall text (format "This component cannot be read: %s." (cadr verdict))
+                       'supertag-view-mute)))
+       (t
+        (append
+         (when (plist-get data :sentence)
+           (list (funcall text (plist-get data :sentence) nil)))
+         (when doc
+           (list (funcall text doc 'supertag-view-mute)))
+         (if demo
+             (supertag-summary--draw (supertag-summary--demo-panel name data) inner)
+           (list (funcall text "No demo was kept with this component.  \
+Revise it once to get one." 'supertag-view-mute)))
+         (list
+          (list :type 'supertag-summary-line :tone :mute :width inner
+                :value (if users
+                           (format "USED IN  %s" (string-join users "  ·  "))
+                         "NOT USED BY ANY PANEL YET"))
+          (list :type :flex :direction :row :gap 2
+                :children
+                (append
+                 (list (supertag-summary--button
+                        "CODE"
+                        (lambda (&rest _) (supertag-summary--show-component-code name))))
+                 (when demo
+                   (list (supertag-summary--button
+                          "DEMO"
+                          (lambda (&rest _)
+                            (supertag-summary--demo-panel name data)
+                            (supertag-summary-open (concat name "-demo"))))))
+                 (list (supertag-summary--button
+                        "REVISE"
+                        (lambda (&rest _)
+                          (supertag-summary-component-revise
+                           name (read-string "What to change: "))))
+                       (supertag-summary--button
+                        "DELETE"
+                        (lambda (&rest _)
+                          (supertag-summary-component-delete name))))))))))))))
+
+(defun supertag-summary--gallery-frame (width)
+  "Return the component gallery at WIDTH."
+  (let* ((names (mapcar #'symbol-name (supertag-summary--component-names)))
+         (brand "SUPERTAG / COMPONENTS")
+         (status "GALLERY")
+         (volume (format "%d KEPT" (length names)))
+         (middle (- width (string-width brand) (string-width status) 8)))
+    (list
+     (list
+      :type :flex :direction :column :gap 1
+      :children
+      (append
+       (list
+        (list :type :flex :direction :row :gap 2
+              :children
+              (list (list :type 'supertag-summary-fill :label brand :tone 1)
+                    (list :type 'supertag-summary-line :tone :mute
+                          :value (supertag-summary--pad volume middle))
+                    (list :type 'supertag-summary-fill :label status :tone 3)))
+        (list :type :text :wrap 'greedy :align 'left
+              :value "Every kept component, drawn on the notes it was made for.")
+        (list :type :flex :direction :row :gap 2
+              :children
+              (list (supertag-summary--button
+                     "NEW"
+                     (lambda (&rest _) (call-interactively #'supertag-summary-component)))
+                    (supertag-summary--button
+                     "REFRESH"
+                     (lambda (&rest _) (textui-refresh (current-buffer)))))))
+       (if names
+           (list (list :type :flex :direction :column :gap 3
+                       :children (mapcar (lambda (name)
+                                           (supertag-summary--gallery-card name width))
+                                         names)))
+         (supertag-summary--note
+          "No component is kept yet.  M-x supertag-summary-component makes one.")))))))
+
+;;;###autoload
+(defun supertag-summary-components ()
+  "Show every kept component, each drawn on the notes it was made for."
+  (interactive)
+  (let ((buffer (get-buffer-create supertag-summary--gallery-buffer)))
+    (with-current-buffer buffer
+      (unless (derived-mode-p 'supertag-summary-mode)
+        (supertag-summary-mode)))
+    (textui-open supertag-summary--gallery-buffer #'supertag-summary--gallery-frame nil)
+    (with-current-buffer buffer
+      (supertag-summary--enforce-no-wrap)
+      (supertag-view-apply-palette-locally supertag-summary-palette))
+    buffer))
 
 ;;; Following a Tag that gets a new ID
 

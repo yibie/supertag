@@ -40,7 +40,8 @@
 (defcustom supertag-view-stream-body-max-lines 6
   "Maximum node body lines shown per Stream row.
 The body is the node's stored `:content'; no source file is opened.  A
-truncated body ends its last line with `…'.  nil means no limit."
+truncated body ends its last line with `…'.  0 shows titles alone; nil
+means no limit."
   :type '(choice (const :tag "No limit" nil) (integer :tag "Lines"))
   :group 'supertag-view-stream)
 
@@ -58,13 +59,17 @@ nil means no limit."
 It is called with the INPUT and the STATE a Stream was built from, and
 returns STATE, either unchanged or with an `:arrangement':
 
-  (:header WIDGETS :groups ((LABEL (NODE . LINE) ...) ...) :keymap MAP)
+  (:header WIDGETS :groups ((LABEL ROW ...) ...) :keymap MAP)
 
-WIDGETS are drawn above the groups.  Each group is drawn under LABEL; each
-node with its title, LINE after the title when LINE is a string, and its
-body, as Stream draws it.  MAP, when non-nil, is the buffer's keymap; it
-should have `supertag-view-stream-mode-map' as its parent.  The `:nodes' of
-the returned state must be the nodes of the groups in their order, so
+A ROW is (NODE . LINE), or (NODE LINE DEPTH BODY) to indent the node
+DEPTH steps, as a task under its project; BODY nil draws its title alone.
+A three-element (NODE LINE DEPTH) still draws the body.  WIDGETS are
+drawn above the groups.
+Each group is drawn under LABEL; each node with its title, LINE after the
+title when LINE is a string, and its body, as Stream draws it.  MAP,
+when non-nil, is the buffer's keymap; it should have
+`supertag-view-stream-mode-map' as its parent.  The `:nodes' of the
+returned state must be the nodes of the groups in their order, so
 moving through the Stream follows what is drawn.")
 
 (defcustom supertag-view-stream-order 'newest-first
@@ -332,10 +337,9 @@ Return nil when there is no body; a truncated body ends with `…'."
         (max supertag-view-stream-body-max-lines))
     (when (and lines (integerp max) (>= max 0) (> (length lines) max))
       (let ((kept (cl-subseq lines 0 max)))
-        (setq lines (if kept
-                        (append (butlast kept)
-                                (list (concat (car (last kept)) "…")))
-                      (list "…")))))
+        (setq lines (and kept
+                         (append (butlast kept)
+                                 (list (concat (car (last kept)) "…")))))))
     lines))
 
 (defface supertag-view-stream-line-face
@@ -343,13 +347,21 @@ Return nil when there is no body; a truncated body ends with `…'."
   "Face of the line an arrangement adds after a node's title."
   :group 'supertag-view-stream)
 
-(defun supertag-view-stream--node-widget (node &optional line)
+(defun supertag-view-stream--node-widget (node &optional line depth no-body)
   "Return the Widget tree for NODE: its title line and its body lines.
-LINE, when a string, follows the title and tags.  The whole block carries
-one Widget key, so the entity ID, the selection overlay and every row
-command cover the title and the body together."
-  (let* ((tags (supertag-view-stream--node-tags node))
-         (title (concat (propertize (supertag-view-stream--node-title node)
+LINE, when a string, follows the title and tags.  DEPTH, when positive,
+indents the whole block by that many steps and puts `→' before the title,
+so an indented note never looks like the body of the note above it; its
+own body lines up under the title text.  NO-BODY non-nil draws the title
+alone.  The whole block carries one Widget key, so the entity ID, the
+selection overlay and every row command cover the title and the body
+together."
+  (let* ((nested (and depth (> depth 0)))
+         (indent (make-string (* 2 (max 0 (or depth 0))) ?\s))
+         (marker (if nested (propertize "→ " 'font-lock-face 'supertag-view-mute) ""))
+         (tags (supertag-view-stream--node-tags node))
+         (title (concat marker
+                        (propertize (supertag-view-stream--node-title node)
                                     'font-lock-face
                                     'supertag-view-stream-title-face)
                         (if (string-empty-p tags) "" (concat "  " tags))
@@ -360,12 +372,16 @@ command cover the title and the body together."
          (body (mapcar (lambda (line)
                          (if (string-empty-p line)
                              ""
-                           (concat "  " (propertize line 'font-lock-face
-                                                     'supertag-view-excerpt))))
-                       (supertag-view-stream--node-body-lines node))))
+                           (concat (if nested "    " "  ")
+                                   (propertize line 'font-lock-face
+                                               'supertag-view-excerpt))))
+                       (unless no-body
+                         (supertag-view-stream--node-body-lines node)))))
     (list :type :text
           :key (plist-get node :id)
-          :content (string-join (cons title body) "\n"))))
+          :content (mapconcat (lambda (text)
+                                (if (string-empty-p text) text (concat indent text)))
+                              (cons title body) "\n"))))
 
 (defun supertag-view-stream--group-nodes-by-date (nodes)
   "Return date groups for sorted NODES, in the order NODES are in."
@@ -416,8 +432,12 @@ See `supertag-view-stream-arrange-function'."
                                     :content (supertag-view-stream--group-label
                                               (car group)))
                               (mapcar (lambda (row)
-                                        (supertag-view-stream--node-widget
-                                         (car row) (cdr row)))
+                                        (if (consp (cdr row))
+                                            (supertag-view-stream--node-widget
+                                             (car row) (nth 1 row) (nth 2 row)
+                                             (and (nthcdr 3 row) (not (nth 3 row))))
+                                          (supertag-view-stream--node-widget
+                                           (car row) (cdr row))))
                                       (cdr group)))))
                 (plist-get arrangement :groups))))))
 

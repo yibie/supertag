@@ -74,6 +74,9 @@ panels, or under `supertag-data-directory' when no sync directory is set."
   :type 'integer
   :group 'supertag-stream-agent)
 
+(defconst supertag-stream-agent-max-depth 4
+  "Deepest indent a row of an agent's view may ask for.")
+
 (defcustom supertag-stream-agent-self-check-rounds 2
   "How many times a newly written agent is shown what it draws."
   :type 'integer
@@ -322,12 +325,46 @@ The agent's scope must hold every ID; the smallest such scope wins."
 Date arithmetic is done once here, at noon, so a time zone or daylight
 saving change cannot shift a day.")
 
+(defun supertag-stream-agent--above-p (upper node)
+  "Return non-nil when heading UPPER sits above heading NODE in one outline.
+Both are in the same file, UPPER's outline path is a proper prefix of
+NODE's, and UPPER starts first.  `:parent-id' cannot answer this: sync
+points it at the file node, not the heading above."
+  (let ((upper-olp (plist-get upper :olp))
+        (olp (plist-get node :olp))
+        (upper-pos (plist-get upper :position))
+        (pos (plist-get node :position)))
+    (and upper-olp olp
+         (equal (plist-get upper :file) (plist-get node :file))
+         (< (length upper-olp) (length olp))
+         (equal upper-olp (seq-take olp (length upper-olp)))
+         (or (not (numberp upper-pos)) (not (numberp pos)) (< upper-pos pos)))))
+
+(defun supertag-stream-agent--parent-ref (node nodes refs)
+  "Return the :ref in REFS of NODE's nearest ancestor among NODES, or nil.
+REFS maps node IDs to refs.  Ancestors outside the Stream are passed over,
+so a task under a heading the Stream leaves out still finds its project."
+  (let (best)
+    (dolist (upper nodes)
+      (when (and (not (eq upper node))
+                 (supertag-stream-agent--above-p upper node)
+                 (or (null best)
+                     (> (length (plist-get upper :olp))
+                        (length (plist-get best :olp)))))
+        (setq best upper)))
+    (and best (gethash (plist-get best :id) refs))))
+
 (defun supertag-stream-agent--records (nodes)
   "Return (INDEX . DATA) for NODES.
 DATA has the record shape summary uses, plus :touched, the day a node last
-changed.  INDEX maps each record's :ref to its node."
+changed, and where the node sits in its outline: :level, :path (the
+headings above it) and :parent (the ref of its nearest ancestor in the
+Stream).  INDEX maps each record's :ref to its node."
   (let ((index (make-hash-table :test 'equal))
+        (refs (make-hash-table :test 'equal))
         (number 0))
+    (dolist (node nodes)
+      (puthash (plist-get node :id) (format "n%d" (cl-incf number)) refs))
     (cons index
           (list
            :today (format-time-string "%Y-%m-%d")
@@ -335,10 +372,13 @@ changed.  INDEX maps each record's :ref to its node."
            :records
            (mapcar
             (lambda (node)
-              (let ((ref (format "n%d" (cl-incf number)))
+              (let ((ref (gethash (plist-get node :id) refs))
                     (day (supertag-summary--node-day node)))
                 (puthash ref node index)
                 (list :ref ref
+                      :level (or (plist-get node :level) 1)
+                      :path (butlast (plist-get node :olp))
+                      :parent (supertag-stream-agent--parent-ref node nodes refs)
                       :title (supertag-summary--node-title node)
                       :todo (plist-get node :todo)
                       :tags (mapcar #'supertag-tag--name (plist-get node :tags))
@@ -397,8 +437,9 @@ Return (:ok FRAME) or (:failed REASON)."
 
 (defun supertag-stream-agent--frame (frame index nodes width)
   "Check FRAME against INDEX and return (:header :notes :groups :omitted).
-Groups are (LABEL (NODE . LINE) ...).  NODES missing from FRAME go to a
-last group, so none is hidden."
+Groups are (LABEL ROW ...), a ROW being (NODE . LINE), or (NODE LINE DEPTH
+BODY) when the row asked to be indented or to leave out its body.  NODES
+missing from FRAME go to a last group, so none is hidden."
   (unless (and (listp frame) (listp (plist-get frame :groups)))
     (error "view 必须返回 (:header … :notes … :groups (…))"))
   (let ((seen (make-hash-table :test 'equal))
@@ -406,12 +447,22 @@ last group, so none is hidden."
     (dolist (group (plist-get frame :groups))
       (let (rows)
         (dolist (row (plist-get group :rows))
-          (let ((node (gethash (plist-get row :ref) index)))
+          (let ((node (gethash (plist-get row :ref) index))
+                (depth (plist-get row :depth)))
             (unless node (error "行引用了不存在的记录 %S" (plist-get row :ref)))
+            (unless (or (null depth)
+                        (and (natnump depth)
+                             (<= depth supertag-stream-agent-max-depth)))
+              (error ":depth 必须是 0 到 %d 的整数，得到 %S"
+                     supertag-stream-agent-max-depth depth))
             (unless (gethash (plist-get node :id) seen)
               (puthash (plist-get node :id) t seen)
-              (push (cons node (supertag-stream-agent--line (plist-get row :line) width))
-                    rows))))
+              (let ((line (supertag-stream-agent--line (plist-get row :line) width))
+                    (bare (and (plist-member row :body) (null (plist-get row :body)))))
+                (push (if (or bare (and depth (> depth 0)))
+                          (list node line (or depth 0) (not bare))
+                        (cons node line))
+                      rows)))))
         (when rows
           (push (cons (or (supertag-stream-agent--line (plist-get group :label) width) "")
                       (nreverse rows))
@@ -667,12 +718,21 @@ Stream 自己画每条笔记的标题、标签和正文，自己负责选中、�
 (:today \"YYYY-MM-DD\" :total 条数 :records (记录 …))
 每条记录：(:ref \"n1\" :title 标题 :todo 状态或nil :tags (标签名 …) :day \"YYYY-MM-DD\"（这条笔记属于哪天，优先用它写的 CREATED）\
  :scheduled :deadline（\"YYYY-MM-DD\" 或 nil） :file 文件名\
- :props ((\"属性名\" . 值) …) :touched \"YYYY-MM-DD\"（最后一次改动）)
+ :props ((\"属性名\" . 值) …) :touched \"YYYY-MM-DD\"（最后一次改动）\
+ :level 大纲层级（0 是整个文件，1 是一级标题） :path (上面各级标题 …)\
+ :parent 这条笔记在本 Stream 里最近的上级记录的 :ref，或 nil)
 
 * view 返回
 (:header \"一行概况\" :notes \"一句说明或 nil\"\
  :groups ((:label \"组名\" :rows ((:ref \"n1\" :line \"一句注释\") …)) …))
 - 每个 :ref 最多出现一次。:line 是一行，不超过 width 个字符；标题 Stream 已经画了，不要重复标题。
+- 行可以加 :depth 整数（0 到 " (number-to-string supertag-stream-agent-max-depth) "），\
+Stream 会把这一行往里缩进这么多级。只有用户的话要求显示层级时才用，例如\"任务挂在它的项目下面\"：\
+先放上级那一行，紧接着放它下面的行，下面的行 :depth 比上级大 1，上下级靠 :parent 认。\
+用户没要求就不要写 :depth；只想标出所属，可以在 :line 里写 :path 的最后一项。
+- Stream 默认在每条标题下面显示几行正文。行加 :body nil 就只显示标题。\
+只有用户的话要求时才用，例如\"只看标题\"\"不显示正文\"\"任务列表紧凑一点\"；\
+可以只对一部分行用，比如项目显示正文、任务只显示标题。用户没要求就不要写 :body。
 - 页面是 Org 的缓冲区，/ * _ = ~ + 会被当成 Org 的标记。分隔几项用逗号（,）或 ·，不要用这些符号。
 - 每条记录都必须列进你的某个组；漏掉任何一条，代理会被拒绝，要你重写。\
 （用户收窄 Stream 后，没列出的记录会被放进最后的\"其余\"，那只是兜底。）
@@ -833,6 +893,29 @@ SCHEDULED and DEADLINE live on the node itself, not among its properties."
                                     (intern (concat ":" field)) value)))))
           nodes))
 
+(defun supertag-stream-agent--ancestor-p (ancestor-id node)
+  "Return non-nil when ANCESTOR-ID is above NODE in its outline."
+  (when-let* ((upper (supertag-node-get ancestor-id)))
+    (supertag-stream-agent--above-p upper node)))
+
+(defun supertag-stream-agent--indents (groups)
+  "Return (INDENTED . MISPLACED) for the rows of GROUPS.
+A row is misplaced when the nearest row above it, in its group, with a
+smaller depth is not one of its ancestors."
+  (let ((indented 0) (misplaced 0))
+    (dolist (group groups)
+      (let (above)
+        (dolist (row (cdr group))
+          (let ((depth (if (consp (cdr row)) (nth 2 row) 0)))
+            (when (> depth 0)
+              (cl-incf indented)
+              (let ((upper (cl-find-if (lambda (seen) (< (cdr seen) depth)) above)))
+                (unless (and upper (supertag-stream-agent--ancestor-p
+                                    (plist-get (car upper) :id) (car row)))
+                  (cl-incf misplaced))))
+            (push (cons (car row) depth) above)))))
+    (cons indented misplaced)))
+
 (defun supertag-stream-agent--report (agent)
   "Describe AGENT's drawing of its real records, without titles or values.
 Give the groups and their sizes, and where a node goes when each action is
@@ -852,6 +935,17 @@ pressed: the facts a model needs to see whether it did what was asked."
                       lines))
     (when (> omitted 0)
       (push (format "注意：有 %d 条你没有列出，它们排在最后。" omitted) lines))
+    (pcase-let ((`(,indented . ,misplaced) (supertag-stream-agent--indents groups)))
+      (when (> indented 0)
+        (push (format "缩进的行 %d 条，其中 %d 条没有排在它的上级下面。"
+                      indented misplaced)
+              lines)))
+    (let ((bare (cl-loop for group in groups
+                         sum (cl-count-if (lambda (row)
+                                            (and (consp (cdr row)) (not (nth 3 row))))
+                                          (cdr group)))))
+      (when (> bare 0)
+        (push (format "只显示标题、不显示正文的行 %d 条。" bare) lines)))
     (dolist (action (plist-get agent :actions))
       ;; Press it on the first node of the first group and of the last.
       (let (tried)

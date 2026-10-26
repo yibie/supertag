@@ -52,6 +52,21 @@ overrides the place.
   `supertag-summary-runner`, with the same whitelist as summary. It returns
   data only: `(:header :notes :groups ((:label :rows ((:ref :line) …)) …))`.
   (`…-lines-fit-the-width`)
+- **Enforced.** Each record says where its note sits in the outline:
+  `:level`, `:path` (the headings above it) and `:parent`, the ref of the
+  nearest ancestor that is in the same Stream, passing over ancestors the
+  Stream leaves out. (`…-records-carry-the-outline`)
+- **Enforced.** A row may carry `:depth`, 0 to
+  `supertag-stream-agent-max-depth`, and Stream indents it that many steps;
+  any other value fails the view. The design prompt offers it only for a
+  sentence that asks for a hierarchy, and the self-check is told how many
+  indented rows do not sit under one of their ancestors.
+  (`…-view-can-indent-a-row`)
+- **Enforced.** A row may carry `:body nil`, and Stream draws its title
+  without the body; leaving `:body` out keeps the body. The design prompt
+  offers it only for a sentence that asks for titles alone, and the
+  self-check is told how many rows leave their body out.
+  (`…-view-can-leave-out-a-body`)
 - **Enforced.** A node the view leaves out is drawn in a last group, "其余".
   An agent can reorder and annotate; it cannot hide a note.
   (`…-cannot-hide-a-node`)

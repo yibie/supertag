@@ -230,6 +230,161 @@ two contact files; work.org declares TIER_ALL itself."
                     40)))
       (should (<= (string-width (cdr (cadr (car (plist-get drawing :groups))))) 40)))))
 
+;;; Outline
+
+(defun supertag-stream-agent-test--projects (directory)
+  "Add to DIRECTORY projects whose tasks sit under them, with a plain heading between."
+  (supertag-tag-create (list :id "prj" :name "prj"))
+  (supertag-tag-create (list :id "task" :name "task" :extends '("prj")))
+  (with-temp-file (expand-file-name "projects.org" directory)
+    (insert "* Hangji #prj\n:PROPERTIES:\n:ID: p-hangji\n:END:\n"
+            "** Phase one\n:PROPERTIES:\n:ID: p-phase\n:END:\n"
+            "*** Invoices #task\n:PROPERTIES:\n:ID: t-invoices\n:END:\n"
+            "**** Customs code #task\n:PROPERTIES:\n:ID: t-customs\n:END:\n"
+            "* Garden #prj\n:PROPERTIES:\n:ID: p-garden\n:END:\n"))
+  (should (eq 'complete (plist-get (supertag-reindex-org) :status)))
+  (setq supertag-async--queue nil))
+
+(defconst supertag-stream-agent-test--tree
+  "(lambda (data width)
+  (let* ((records (plist-get data :records))
+         (kids (lambda (ref)
+                 (seq-filter (lambda (entry) (equal (plist-get entry :parent) ref))
+                             records)))
+         (rows nil))
+    (dolist (top (funcall kids nil))
+      (push (list :ref (plist-get top :ref)) rows)
+      (dolist (child (funcall kids (plist-get top :ref)))
+        (push (list :ref (plist-get child :ref) :depth 1) rows)
+        (dolist (grand (funcall kids (plist-get child :ref)))
+          (push (list :ref (plist-get grand :ref) :depth 2) rows))))
+    (list :groups (list (list :label \"项目\" :rows (nreverse rows))))))"
+  "A view that hangs each task under its project.")
+
+(ert-deftest supertag-stream-agent-records-carry-the-outline ()
+  "Records give the level, the headings above, and the nearest ancestor in the Stream."
+  (supertag-stream-agent-test-with-vault
+    (supertag-stream-agent-test--projects tmp)
+    (let* ((nodes (supertag-view-api-get-entities
+                   :nodes (supertag-view-api-nodes-by-tag "prj" t)))
+           (records (plist-get (cdr (supertag-stream-agent--records nodes)) :records))
+           (by-title (lambda (title)
+                       (cl-find title records
+                                :key (lambda (entry) (plist-get entry :title))
+                                :test #'equal))))
+      (should (= 4 (length records)))
+      (let ((hangji (funcall by-title "Hangji"))
+            (invoices (funcall by-title "Invoices"))
+            (customs (funcall by-title "Customs code")))
+        (should (= 1 (plist-get hangji :level)))
+        (should-not (plist-get hangji :parent))
+        (should (= 3 (plist-get invoices :level)))
+        (should (equal '("Hangji" "Phase one") (plist-get invoices :path)))
+        ;; Phase one is not in the Stream, so Invoices hangs under Hangji.
+        (should (equal (plist-get hangji :ref) (plist-get invoices :parent)))
+        (should (equal (plist-get invoices :ref) (plist-get customs :parent)))
+        (should-not (plist-get (funcall by-title "Garden") :parent))))))
+
+(ert-deftest supertag-stream-agent-view-can-indent-a-row ()
+  "A row's :depth indents it; a bad depth fails the view; the report counts indents."
+  (supertag-stream-agent-test-with-vault
+    (supertag-stream-agent-test--projects tmp)
+    (let ((agent (list :name "prj" :sentence "任务挂在它的项目下面。"
+                       :scope '(:tag "prj") :fields nil :actions nil
+                       :view supertag-stream-agent-test--tree)))
+      (supertag-stream-agent-test--keep agent)
+      (let* ((buffer (supertag-stream-agent-test--open '(:tag "prj")))
+             (rows (cdar (plist-get (plist-get (supertag-stream-agent-test--state buffer)
+                                               :arrangement)
+                                    :groups)))
+             (depths (mapcar (lambda (row)
+                               (cons (plist-get (car row) :title)
+                                     (if (consp (cdr row)) (nth 2 row) 0)))
+                             rows)))
+        (should (equal 0 (cdr (assoc "Hangji" depths))))
+        (should (equal 1 (cdr (assoc "Invoices" depths))))
+        (should (equal 2 (cdr (assoc "Customs code" depths))))
+        (should (equal 0 (cdr (assoc "Garden" depths))))
+        ;; Each task comes right after the row it hangs under.
+        (let ((titles (mapcar #'car depths)))
+          (should (equal (cdr (member "Hangji" titles))
+                         (append '("Invoices" "Customs code")
+                                 (cdr (member "Customs code" titles))))))
+        (with-current-buffer buffer
+          (should (string-match-p "^  → Invoices" (buffer-string)))
+          (should (string-match-p "^    → Customs code" (buffer-string)))
+          (should (string-match-p "^Garden" (buffer-string)))))
+      (should (string-search "缩进的行 2 条，其中 0 条没有排在它的上级下面"
+                             (supertag-stream-agent--report agent)))
+      (let ((flat (plist-put (copy-sequence agent) :view
+                             "(lambda (data width)
+  (list :groups (list (list :label \"x\"
+                            :rows (mapcar (lambda (entry)
+                                            (list :ref (plist-get entry :ref) :depth 1))
+                                          (plist-get data :records))))))")))
+        (should (string-search "其中 4 条没有排在它的上级下面"
+                               (supertag-stream-agent--report flat))))
+      (let ((bad (plist-put (copy-sequence agent) :view
+                            "(lambda (data width)
+  (list :groups (list (list :label \"x\"
+                            :rows (list (list :ref \"n1\" :depth 9))))))")))
+        (should (string-match-p ":depth 必须是"
+                                (plist-get (supertag-stream-agent--draw
+                                            bad (supertag-view-api-get-entities
+                                                 :nodes (supertag-view-api-nodes-by-tag
+                                                         "prj" t)))
+                                           :failed)))))))
+
+(ert-deftest supertag-stream-agent-view-can-leave-out-a-body ()
+  "A row with :body nil draws its title alone; other rows keep their body."
+  (supertag-stream-agent-test-with-vault
+    (supertag-tag-create (list :id "prj" :name "prj"))
+    (with-temp-file (expand-file-name "bodies.org" tmp)
+      (insert "* Hangji #prj\n:PROPERTIES:\n:ID: p-hangji\n:END:\nProject plan.\n"
+              "** Invoices #prj\n:PROPERTIES:\n:ID: t-invoices\n:END:\nTask detail.\n"))
+    (should (eq 'complete (plist-get (supertag-reindex-org) :status)))
+    (setq supertag-async--queue nil)
+    (let ((agent (list :name "prj" :sentence "任务只显示标题。"
+                       :scope '(:tag "prj") :fields nil :actions nil
+                       :view "(lambda (data width)
+  (list :groups
+        (list (list :label \"项目\"
+                    :rows (mapcar (lambda (entry)
+                                    (if (plist-get entry :parent)
+                                        (list :ref (plist-get entry :ref) :body nil)
+                                      (list :ref (plist-get entry :ref))))
+                                  (plist-get data :records))))))")))
+      (supertag-stream-agent-test--keep agent)
+      (with-current-buffer (supertag-stream-agent-test--open '(:tag "prj"))
+        (should (string-search "Project plan." (buffer-string)))
+        (should (string-search "Invoices" (buffer-string)))
+        (should-not (string-search "Task detail." (buffer-string))))
+      (should (string-search "只显示标题、不显示正文的行 1 条"
+                             (supertag-stream-agent--report agent))))
+    ;; An indented note is marked, and its body sits under its title text,
+    ;; so the parent's body and the child's title never share a column.
+    (supertag-stream-agent-test--keep
+     (list :name "prj" :sentence "任务挂在项目下面。"
+           :scope '(:tag "prj") :fields nil :actions nil
+           :view "(lambda (data width)
+  (list :groups
+        (list (list :label \"项目\"
+                    :rows (mapcar (lambda (entry)
+                                    (list :ref (plist-get entry :ref)
+                                          :depth (if (plist-get entry :parent) 1 0)))
+                                  (plist-get data :records))))))"))
+    (with-current-buffer (supertag-stream-agent-test--open '(:tag "prj"))
+      (should (string-match-p "^  Project plan\\." (buffer-string)))
+      (should (string-match-p "^  → Invoices" (buffer-string)))
+      (should (string-match-p "^      Task detail\\." (buffer-string))))
+    ;; With no agent, 0 body lines leaves the titles alone, without a stray `…'.
+    (supertag-stream-agent-test--keep)
+    (let ((supertag-view-stream-body-max-lines 0))
+      (with-current-buffer (supertag-stream-agent-test--open '(:tag "prj"))
+        (should (string-search "Hangji" (buffer-string)))
+        (should-not (string-search "Project plan." (buffer-string)))
+        (should-not (string-search "…" (buffer-string)))))))
+
 ;;; Keys and actions
 
 (ert-deftest supertag-stream-agent-keys-work-on-a-fresh-open ()

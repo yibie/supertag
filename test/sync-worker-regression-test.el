@@ -719,39 +719,42 @@ the old mtime until destructive cleanup is allowed."
     (should (equal '(second first) supertag-async--queue))
     (should-not supertag-async--failed-items)))
 
-(ert-deftest supertag-sync-validate-nodes-keeps-legacy-file-nodes ()
-  "Validate legacy file nodes without identity metadata by file existence.
-Such nodes predate `:link-type', so a live file is the only safe evidence.
-A deleted-file node and a heading whose ID is absent are still deleted."
-  (let* ((file (make-temp-file "supertag-validate-" nil ".org"
+(ert-deftest supertag-sync-validate-nodes-keeps-file-nodes-only-with-header-identity ()
+  "A file node predating `:link-type' lives only while its file's header
+holds its ID, in an `:ID:' drawer or a `#+IDENTIFIER:' line, whatever
+`supertag-file-id-source' says.  A deleted-file node and a heading whose
+ID is absent are still deleted."
+  (let* ((bare (make-temp-file "supertag-validate-" nil ".org"
                                "#+title: ai\n* Heading\nno id drawer here\n"))
+         (drawer (make-temp-file "supertag-validate-" nil ".org"
+                                 ":PROPERTIES:\n:ID: DRAWER-ID\n:END:\n#+title: d\n"))
+         (denote (make-temp-file "supertag-validate-" nil ".org"
+                                 "#+title: n\n#+identifier: 20260706T214706\n"))
          (gone-file (concat (make-temp-name
                              (expand-file-name "supertag-validate-gone-"
                                                temporary-file-directory))
                             ".org"))
+         (supertag-file-id-source 'org-roam)
          (marked '()))
     (unwind-protect
         (cl-letf (((symbol-function 'supertag-traverse-nodes)
                    (lambda (fn)
-                     (funcall fn "FILE-NODE-UUID"
-                              (list :id "FILE-NODE-UUID" :type :node
-                                    :level 0 :file file :title "ai"))
-                     (funcall fn "FILE-NODE-GONE"
-                              (list :id "FILE-NODE-GONE" :type :node
-                                    :level 0 :file gone-file :title "gone-file"))
-                     (funcall fn "MISSING-HEADING"
-                              (list :id "MISSING-HEADING" :type :node
-                                    :level 1 :file file :title "gone"))))
+                     (dolist (spec `(("FILE-NODE-UUID" 0 ,bare)
+                                     ("DRAWER-ID" 0 ,drawer)
+                                     ("20260706T214706" 0 ,denote)
+                                     ("FILE-NODE-GONE" 0 ,gone-file)
+                                     ("MISSING-HEADING" 1 ,bare)))
+                       (funcall fn (nth 0 spec)
+                                (list :id (nth 0 spec) :type :node
+                                      :level (nth 1 spec) :file (nth 2 spec)
+                                      :title (nth 0 spec))))))
                   ((symbol-function 'supertag-sync--delete-nodes)
                    (lambda (ids _counters) (setq marked ids) (length ids))))
           (supertag-sync-validate-nodes)
-          ;; File node with a live file is kept; the deleted-file node and the
-          ;; genuinely missing heading are deleted.
-          (should-not (member "FILE-NODE-UUID" marked))
-          (should (member "FILE-NODE-GONE" marked))
-          (should (member "MISSING-HEADING" marked))
-          (should (= (length marked) 2)))
-      (ignore-errors (delete-file file)))))
+          (should (equal (sort marked #'string<)
+                         '("FILE-NODE-GONE" "FILE-NODE-UUID" "MISSING-HEADING"))))
+      (dolist (file (list bare drawer denote))
+        (ignore-errors (delete-file file))))))
 
 (defun supertag-sync-worker-test--identity-replacement
     (link-type contents old-id new-id)

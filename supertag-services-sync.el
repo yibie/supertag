@@ -2010,16 +2010,20 @@ Returns t if the node ID is found, nil otherwise."
          (re-search-forward (concat ":ID:[ \t]+" (regexp-quote id)) nil t))))
 
 (defun supertag-sync--file-identity-matches-p (id node file)
-  "Return non-nil when NODE's persisted identity in FILE still equals ID."
-  (let ((policy (pcase (plist-get node :link-type)
-                  ('id 'org-id)
-                  ('denote 'denote))))
-    (and policy
-         (file-exists-p file)
+  "Return non-nil when NODE's persisted identity in FILE still equals ID.
+A node that predates `:link-type' matches when either the `:ID:' drawer or
+the `#+IDENTIFIER:' line at the start of FILE holds ID."
+  (let ((policies (pcase (plist-get node :link-type)
+                    ('id '(org-id))
+                    ('denote '(denote))
+                    (_ '(org-id denote)))))
+    (and (file-exists-p file)
          (with-temp-buffer
            (insert-file-contents-literally file)
-           (let ((supertag-file-id-source policy))
-             (equal id (car (supertag-sync--file-header-identity))))))))
+           (seq-some (lambda (policy)
+                       (let ((supertag-file-id-source policy))
+                         (equal id (car (supertag-sync--file-header-identity)))))
+                     policies)))))
 
 (defun supertag-sync-validate-nodes (&optional counters)
   "Delete every node that no Org file backs, and return how many were deleted.
@@ -2033,10 +2037,8 @@ mass-deletion caps.  COUNTERS is a plist for tracking :nodes-deleted."
        (when (and (eq (plist-get node :type) :node)
                   (stringp id)
                   (not (string-empty-p id)))
-         ;; Current file nodes carry their identity kind.  Legacy nodes do
-         ;; not, so preserve them while the file exists rather than guessing.
+         ;; A file node lives only while its file's header holds its ID.
          (let ((file (plist-get node :file))
-               (link-type (plist-get node :link-type))
                (verified (and supertag-sync--verified-ids
                               (gethash id supertag-sync--verified-ids))))
            (when (cond
@@ -2050,9 +2052,7 @@ mass-deletion caps.  COUNTERS is a plist for tracking :nodes-deleted."
                   ((not (supertag-node-file-node-p node))
                    (not (supertag-sync--id-exists-in-file-p id file)))
                   ((not (file-exists-p file)) t)
-                  ((memq link-type '(id denote))
-                   (not (supertag-sync--file-identity-matches-p id node file)))
-                  (t nil))
+                  (t (not (supertag-sync--file-identity-matches-p id node file))))
              (push id stale))))))
     (supertag-sync--delete-nodes stale counters)))
 

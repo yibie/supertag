@@ -67,7 +67,7 @@ overrides the place.
   offers it only for a sentence that asks for titles alone, and the
   self-check is told how many rows leave their body out.
   (`…-view-can-leave-out-a-body`)
-- **Enforced.** A node the view leaves out is drawn in a last group, "其余".
+- **Enforced.** A node the view leaves out is drawn in a last group, "Others".
   An agent can reorder and annotate; it cannot hide a note.
   (`…-cannot-hide-a-node`)
 - **Enforced.** A view that fails says so above every node in one group, and
@@ -152,7 +152,7 @@ a user needed them. So an agent declares the fields its actions write.
   after each key has written (`…-check-refuses-a-key-that-breaks-the-view`).
 - **Enforced.** Before an agent is kept, the model is shown what it draws on
   the real records, without titles or values: the groups and their sizes,
-  how many fall to "其余", and where each key would move a note. It answers
+  how many fall to "Others", and where each key would move a note. It answers
   OK or a corrected agent, for `supertag-stream-agent-self-check-rounds`
   rounds. (`…-design-self-checks-then-keeps`, `…-self-check-correction-is-kept`)
   Code that runs but does not do what was asked was the usual failure in
@@ -164,7 +164,7 @@ a user needed them. So an agent declares the fields its actions write.
 ## 8. Managing agents
 
 - **Enforced.** `supertag-stream-agent-manage` lists every kept agent with
-  its state and sentence: 启用, 停用, or 失效 with the reason (a file that
+  its state and sentence: active, stopped, or broken with the reason (a file that
   can't be read, or one the rules refuse). From there an agent's Stream is
   opened, or the agent is shown, revised, stopped, started or deleted.
   (`…-list-shows-every-agent-and-why-one-fails`)

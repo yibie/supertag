@@ -207,14 +207,14 @@ the nodes IDS already use."
      ((not (and (stringp name)
                 (let ((case-fold-search nil))
                   (string-match-p "\\`[A-Z][A-Z0-9_]*\\'" name))))
-      (format "字段名 %S 要用大写字母、数字和下划线" name))
+      (format "Field name %S must use capital letters, digits and underscores" name))
      ((supertag-stream-agent--reserved-field-p name)
-      (format "字段 %s 归 Org 或 Supertag 管，换一个名字" name))
+      (format "Field %s belongs to Org or Supertag; pick another name" name))
      ((not (memq shape supertag-stream-agent--shapes))
-      (format "字段 %s 的 :shape %S 不在 date number text choice 之中" name shape))
+      (format "Field %s has :shape %S, which is not one of date, number, text, choice" name shape))
      ((and (eq shape 'choice)
            (not (and (consp values) (seq-every-p #'stringp values))))
-      (format "字段 %s 是 choice，要在 :values 里列出可选的值" name)))))
+      (format "Field %s is a choice; list its values in :values" name)))))
 
 (defun supertag-stream-agent--action-refused (agent action ids reserved)
   "Return why ACTION of AGENT over IDS is refused, or nil.
@@ -225,42 +225,42 @@ RESERVED are the keys an action may not take."
          (spec (and (stringp field) (supertag-stream-agent--declared agent field))))
     (cond
      ((not (and (stringp key) (= (length key) 1)))
-      (format "动作的键 %S 必须是一个字符" key))
-     ((member key reserved) (format "动作的键 %s 已被 Stream 占用" key))
-     ((not (stringp field)) (format "动作的字段 %S 必须是字符串" field))
+      (format "Action key %S must be one character" key))
+     ((member key reserved) (format "Action key %s is already taken by the Stream" key))
+     ((not (stringp field)) (format "Action field %S must be a string" field))
      ((supertag-stream-agent--planning-p field)
       (unless (memq value '(today created ask))
-        (format "%s 是 Org 的日期，动作的值只能是 today、created 或 ask" field)))
+        (format "%s is an Org date; the action value can only be today, created or ask" field)))
      ((supertag-stream-agent--reserved-field-p field)
-      (format "字段 %s 归 Org 或 Supertag 管，动作不能写它" field))
+      (format "Field %s belongs to Org or Supertag; an action cannot write it" field))
      ;; Declared, not merely present: a field already on some note would
      ;; otherwise make the agent fail the day that value is removed.
      ((null spec)
-      (format "字段 %s 没有在 :fields 里声明；动作写的每个字段都要声明，已有的字段也一样"
+      (format "Field %s is not declared in :fields; every field an action writes must be declared, including existing ones"
               field))
      ((not (or (stringp value) (memq value supertag-stream-agent--values)))
-      (format "动作的值 %S 只能是 today、created、choose、ask 或一个字符串" value))
+      (format "Action value %S must be today, created, choose, ask or a string" value))
      ((and (eq value 'ask) spec (eq (plist-get spec :shape) 'choice))
-      (format "字段 %s 是 choice，让用户选要用 choose，不是 ask" field))
+      (format "Field %s is a choice; use choose, not ask, to let the user pick" field))
      ((and (memq value '(today created)) spec
            (not (eq (plist-get spec :shape) 'date)))
-      (format "字段 %s 不是 date，不能写 %s" field value))
+      (format "Field %s is not a date; it cannot take %s" field value))
      ((and (eq value 'choose)
            (null (supertag-stream-agent--choices agent field ids)))
-      (format "字段 %s 没有可选的值：在 :fields 里把它声明成 choice 并给出 :values"
+      (format "Field %s has no values to pick from: declare it as a choice in :fields with :values"
               field))
      ((and (stringp value)
            (not (member value (supertag-stream-agent--choices agent field ids))))
-      (format "动作要写的值 %S 不在字段 %s 的可选值里" value field)))))
+      (format "Value %S is not among the values of field %s" value field)))))
 
 (defun supertag-stream-agent--refused (agent)
   "Return why AGENT may not be used, or nil."
   (let ((ids (supertag-stream-agent--scope-ids (plist-get agent :scope)))
         (reserved (supertag-stream-agent--reserved-keys)))
     (cond
-     ((not (stringp (plist-get agent :name))) "没有 :name")
-     ((not (stringp (plist-get agent :view))) "没有 :view")
-     ((null ids) (format "范围 %S 里没有节点" (plist-get agent :scope)))
+     ((not (stringp (plist-get agent :name))) "No :name")
+     ((not (stringp (plist-get agent :view))) "No :view")
+     ((null ids) (format "Scope %S has no nodes" (plist-get agent :scope)))
      ((seq-some #'supertag-stream-agent--field-refused (plist-get agent :fields)))
      (t (seq-some (lambda (action)
                     (supertag-stream-agent--action-refused agent action ids reserved))
@@ -277,7 +277,7 @@ TROUBLE is why the agent may not be used, or nil."
                        (directory-files directory t "\\.eld\\'")))
       (if-let* ((agent (supertag-stream-agent--read file)))
           (push (cons agent (supertag-stream-agent--refused agent)) agents)
-        (push (cons (list :name (file-name-base file)) "文件读不出来") agents)))
+        (push (cons (list :name (file-name-base file)) "File cannot be read") agents)))
     (sort agents (lambda (a b) (string< (plist-get (car a) :name)
                                         (plist-get (car b) :name))))))
 
@@ -422,7 +422,7 @@ Return (:ok FRAME) or (:failed REASON)."
                     (list code-file data-file out-file (number-to-string width)
                           helpers-file))
               (`(0 . ,_) (list :ok (supertag-stream-agent--read out-file)))
-              (`(nil . ,_) (list :failed "运行超时"))
+              (`(nil . ,_) (list :failed "Timed out"))
               (`(,_ . ,output)
                (list :failed (string-remove-prefix "ERROR: " output)))))
         (dolist (file files)
@@ -441,7 +441,7 @@ Groups are (LABEL ROW ...), a ROW being (NODE . LINE), or (NODE LINE DEPTH
 BODY) when the row asked to be indented or to leave out its body.  NODES
 missing from FRAME go to a last group, so none is hidden."
   (unless (and (listp frame) (listp (plist-get frame :groups)))
-    (error "view 必须返回 (:header … :notes … :groups (…))"))
+    (error "The view must return (:header … :notes … :groups (…))"))
   (let ((seen (make-hash-table :test 'equal))
         groups)
     (dolist (group (plist-get frame :groups))
@@ -449,11 +449,11 @@ missing from FRAME go to a last group, so none is hidden."
         (dolist (row (plist-get group :rows))
           (let ((node (gethash (plist-get row :ref) index))
                 (depth (plist-get row :depth)))
-            (unless node (error "行引用了不存在的记录 %S" (plist-get row :ref)))
+            (unless node (error "A row refers to a record that does not exist: %S" (plist-get row :ref)))
             (unless (or (null depth)
                         (and (natnump depth)
                              (<= depth supertag-stream-agent-max-depth)))
-              (error ":depth 必须是 0 到 %d 的整数，得到 %S"
+              (error ":depth must be an integer from 0 to %d, got %S"
                      supertag-stream-agent-max-depth depth))
             (unless (gethash (plist-get node :id) seen)
               (puthash (plist-get node :id) t seen)
@@ -470,7 +470,7 @@ missing from FRAME go to a last group, so none is hidden."
     (let ((omitted (cl-remove-if (lambda (node) (gethash (plist-get node :id) seen))
                                  nodes)))
       (when omitted
-        (push (cons "其余" (mapcar #'list omitted)) groups))
+        (push (cons "Others" (mapcar #'list omitted)) groups))
       (list :header (supertag-stream-agent--line (plist-get frame :header) width)
             :notes (supertag-stream-agent--line (plist-get frame :notes) width)
             :groups (nreverse groups)
@@ -500,7 +500,7 @@ missing from FRAME go to a last group, so none is hidden."
                          (format "%s %s" (plist-get spec :name)
                                  (pcase (plist-get spec :shape)
                                    ('choice (string-join (plist-get spec :values) ", "))
-                                   ('date "日期") ('number "数字") (_ "文本"))))
+                                   ('date "date") ('number "number") (_ "text"))))
                        fields "  "))))
 
 (defun supertag-stream-agent--buttons (agent)
@@ -518,7 +518,7 @@ Buttons for the mouse and keys for the keyboard run the same commands."
                    (list (cons "REVISE"
                                (lambda (&rest _)
                                  (supertag-stream-agent-revise
-                                  name (read-string (format "%s 要怎么改：" name)))))
+                                  name (read-string (format "How should %s change: " name)))))
                          (cons "CODE" (lambda (&rest _) (supertag-stream-agent-show name)))
                          (cons "REFRESH" (lambda (&rest _) (supertag-view-refresh)))))
            (list (list :type :text
@@ -536,7 +536,7 @@ DRAWING is what the view returned; FAILED, when non-nil, why it could not draw."
           (delq nil
                 (list (propertize (format " AGENT / %s " (upcase (plist-get agent :name)))
                                   'font-lock-face 'supertag-view-stream-date-face)
-                      (and failed (format "画不出来：%s" failed))
+                      (and failed (format "Cannot draw: %s" failed))
                       (plist-get drawing :header)
                       (plist-get drawing :notes)
                       (supertag-stream-agent--fields-line agent)
@@ -573,7 +573,7 @@ Return STATE unchanged when no agent matches.  This is
              (drawing (supertag-stream-agent--draw agent nodes))
              (failed (plist-get drawing :failed))
              (groups (if failed
-                         (list (cons "其余" (mapcar #'list nodes)))
+                         (list (cons "Others" (mapcar #'list nodes)))
                        (plist-get drawing :groups))))
         (append (list :agent agent
                       :arrangement (list :header (supertag-stream-agent--header
@@ -664,7 +664,7 @@ The node may move to another group; the cursor does not follow it."
         (erase-buffer)
         (insert (format ";; %s\n" (plist-get agent :sentence)))
         (dolist (change (plist-get agent :revisions))
-          (insert (format ";; 修改：%s\n" change)))
+          (insert (format ";; Revised: %s\n" change)))
         (insert "\n:fields\n")
         (pp (plist-get agent :fields) (current-buffer))
         (insert "\n:actions\n")
@@ -725,6 +725,7 @@ Stream 自己画每条笔记的标题、标签和正文，自己负责选中、�
 * view 返回
 (:header \"一行概况\" :notes \"一句说明或 nil\"\
  :groups ((:label \"组名\" :rows ((:ref \"n1\" :line \"一句注释\") …)) …))
+- 界面上的文字（:header、:notes、组名、:line、动作的 :label）都用用户那句话的语言写。\
 - 每个 :ref 最多出现一次。:line 是一行，不超过 width 个字符；标题 Stream 已经画了，不要重复标题。
 - 行可以加 :depth 整数（0 到 " (number-to-string supertag-stream-agent-max-depth) "），\
 Stream 会把这一行往里缩进这么多级。只有用户的话要求显示层级时才用，例如\"任务挂在它的项目下面\"：\
@@ -735,7 +736,7 @@ Stream 会把这一行往里缩进这么多级。只有用户的话要求显示�
 可以只对一部分行用，比如项目显示正文、任务只显示标题。用户没要求就不要写 :body。
 - 页面是 Org 的缓冲区，/ * _ = ~ + 会被当成 Org 的标记。分隔几项用逗号（,）或 ·，不要用这些符号。
 - 每条记录都必须列进你的某个组；漏掉任何一条，代理会被拒绝，要你重写。\
-（用户收窄 Stream 后，没列出的记录会被放进最后的\"其余\"，那只是兜底。）
+（用户收窄 Stream 后，没列出的记录会被放进最后的\"Others\"，那只是兜底。）
 - records 可能只有 1 条（用户收窄之后），view 也要能画。
 - 用户的话里有做不到的部分，就在 :notes 里如实说一句，不要声称做到了，也不要悄悄删掉。
 
@@ -834,7 +835,7 @@ group, draw a Stream of one note, and still draw after each of its keys."
                       '(100 80))
             (let ((omitted (or (plist-get drawing :omitted) 0)))
               (when (> omitted 0)
-                (format "有 %d 条记录没有列进任何组，会掉进最后的「其余」。每条记录都要由 view 列进某个组" omitted)))
+                (format "有 %d 条记录没有列进任何组，会掉进最后的「Others」。每条记录都要由 view 列进某个组" omitted)))
             (when-let* ((why (and nodes
                                   (plist-get (supertag-stream-agent--draw
                                               agent (list (car nodes)))
@@ -876,7 +877,7 @@ group, draw a Stream of one note, and still draw after each of its keys."
         ('ask (pcase (plist-get (supertag-stream-agent--declared agent field) :shape)
                 ('date (format-time-string "[%Y-%m-%d %a]"))
                 ('number "3")
-                (_ "示例")))
+                (_ "example")))
         ((and (pred stringp) value) value)))))
 
 (defun supertag-stream-agent--with-value (nodes id field value)
@@ -1070,7 +1071,7 @@ RESPONSE is what the model wrote; TRIES how many retries remain."
 The agent is kept beside the notes and used by every Stream of TAG."
   (interactive
    (list (plist-get (supertag-view--read-tag) :value)
-         (read-string "这条 Stream 要怎么处理：")))
+         (read-string "What should this Stream do: ")))
   (let* ((tag (or (supertag-view-api-tag-id tag) (user-error "No tag named %s" tag)))
          (name (supertag-tag--name tag)))
     (when (and (file-exists-p (supertag-stream-agent--file name))
@@ -1086,7 +1087,7 @@ The model sees the agent as it is and every change asked before.  Only the
 user's words are kept as revisions, never the model's own checks."
   (interactive
    (let ((name (supertag-stream-agent--read-name)))
-     (list name (read-string (format "%s 要怎么改：" name)))))
+     (list name (read-string (format "How should %s change: " name)))))
   (let* ((agent (or (supertag-stream-agent--read (supertag-stream-agent--file name))
                     (user-error "No agent named %s" name)))
          (tag (plist-get (plist-get agent :scope) :tag))
@@ -1119,9 +1120,9 @@ user's words are kept as revisions, never the model's own checks."
 
 (defun supertag-stream-agent--state (entry)
   "Return the state of ENTRY, an (AGENT . TROUBLE) pair, as a word."
-  (cond ((cdr entry) "失效")
-        ((plist-get (car entry) :disabled) "停用")
-        (t "启用")))
+  (cond ((cdr entry) "broken")
+        ((plist-get (car entry) :disabled) "stopped")
+        (t "active")))
 
 (defun supertag-stream-agent--pick (&optional predicate)
   "Have the user pick a kept agent; return its (AGENT . TROUBLE) pair.
@@ -1176,7 +1177,7 @@ PREDICATE, when given, keeps only the pairs it accepts."
   (interactive (list (plist-get (car (supertag-stream-agent--pick)) :name)))
   (let ((file (supertag-stream-agent--file name)))
     (unless (file-exists-p file) (user-error "No agent named %s" name))
-    (when (yes-or-no-p (format "删除代理 %s？删除后不能恢复。" name))
+    (when (yes-or-no-p (format "Delete agent %s? This cannot be undone. " name))
       (delete-file file)
       (supertag-stream-agent--refresh-streams)
       (message "Stream agent %s deleted" name))))
@@ -1199,26 +1200,26 @@ Only agents in use are offered: started, working, with a scope."
 
 (defun supertag-stream-agent-manage ()
   "List every Stream agent and act on the one picked.
-Each shows its state (启用, 停用 or 失效 with why) and its sentence."
+Each shows its state (active, stopped, or broken with why) and its sentence."
   (interactive)
   (let* ((entry (supertag-stream-agent--pick))
          (agent (car entry))
          (name (plist-get agent :name))
          (stopped (plist-get agent :disabled))
          (choice (read-multiple-choice
-                  (format "%s（%s）" name (supertag-stream-agent--state entry))
+                  (format "%s (%s)" name (supertag-stream-agent--state entry))
                   (delq nil
-                        (list (and (plist-get agent :scope) '(?o "打开" "打开它的 Stream"))
-                              (and (plist-get agent :view) '(?s "查看" "查看原话和代码"))
-                              (and (plist-get agent :view) '(?r "修改" "用一句话修改它"))
-                              (if stopped '(?t "启用" "重新使用它")
-                                '(?t "停用" "Stream 恢复原样，文件保留"))
-                              '(?d "删除" "删除它和它的文件"))))))
+                        (list (and (plist-get agent :scope) '(?o "open" "open its Stream"))
+                              (and (plist-get agent :view) '(?s "show" "show its sentence and code"))
+                              (and (plist-get agent :view) '(?r "revise" "revise it with one sentence"))
+                              (if stopped '(?t "start" "use it again")
+                                '(?t "stop" "the Stream goes back to plain; the file stays"))
+                              '(?d "delete" "delete it and its file"))))))
     (pcase (car choice)
       (?o (supertag-stream-agent--show-stream (plist-get agent :scope)))
       (?s (supertag-stream-agent-show name))
       (?r (supertag-stream-agent-revise
-           name (read-string (format "%s 要怎么改：" name))))
+           name (read-string (format "How should %s change: " name))))
       (?t (if stopped (supertag-stream-agent-start name)
             (supertag-stream-agent-stop name)))
       (?d (supertag-stream-agent-delete name)))))

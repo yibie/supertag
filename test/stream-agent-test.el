@@ -159,7 +159,7 @@ two contact files; work.org declares TIER_ALL itself."
         (should (string-search "AGENT / CONTACT" (buffer-string)))
         (should (string-search "4 人该联系了" (buffer-string)))
         (should (string-search "45 天没联系" (buffer-string)))
-        (should (string-search "FIELDS / LAST_CONTACT 日期  TIER 核心, 亲密, 熟识"
+        (should (string-search "FIELDS / LAST_CONTACT date  TIER 核心, 亲密, 熟识"
                                (buffer-string)))))))
 
 (ert-deftest supertag-stream-agent-matches-by-scope-not-by-inheritance ()
@@ -201,7 +201,7 @@ two contact files; work.org declares TIER_ALL itself."
                                                         (plist-get data :records)))))))"))
     (should (equal (car (last (supertag-stream-agent-test--groups
                                (supertag-stream-agent-test--open '(:tag "contact")))))
-                   '("其余" "Bob")))))
+                   '("Others" "Bob")))))
 
 (ert-deftest supertag-stream-agent-that-fails-still-shows-every-node ()
   "A view that fails says why above all the nodes, and the agent's keys remain."
@@ -212,7 +212,7 @@ two contact files; work.org declares TIER_ALL itself."
     (let ((buffer (supertag-stream-agent-test--open '(:tag "contact"))))
       (should (equal (length (cdar (supertag-stream-agent-test--groups buffer))) 5))
       (with-current-buffer buffer
-        (should (string-search "画不出来" (buffer-string)))
+        (should (string-search "Cannot draw" (buffer-string)))
         (should (eq (key-binding (kbd "R")) #'supertag-stream-agent-revise))))))
 
 (ert-deftest supertag-stream-agent-lines-fit-the-width ()
@@ -328,7 +328,7 @@ two contact files; work.org declares TIER_ALL itself."
                             "(lambda (data width)
   (list :groups (list (list :label \"x\"
                             :rows (list (list :ref \"n1\" :depth 9))))))")))
-        (should (string-match-p ":depth 必须是"
+        (should (string-match-p ":depth must be"
                                 (plist-get (supertag-stream-agent--draw
                                             bad (supertag-view-api-get-entities
                                                  :nodes (supertag-view-api-nodes-by-tag
@@ -700,7 +700,7 @@ two contact files; work.org declares TIER_ALL itself."
       (should (equal (supertag-stream-agent-test--prop friends "Alice" "MET") "3"))
       (should (equal (supertag-stream-agent-test--prop friends "Alice" "NOTE") "喜欢爬山")))
     (should (string-match-p
-             "用 choose"
+             "use choose"
              (supertag-stream-agent-test--refusal
               '((:name "TIER" :shape choice :values ("a")))
               '((:key "x" :label "?" :field "TIER" :value ask)))))))
@@ -794,8 +794,8 @@ two contact files; work.org declares TIER_ALL itself."
       (should (equal (mapcar (lambda (entry) (plist-get (car entry) :name)) entries)
                      '("broken" "contact" "family")))
       (should (equal (mapcar #'supertag-stream-agent--state entries)
-                     '("失效" "启用" "失效")))
-      (should (equal (cdr (car entries)) "文件读不出来")))))
+                     '("broken" "active" "broken")))
+      (should (equal (cdr (car entries)) "File cannot be read")))))
 
 (ert-deftest supertag-stream-agent-open-offers-agents-in-use ()
   "Open lists only working, started agents and shows the Stream of the scope."

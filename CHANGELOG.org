@@ -1,5 +1,83 @@
 * Changelog
 * [Unreleased]
+* [0.4.0] - 2026-10-27
+** Behaviour changes
+- =M-x supertag-view-stream= opens the stream of every node and no longer
+  asks for a tag.  Narrow with =f tag:NAME= to reach a tag's stream; it is
+  the same stream as before, named =#NAME=, one buffer per tag.  Called from
+  Lisp with a tag it still opens that tag's stream.
+  =supertag-view-stream-all= is an obsolete alias.
+- A tag query, =(tag "x")= and =tag:x=, holds the tags that extend =x=, as
+  a tag's Stream already did.  Automation conditions on a parent tag now
+  also fire for nodes with a child tag.
+- =supertag-file-id-source= defaults to =auto=: a file is a node when its
+  header has an Org =:ID:= drawer or a denote =#+IDENTIFIER:=.  The value
+  =supertag= names the org-roam rule.
+- A file node whose ID is not in its file header is deleted on the next full
+  rescan.  Older versions created such nodes and kept them; they showed as
+  duplicate entries in streams and in the reference picker.
+- Archived notes are left out of Stream, Discovery and Summary.  A note is
+  archived when it or a heading above it has the =ARCHIVE= tag, when its
+  file is the one =org-archive-location= names, or when a denote file name
+  has the keyword =archive=.  Press =A= in a Stream or in Discovery to show
+  them; set =supertag-view-include-archived= to show them always.  Query
+  blocks and the reference picker still find them.
+- =supertag-summary-skip-file-regexp= defaults to nil; archived files are
+  left out by the rule above.
+- =supertag-semantic-min-similarity= defaults to 0.55.
+
+** Stream agents
+- =M-x supertag-stream-agent-design= has a model write, from one sentence,
+  how a tag's Stream is arranged: its groups, a line per note, and keys that
+  write properties.  The agent is generated once and then runs with no model
+  call.  =R= in the Stream revises it by another sentence, and
+  =M-x supertag-stream-agent-manage= shows, revises, stops, starts or
+  deletes agents.  Agents live in =supertag-stream-agent-directory=.
+- An agent applies to a stream when every note of the stream is in its
+  scope; the narrowest one wins.
+- Every field an action writes is declared with its shape (date, number,
+  text, choice) and values.  A key can ask for a value, write today's date,
+  or set a note's =SCHEDULED= or =DEADLINE= when the sentence asks for dates.
+- A generated agent is checked before it is installed: every note is placed
+  in a group, a stream of one note draws, and every action redraws.  A
+  failure goes back to the model, which also checks the drawn view against
+  the sentence, up to =supertag-stream-agent-self-check-rounds= times.
+- Records carry a note's level, outline path and nearest parent in the
+  stream, and a row may be indented under its parent and drawn without its
+  body.  An indented row starts with =→=.
+- =M-x supertag-stream-agent-open= picks an agent and opens its stream, from
+  any buffer.  It is also on the main menu.
+- Prompts and menus are in English; the text an agent draws follows the
+  language of its sentence.
+
+** Find and Discovery
+- Stream =f= and Discovery read one line: plain words match a note's title,
+  body, tags and property values; =tag:NAME= asks for a tag; =KEY:VALUE=
+  asks for a property, when some note has that key; a line starting with
+  =(= is a query.  =C-u f= keeps the guided builder.  The new query
+  condition =(word "x")= is what a plain word means.
+- Discovery adds notes close in meaning after the keyword matches, when
+  semantic search is on.  Both groups are ordered by similarity and show it.
+  =supertag-discovery-semantic-results= sets how many are added.
+
+** Models and embeddings
+- =supertag-summary-provider= chooses who sends panel and agent requests:
+  Superchat, gptel (with a =supertag= preset) or a function.
+- Similar notes can use any OpenAI-compatible embedding service:
+  =supertag-semantic-api=, =supertag-semantic-api-key= and
+  =supertag-semantic-input-format=.  An index built by another model is
+  refused rather than mixed.
+
+** Other changes
+- Automation and agent keys write the properties of a file node into the
+  property drawer at the top of the file.
+- Summary panels see the properties of their notes.  Tag Cards is folded
+  into Summary; =M-x supertag-summary-components= shows the components.
+- Groups of a Stream and Summary boxes sit on a background surface computed
+  from the theme (=supertag-view-surface-offset=).  This needs textui 0.9.0.
+- Every view object has the same Embark actions.
+- When layout code is missing a paren, the model is told which one.
+
 * [0.3.1] - 2026-10-22
 ** Query result tables name tags
 - The =Tags= column of a query block, a =supertag-query= dynamic block and

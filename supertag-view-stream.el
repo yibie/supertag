@@ -644,7 +644,7 @@ open the stream of TAG and every tag that extends it."
   (supertag-view-stream--open (and tag (list :tag tag))))
 
 (define-obsolete-function-alias 'supertag-view-stream-all
-  #'supertag-view-stream "0.3.1")
+  #'supertag-view-stream "0.4.0")
 
 (defun supertag-view-stream--narrowed (input condition)
   "Return INPUT narrowed by query CONDITION.

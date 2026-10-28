@@ -105,8 +105,13 @@ Only query Org-specific helpers inside Org buffers to avoid errors like
 Point must be at an Org heading. when invoked from other modes."
   (cond
    ;; Node View is read-only with respect to Org identity.
+   ;; Above the first heading, the node is the file's own, found by the
+   ;; same rule sync uses: an :ID: drawer or a denote #+IDENTIFIER:.
    ((derived-mode-p 'org-mode)
-    (ignore-errors (org-entry-get (point) "ID")))
+    (or (when (ignore-errors (org-before-first-heading-p))
+          (when-let* ((id (car (supertag-sync--file-header-identity))))
+            (and (supertag-node-get id) id)))
+        (ignore-errors (org-entry-get (point) "ID"))))
    ;; In table view mode, extract cell coords
    ((derived-mode-p 'supertag-view-table-mode)
     (when (fboundp 'supertag-view-table--get-cell-coords)

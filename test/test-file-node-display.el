@@ -18,6 +18,31 @@
 
 (progn (require 'supertag-query) (require 'supertag-tag) (require 'supertag-services-sync) (supertag-node--prepare-cache-listener))
 
+(ert-deftest view-node-detects-file-node-above-first-heading ()
+  "Above the first heading Node View finds the file's own node."
+  (require 'supertag-view-node)
+  (let ((supertag--store (make-hash-table :test 'equal))
+        (supertag-file-id-source 'auto))
+    (supertag--ensure-store)
+    (supertag-node-create '(:id "20261001T091500" :title "Plan" :type :node
+                            :level 0 :link-type denote))
+    (supertag-node-create '(:id "HEAD-1" :title "Why" :type :node :level 1))
+    (with-temp-buffer
+      (insert "#+TITLE: Plan\n#+IDENTIFIER: 20261001T091500\n\nBody.\n"
+              "* Why\n:PROPERTIES:\n:ID:       HEAD-1\n:END:\nText.\n")
+      (org-mode)
+      (goto-char (point-min))
+      (should (equal "20261001T091500" (supertag-view-node--current-entity-id)))
+      (search-forward "Body")
+      (should (equal "20261001T091500" (supertag-view-node--current-entity-id)))
+      (search-forward "Text")
+      (should (equal "HEAD-1" (supertag-view-node--current-entity-id))))
+    ;; A header ID with no node in the Store is not offered.
+    (with-temp-buffer
+      (insert "#+IDENTIFIER: 20990101T000000\n\nBody.\n")
+      (org-mode)
+      (should-not (supertag-view-node--current-entity-id)))))
+
 (ert-deftest format-file-node-with-title ()
   "File node with #+TITLE shows emoji prefix and title."
   (let ((display (supertag-ui--format-node-display

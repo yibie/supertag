@@ -1,5 +1,12 @@
 * Changelog
 * [Unreleased]
+* [0.4.1] - 2026-10-28
+** Node View finds a file node from its header
+- =M-x supertag-view-node= with point above the first heading of a file
+  opens the file's own node: the one its =:ID:= drawer or denote
+  =#+IDENTIFIER:= names, by the rule =supertag-file-id-source= sets.  It
+  reported "No node detected at point" for a denote file.
+
 * [0.4.0] - 2026-10-27
 ** Behaviour changes
 - =M-x supertag-view-stream= opens the stream of every node and no longer

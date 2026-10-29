@@ -1,5 +1,12 @@
 * Changelog
 * [Unreleased]
+* [0.4.2] - 2026-10-29
+** Tag completion shows a parent's child Tags
+- Typing a parent Tag's name after =#= now also lists its child Tags, for
+  example =#proj= offers =project › web= and =project › web › api=.  Each
+  child matched only its own name before, so the parent hid it.  Picking a
+  child still inserts its own name, =#web=.
+
 * [0.4.1] - 2026-10-28
 ** Node View finds a file node from its header
 - =M-x supertag-view-node= with point above the first heading of a file

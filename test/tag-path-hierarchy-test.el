@@ -107,6 +107,33 @@
                               (supertag-completion--get-completion-table "topics/emacs")))
       (should emacs))))
 
+(ert-deftest supertag-path-capf-typing-a-parent-offers-its-children ()
+  (supertag-path-test--with-store
+    (let* ((project (plist-get (supertag-tag-create '(:name "project")) :id))
+           (web (plist-get (supertag-tag-create
+                            (list :name "web" :extends (list project)))
+                           :id))
+           (api (plist-get (supertag-tag-create
+                            (list :name "api" :extends (list web)))
+                           :id))
+           (other (plist-get (supertag-tag-create '(:name "other")) :id))
+           (ids (lambda (input)
+                  (let ((matches (all-completions
+                                  input
+                                  (supertag-completion--get-completion-table
+                                   input))))
+                    (delq nil
+                          (mapcar (lambda (s)
+                                    (get-text-property 0 'supertag-tag-id s))
+                                  (supertag-completion--display-sort
+                                   matches)))))))
+      ;; The parent's name reaches every descendant, one row per Tag.
+      (should (equal (list project web api) (funcall ids "proj")))
+      ;; A child's own name still matches under prefix completion.
+      (should (equal (list web) (funcall ids "we")))
+      (should (equal (list api) (funcall ids "project/web/a")))
+      (should other))))
+
 (ert-deftest supertag-path-ensure-path-adds-a-parent-edge ()
   (supertag-path-test--with-store
     ;; Both ends exist already: the path only adds the missing edge.

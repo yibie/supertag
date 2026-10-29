@@ -2815,6 +2815,29 @@ Handles edge cases: cursor right after # (empty prefix), mid-word, etc."
                 (or (plist-get tag :name) candidate))))
     (propertize name 'supertag-tag-id candidate)))
 
+(defun supertag-completion--tag-paths (tag-id &optional seen)
+  "Return every `/'-joined ancestor path that ends at TAG-ID.
+A root Tag has none.  SEEN guards against a stored parent cycle."
+  (let ((seen (cons tag-id seen))
+        (leaf (supertag-sanitize-tag-name (supertag-tag--name tag-id)))
+        paths)
+    (dolist (parent (supertag-tag-parents tag-id))
+      (unless (member parent seen)
+        (let ((parent-name (supertag-sanitize-tag-name
+                            (supertag-tag--name parent))))
+          (dolist (prefix (or (supertag-completion--tag-paths parent seen)
+                              (list parent-name)))
+            (push (concat prefix "/" leaf) paths)))))
+    (nreverse paths)))
+
+(defun supertag-completion--semantic-candidates (tag-id)
+  "Return TAG-ID's completion candidates: its name, then its ancestor paths.
+The path forms let typing a parent's name match its child Tags too; every
+form carries the same Tag ID, so committing any of them writes the leaf."
+  (cons (supertag-completion--decorate-candidate tag-id)
+        (mapcar (lambda (path) (propertize path 'supertag-tag-id tag-id))
+                (supertag-completion--tag-paths tag-id))))
+
 (defun supertag-completion--restore-prefix (prefix)
   "Replace the current completion token with PREFIX."
   (when-let* ((bounds (and prefix (supertag-completion--get-prefix-bounds))))
@@ -2823,8 +2846,17 @@ Handles edge cases: cursor right after # (empty prefix), mid-word, etc."
     (insert prefix)))
 
 (defun supertag-completion--display-sort (candidates)
-  "Place `[New]' after the first existing item in CANDIDATES."
-  (let ((new (cl-find-if
+  "Place `[New]' after the first existing item in CANDIDATES.
+A Tag matched through both its name and an ancestor path keeps only its
+first row."
+  (let* ((seen (make-hash-table :test 'equal))
+         (candidates
+          (cl-remove-if
+           (lambda (candidate)
+             (when-let* ((id (get-text-property 0 'supertag-tag-id candidate)))
+               (prog1 (gethash id seen) (puthash id t seen))))
+           candidates))
+         (new (cl-find-if
               (lambda (candidate)
                 (get-text-property 0 'is-new-tag candidate))
               candidates)))
@@ -2870,7 +2902,7 @@ match."
                       (supertag-completion--get-all-tag-occurrences)))
          (all-candidates
           (append
-           (mapcar #'supertag-completion--decorate-candidate semantic-tags)
+           (mapcan #'supertag-completion--semantic-candidates semantic-tags)
            (mapcar (lambda (token)
                      (propertize token 'supertag-tag-occurrence token))
                    unresolved-occurrences)))
